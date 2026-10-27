@@ -154,7 +154,7 @@ impl Extrusion {
                     .segments()
                     .get(segment.segment)
                     .map(|s| s.curve),
-                Some(Curve::Arc { .. })
+                Some(Curve::Arc { .. } | Curve::ArcCenter { .. })
             )
     }
 

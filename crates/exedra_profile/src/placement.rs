@@ -31,7 +31,7 @@ impl core::fmt::Display for ProfileTranslationError {
 impl core::error::Error for ProfileTranslationError {}
 
 impl Loop {
-    /// Moves endpoints by `offset`, preserving circular bulges, tags and order.
+    /// Moves endpoints and explicit arc centers by `offset`, preserving direction, bulges, tags and order.
     ///
     /// # Errors
     ///
@@ -44,6 +44,18 @@ impl Loop {
                 .map(|segment| {
                     let mut moved = *segment;
                     moved.to = [segment.to[0] + offset[0], segment.to[1] + offset[1]];
+                    if let crate::Curve::ArcCenter { center, clockwise } = segment.curve {
+                        moved.curve = crate::Curve::ArcCenter {
+                            center: core::array::from_fn(|i| {
+                                if offset[i] == 0.0 {
+                                    center[i]
+                                } else {
+                                    center[i] + offset[i]
+                                }
+                            }),
+                            clockwise,
+                        };
+                    }
                     moved
                 })
                 .collect(),
@@ -167,5 +179,75 @@ mod tests {
             square().translated([0.0, 0.0], &ProfilePolicy::new(3.0)),
             Err(ProfileTranslationError::Profile(_))
         ));
+    }
+}
+
+#[cfg(test)]
+mod centered_tests {
+    use super::*;
+    use crate::{CornerTreatment, Curve, SegTag, Segment};
+    use alloc::vec;
+    #[test]
+    fn unchanged_center_components_keep_authored_signed_zero() {
+        let boundary = Loop::new(vec![
+            Segment::arc_centered([-1.0, 0.0], [-0.0, 0.0], false),
+            Segment::arc_centered([1.0, 0.0], [-0.0, 0.0], false),
+        ])
+        .unwrap();
+        for offset in [[0.0; 2], [0.0, 10.0]] {
+            let moved = boundary.translated(offset).unwrap();
+            let Curve::ArcCenter { center, .. } = moved.segments()[0].curve else {
+                panic!()
+            };
+            assert_eq!(center[0].to_bits(), (-0.0_f64).to_bits());
+        }
+    }
+    #[test]
+    fn center_survives_reversal_tagging_translation_and_unselected_corner_treatment() {
+        let policy = ProfilePolicy::new(1e-9);
+        let boundary = Loop::new(vec![
+            Segment::line([0.0, 0.0]),
+            Segment::line([1.0, 0.0]),
+            Segment::arc_centered([0.0, 1.0], [0.0; 2], false),
+        ])
+        .unwrap();
+        assert!((boundary.signed_area() - core::f64::consts::PI / 4.0).abs() < 1e-15);
+        let reversed = boundary.reversed();
+        assert!(matches!(
+            reversed.segments()[0].curve,
+            Curve::ArcCenter {
+                center: [0.0, 0.0],
+                clockwise: true
+            }
+        ));
+        assert_eq!(reversed.reversed(), boundary);
+        let source = Profile::new(boundary, vec![], &policy)
+            .unwrap()
+            .tagged(SegTag(4));
+        let moved = source.translated([10.0, 20.0], &policy).unwrap();
+        assert!(moved.outer().segments().iter().any(|s| s.curve
+            == Curve::ArcCenter {
+                center: [10.0, 20.0],
+                clockwise: false
+            }));
+        assert!((moved.area() - source.area()).abs() < 1e-13);
+        let corner = source.corner_at([0.0, 0.0], 0.0).unwrap();
+        let treated = source
+            .with_corners(
+                [corner.segment],
+                CornerTreatment::fillet(0.1).tagged(SegTag(9)),
+                &policy,
+            )
+            .unwrap();
+        assert!(treated.profile.outer().segments().iter().any(|s| s.curve
+            == Curve::ArcCenter {
+                center: [0.0; 2],
+                clockwise: false
+            }
+            && s.tag == Some(SegTag(4))));
+        assert!(
+            source.translated([1e16, 0.0], &policy).is_err(),
+            "rounded placement cannot heal an unrepresentable circle"
+        );
     }
 }

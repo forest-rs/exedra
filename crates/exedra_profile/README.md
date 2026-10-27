@@ -3,8 +3,8 @@
 Line and circular-arc 2D profile geometry shared by Exedra's geometry heads.
 
 A `Profile` is a counter-clockwise outer `Loop` with clockwise holes, in `f64`
-model units. Segments are lines or bulge arcs between exact endpoints, with
-optional caller tags. `Profile::new` validates the arrangement against an
+model units. Segments are lines or circular arcs between exact endpoints, with optional
+caller tags. Arcs carry either a bulge or an authoritative center and direction. `Profile::new` validates the arrangement against an
 explicit `ProfilePolicy`: winding, segments that cross, touch, overlap or come
 closer than `min_separation`, and holes outside the outer loop or nested in
 one another. The first violation names its loops and segments. Nothing is
@@ -32,6 +32,32 @@ let profile = Profile::new(outer, vec![hole], &ProfilePolicy::new(1e-9))?;
 assert!((profile.area() - (8.0 - core::f64::consts::PI / 4.0)).abs() < 1e-12);
 # Ok::<(), Box<dyn core::error::Error>>(())
 ```
+
+An arc can retain a construction center instead of deriving one from a bulge:
+
+```rust
+use exedra_profile::{Loop, Profile, ProfilePolicy, Segment};
+
+let quarter_disk = Profile::new(
+    Loop::new(vec![
+        Segment::line([0.0, 0.0]),
+        Segment::line([10.0, 0.0]),
+        Segment::arc_centered([0.0, 10.0], [0.0, 0.0], false),
+    ])?,
+    vec![],
+    &ProfilePolicy::new(1e-9),
+)?;
+assert!((quarter_disk.area() - 25.0 * core::f64::consts::PI).abs() < 1e-12);
+# Ok::<(), Box<dyn core::error::Error>>(())
+```
+
+The start of each segment is the preceding endpoint, cyclically. `clockwise`
+selects travel direction, including major arcs; a full circle needs two arcs.
+`Arc::resolve` derives radius and sweep and returns typed radius-disagreement
+or numeric evidence. Its allowance covers local subtraction and norm roundoff,
+independent of the profile separation and distance from the origin. Centers and
+endpoints are never fitted. Reversal changes travel direction; translation moves
+both endpoints and centers. Region splits retain center intent and correspondence.
 
 `IntoProfile` is the checked input seam for geometry heads. Authoring crates
 implement it without the shared profile or native head depending on them.

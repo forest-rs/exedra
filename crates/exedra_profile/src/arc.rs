@@ -1,14 +1,16 @@
 // Copyright 2026 the Exedra Authors
 // SPDX-License-Identifier: Apache-2.0 OR MIT
 
-//! Circular arcs derived from bulge segments, and distances between pieces.
+//! Checked circular arcs from authored source intent, and distances between pieces.
 
+use crate::Curve;
 use core::f64::consts::{PI, TAU};
 
-/// A circular arc derived from a bulge segment.
+/// A resolved circular arc whose authored endpoints remain authoritative.
 ///
-/// The endpoints stay authoritative: [`Arc::from_bulge`] derives the center,
-/// radius and angles from them, and sampling emits them unchanged.
+/// [`Arc::resolve`] supports bulge and center-defined source intent. An explicit
+/// center is preserved; radius and angles are derived. Sampling emits the stored
+/// endpoints unchanged rather than moving them onto a fitted circle.
 #[derive(Copy, Clone, Debug, PartialEq)]
 pub struct Arc {
     /// Start point.
@@ -26,6 +28,88 @@ pub struct Arc {
 }
 
 impl Arc {
+    /// Resolves either authored arc representation through one checked path.
+    /// Lines return `Ok(None)`. Bulge input keeps its existing derivation;
+    /// center input preserves the center, derives radius from the start point,
+    /// and derives directed minor or major sweep from the two radial vectors.
+    ///
+    /// Center-defined endpoint radii must agree within fixed local subtraction
+    /// and hypot roundoff, independent of profile separation or world datum.
+    /// Full circles require two arcs with distinct endpoints.
+    ///
+    /// # Errors
+    /// Returns invalid input, inconsistent radii or numeric representation
+    /// evidence. Neither the center nor either endpoint is moved to make it fit.
+    pub fn resolve(from: [f64; 2], to: [f64; 2], curve: Curve) -> Result<Option<Self>, ArcError> {
+        if !from.iter().chain(&to).all(|v| v.is_finite()) {
+            return Err(ArcError::Input);
+        }
+        match curve {
+            Curve::Line => Ok(None),
+            Curve::Arc { bulge } => {
+                if !bulge.is_finite() || bulge == 0.0 || from == to {
+                    return Err(ArcError::Input);
+                }
+                Self::from_bulge(from, to, bulge)
+                    .map(Some)
+                    .ok_or(ArcError::NumericLimit)
+            }
+            Curve::ArcCenter { center, clockwise } => {
+                if !center.iter().all(|v| v.is_finite()) || from == to {
+                    return Err(ArcError::Input);
+                }
+                let a = sub(from, center);
+                let b = sub(to, center);
+                if !a.iter().chain(&b).all(|v| v.is_finite()) {
+                    return Err(ArcError::NumericLimit);
+                }
+                let radius = libm::hypot(a[0], a[1]);
+                let end_radius = libm::hypot(b[0], b[1]);
+                if !radius.is_finite() || !end_radius.is_finite() {
+                    return Err(ArcError::NumericLimit);
+                }
+                if radius == 0.0 || end_radius == 0.0 {
+                    return Err(ArcError::Input);
+                }
+                let roundoff_bound =
+                    (radial_roundoff(a, radius) + radial_roundoff(b, end_radius)).next_up();
+                if !roundoff_bound.is_finite() {
+                    return Err(ArcError::NumericLimit);
+                }
+                if (radius - end_radius).abs() > roundoff_bound {
+                    return Err(ArcError::EndpointRadii {
+                        start_radius: radius,
+                        end_radius,
+                        roundoff_bound,
+                    });
+                }
+                let a = [a[0] / radius, a[1] / radius];
+                let b = [b[0] / end_radius, b[1] / end_radius];
+                let mut sweep = libm::atan2(cross(a, b), dot(a, b));
+                if sweep == 0.0 {
+                    return Err(ArcError::NumericLimit);
+                }
+                if clockwise && sweep > 0.0 {
+                    sweep -= TAU;
+                } else if !clockwise && sweep < 0.0 {
+                    sweep += TAU;
+                }
+                if !sweep.is_finite() || sweep.abs() >= TAU {
+                    return Err(ArcError::NumericLimit);
+                }
+                let start_angle = libm::atan2(from[1] - center[1], from[0] - center[0]);
+                Ok(Some(Self {
+                    from,
+                    to,
+                    center,
+                    radius,
+                    start_angle,
+                    sweep,
+                }))
+            }
+        }
+    }
+
     /// Derives the arc from `from` to `to` with `bulge = tan(sweep / 4)`.
     ///
     /// Returns `None` for coincident endpoints, a zero or non-finite bulge, or
@@ -120,7 +204,24 @@ impl Arc {
     /// Whether the ray from the center along `direction` meets the arc.
     pub(crate) fn spans(&self, direction: [f64; 2]) -> bool {
         let start = [self.from[0] - self.center[0], self.from[1] - self.center[1]];
-        let mut turn = libm::atan2(cross(start, direction), dot(start, direction));
+        let (mut sine, mut cosine) = (cross(start, direction), dot(start, direction));
+        if !sine.is_finite() || !cosine.is_finite() || (sine == 0.0 && cosine == 0.0) {
+            // Scale only when products overflow/underflow. The ordinary path
+            // keeps existing bulge-derived comparisons unchanged.
+            let start_scale = start[0].abs().max(start[1].abs());
+            let direction_scale = direction[0].abs().max(direction[1].abs());
+            if start_scale == 0.0 || direction_scale == 0.0 {
+                return false;
+            }
+            let a = [start[0] / start_scale, start[1] / start_scale];
+            let b = [
+                direction[0] / direction_scale,
+                direction[1] / direction_scale,
+            ];
+            sine = cross(a, b);
+            cosine = dot(a, b);
+        }
+        let mut turn = libm::atan2(sine, cosine);
         if self.sweep > 0.0 {
             if turn < 0.0 {
                 turn += TAU;
@@ -154,6 +255,62 @@ impl Arc {
     /// Whether `point`, known to lie on the circle, lies on the arc.
     fn holds(&self, point: [f64; 2]) -> bool {
         self.spans(self.radial(point))
+    }
+}
+
+/// Why an authored circular arc cannot be resolved without changing its intent.
+#[derive(Copy, Clone, Debug, PartialEq)]
+#[non_exhaustive]
+pub enum ArcError {
+    /// Non-finite coordinates, zero radius/bulge or coincident endpoints.
+    Input,
+    /// Endpoint radii disagree beyond local arithmetic roundoff.
+    EndpointRadii {
+        /// Radius derived from the start point and authoritative center.
+        start_radius: f64,
+        /// Radius independently derived from the end point.
+        end_radius: f64,
+        /// Fixed outward local subtraction/hypot allowance, in profile units.
+        roundoff_bound: f64,
+    },
+    /// Derived radius, direction or sweep is not representable.
+    NumericLimit,
+}
+impl core::fmt::Display for ArcError {
+    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+        match self {
+            Self::Input => f.write_str(
+                "arc requires finite coordinates, positive radius and distinct endpoints",
+            ),
+            Self::EndpointRadii {
+                start_radius,
+                end_radius,
+                roundoff_bound,
+            } => write!(
+                f,
+                "arc endpoint radii {start_radius} and {end_radius} differ beyond local roundoff {roundoff_bound}"
+            ),
+            Self::NumericLimit => f.write_str("arc geometry is not representable in f64"),
+        }
+    }
+}
+impl core::error::Error for ArcError {}
+
+// One local subtraction ulp per component, propagated through the 1-Lipschitz
+// norm, plus four norm ulps for hypot's scaled square/square-root evaluation.
+// Every addition is widened. In particular this never uses EPSILON * center.
+fn radial_roundoff(delta: [f64; 2], radius: f64) -> f64 {
+    let component = libm::hypot(spacing(delta[0]), spacing(delta[1])).next_up();
+    (component + 4.0 * spacing(radius)).next_up()
+}
+fn spacing(value: f64) -> f64 {
+    let value = value.abs();
+    let lower = value - value.next_down();
+    let upper = value.next_up() - value;
+    if upper.is_finite() {
+        lower.max(upper)
+    } else {
+        lower
     }
 }
 
@@ -608,6 +765,138 @@ mod tests {
         }
         for point in [[2.0, 0.0], [0.0, 1.1], [-1.5, 0.0], [0.9, 0.9]] {
             assert_eq!(wound(point), 0, "{point:?}");
+        }
+    }
+}
+
+#[cfg(test)]
+mod centered_tests {
+    use super::*;
+    #[test]
+    fn angle_membership_rescales_only_unrepresentable_products() {
+        for radius in [1e-200, 1e200] {
+            let arc = Arc::resolve(
+                [radius, 0.0],
+                [0.0, radius],
+                Curve::ArcCenter {
+                    center: [0.0; 2],
+                    clockwise: false,
+                },
+            )
+            .unwrap()
+            .unwrap();
+            assert!(arc.spans([radius, radius]));
+            assert!(!arc.spans([-radius, -radius]));
+        }
+    }
+    #[test]
+    fn center_intent_derives_minor_and_major_arcs_without_changing_the_center() {
+        let ccw = Arc::resolve(
+            [1.0, 0.0],
+            [0.0, 1.0],
+            Curve::ArcCenter {
+                center: [0.0; 2],
+                clockwise: false,
+            },
+        )
+        .unwrap()
+        .unwrap();
+        let cw = Arc::resolve(
+            [1.0, 0.0],
+            [0.0, 1.0],
+            Curve::ArcCenter {
+                center: [0.0; 2],
+                clockwise: true,
+            },
+        )
+        .unwrap()
+        .unwrap();
+        assert_eq!(ccw.center, [0.0; 2]);
+        assert_eq!(ccw.radius, 1.0);
+        assert_eq!(ccw.sweep, PI / 2.0);
+        assert_eq!(cw.sweep, -3.0 * PI / 2.0);
+        assert_eq!(ccw.point_at(0.0), ccw.from);
+        assert_eq!(ccw.point_at(1.0), ccw.to);
+        assert!(cw.point_at(0.5)[0] < 0.0 && cw.point_at(0.5)[1] < 0.0);
+        assert_eq!(cw.bounds(), [[-1.0, -1.0], [1.0, 1.0]]);
+        let center = [1e-12, 0.0];
+        let near_axis = Arc::resolve(
+            [1.1e-12, 0.0],
+            [1e-12, 1e-13],
+            Curve::ArcCenter {
+                center,
+                clockwise: false,
+            },
+        )
+        .unwrap()
+        .unwrap();
+        assert_eq!(near_axis.center.map(f64::to_bits), center.map(f64::to_bits));
+    }
+    #[test]
+    fn radial_agreement_is_local_not_world_datum_or_profile_tolerance() {
+        let error = Arc::resolve(
+            [1e16 + 2.0, 0.0],
+            [1e16, 4.0],
+            Curve::ArcCenter {
+                center: [1e16, 0.0],
+                clockwise: false,
+            },
+        )
+        .unwrap_err();
+        let ArcError::EndpointRadii {
+            start_radius,
+            end_radius,
+            roundoff_bound,
+        } = error
+        else {
+            panic!("typed radii evidence")
+        };
+        assert_eq!((start_radius, end_radius), (2.0, 4.0));
+        assert!(roundoff_bound < 1e-12);
+        assert!(matches!(
+            Arc::resolve(
+                [1.0, 0.0],
+                [0.0, 1.0 + 1e-10],
+                Curve::ArcCenter {
+                    center: [0.0; 2],
+                    clockwise: false
+                }
+            ),
+            Err(ArcError::EndpointRadii { .. })
+        ));
+        for scale in [1e-200, 1e-100, 1.0, 1e100, 1e200] {
+            let arc = Arc::resolve(
+                [scale, 0.0],
+                [0.0, scale],
+                Curve::ArcCenter {
+                    center: [0.0; 2],
+                    clockwise: false,
+                },
+            )
+            .unwrap()
+            .unwrap();
+            assert_eq!(arc.radius, scale);
+            assert_eq!(arc.sweep, PI / 2.0);
+        }
+    }
+    #[test]
+    fn resolver_refuses_degenerate_or_nonfinite_center_geometry() {
+        for (from, to, center) in [
+            ([0.0; 2], [1.0, 0.0], [0.0; 2]),
+            ([1.0, 0.0], [1.0, 0.0], [0.0; 2]),
+            ([1.0, 0.0], [0.0, 1.0], [f64::NAN, 0.0]),
+        ] {
+            assert!(
+                Arc::resolve(
+                    from,
+                    to,
+                    Curve::ArcCenter {
+                        center,
+                        clockwise: false
+                    }
+                )
+                .is_err()
+            );
         }
     }
 }

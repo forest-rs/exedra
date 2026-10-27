@@ -30,9 +30,11 @@ pub(super) fn piece(loop_: &Loop, index: usize) -> Piece {
     let from = segments[(index + segments.len() - 1) % segments.len()].to;
     match segment.curve {
         Curve::Line => Piece::Line(from, segment.to),
-        Curve::Arc { bulge } => {
-            Piece::Arc(Arc::from_bulge(from, segment.to, bulge).expect("validated arc"))
-        }
+        curve => Piece::Arc(
+            Arc::resolve(from, segment.to, curve)
+                .expect("validated arc")
+                .expect("non-line curve"),
+        ),
     }
 }
 fn corner(loop_: &Loop, reference: SegmentRef) -> Corner {

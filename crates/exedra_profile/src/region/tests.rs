@@ -454,3 +454,42 @@ fn many_circle_pairs_match_independent_lens_areas_and_point_membership() {
         }
     }
 }
+
+#[test]
+fn center_defined_arcs_keep_their_center_and_sources_when_split_by_regions() {
+    let centered_disk = |center: [f64; 2]| {
+        Profile::new(
+            Loop::new(vec![
+                Segment::arc_centered([center[0] - 2.0, center[1]], center, false)
+                    .tagged(SegTag(23)),
+                Segment::arc_centered([center[0] + 2.0, center[1]], center, false)
+                    .tagged(SegTag(23)),
+            ])
+            .unwrap(),
+            vec![],
+            &POLICY.profile,
+        )
+        .unwrap()
+    };
+    let a = centered_disk([0.0; 2]);
+    let b = centered_disk([2.0, 0.0]);
+    let lens = 8.0 * PI / 3.0 - 2.0 * libm::sqrt(3.0);
+    for (op, expected) in [
+        (RegionOp::Intersection, lens),
+        (RegionOp::Union, 8.0 * PI - lens),
+        (RegionOp::Difference, 4.0 * PI - lens),
+    ] {
+        let result = a.combine(&b, op, &POLICY).unwrap();
+        assert!((area(&result) - expected).abs() < 1e-11);
+        for profile in &result.profiles {
+            for segment in profile.outer().segments() {
+                let Curve::ArcCenter { center, .. } = segment.curve else {
+                    panic!("region replaced an authored center with derived bulge");
+                };
+                assert!(center == [0.0; 2] || center == [2.0, 0.0]);
+                assert_eq!(segment.tag, Some(SegTag(23)));
+            }
+        }
+        verify_sources(&result, [&a, &b]);
+    }
+}
