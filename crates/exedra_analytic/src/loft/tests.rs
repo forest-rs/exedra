@@ -134,6 +134,11 @@ fn planar_taper_is_exact_and_curved_walls_remesh_without_reconstructing_sources(
         tolerance: 0.1,
         ..RealizationPolicy::default()
     };
+    for (end, expected) in [(End::Start, -1.0), (End::End, 1.0)] {
+        let face = taper.cap(end).unwrap();
+        let plane = taper.body().planar_frame(face, [0.0; 2]).unwrap();
+        assert_eq!(plane.rows[2][2], expected);
+    }
     let mesh = taper.realize(&p).unwrap();
     assert_eq!(mesh.mesh.vertices().count(), 8);
     assert!((volume(&mesh.mesh) - 10.0 * (16.0 + 24.0 + 36.0) / 3.0).abs() < 1e-9);

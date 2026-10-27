@@ -247,6 +247,15 @@ impl Loft {
     pub fn edge_role(&self, edge: EdgeId) -> Option<EdgeRole> {
         self.body.edge(edge).map(|e| e.role)
     }
+    /// Planar boundary at the requested construction end, independent of display quality.
+    #[must_use]
+    pub fn cap(&self, end: End) -> Option<FaceId> {
+        self.body
+            .faces()
+            .iter()
+            .position(|f| f.role == FaceRole::Cap { end })
+            .map(|i| FaceId(crate::usize_to_u32(i)))
+    }
     /// Walls carrying a label at either source section, emitted once per face.
     pub fn faces_tagged(&self, tag: SegTag) -> impl Iterator<Item = FaceId> + '_ {
         self.body
