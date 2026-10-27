@@ -528,6 +528,9 @@ jobs:
       - name: check SDK ownership and authoring
         working-directory: apps/exedra_authoring_demo
         run: npm run test:sdk
+      - name: check retained browser view lifetime
+        working-directory: apps/exedra_authoring_demo
+        run: npm run test:views
       - name: build release Wasm, SDK and browser
         working-directory: apps/exedra_authoring_demo
         run: npm run build

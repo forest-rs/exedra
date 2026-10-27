@@ -68,7 +68,8 @@ logical native ownership. It excludes view creation and GPU work.
 
 ## Native stage view
 
-`/scene.html` runs the native Layerstack scene application. Its separate Wasm
+Select **View → Scene** in the gallery to open the native Layerstack scene application.
+`/scene.html` also runs this view on its own. Its separate Wasm
 binary loads only when this view is mounted. The combined backend owns one
 store/stage and attaches the Exedra provider to it; the generic Stage client is
 owned by Layerstack and accepts an injected transport. No handles cross the
@@ -117,3 +118,6 @@ invalid metric is diagnosed explicitly; no mesh projection is substituted.
 
 `npm run bench:wasm -- --charts` repeats the same edit workload with available
 construction charts and includes UV transfer bytes in the reported buffer total.
+
+`npm run test:views` checks lazy Scene initialization, retained Stage lifetime,
+late completion, retries and teardown independently of GPU execution.
