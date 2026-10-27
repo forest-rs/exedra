@@ -3,7 +3,7 @@
 
 //! Opt-in construction coordinates for extrusion, revolution, loft and sweep surfaces.
 //!
-//! Charts are authored on generating nodes, in their local recipe units. They
+//! Recipe charts are authored on generating nodes, in their local model units. They
 //! are carried by mesh corner UVs, so topology can stay shared across a texture
 //! seam. Placements move geometry without changing these rest coordinates.
 //! Recipe profile distance uses sampled profile chords; the original sampling
@@ -210,7 +210,7 @@ pub enum SurfaceChartKind {
     Sweep,
 }
 
-/// Construction metric and texture mapping for one generating node.
+/// Construction metric and texture mapping for one generating operation.
 ///
 /// Bind with [`crate::ir::Node::with_surface_chart`]. Other node kinds reject
 /// charts until they define an explicit rest metric. All loops have independent

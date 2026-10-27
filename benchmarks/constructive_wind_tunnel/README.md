@@ -412,3 +412,34 @@ separate delivered triangles from completed work across both attempts. The
 allocation window excludes native construction and warmup, includes retry work,
 holds only the delivered output at its retained checkpoint, then releases it.
 The isolated dhat package is a QA dependency outside the production graph.
+
+## Native chart compilation and reuse
+
+```sh
+cargo run --release -p constructive_wind_tunnel --bin native_chart_compilation
+cargo run --release -p constructive_wind_tunnel --bin authoring_bridge
+python3 benchmarks/constructive_wind_tunnel/profile_authoring.py --repo /path/to/before --output /tmp/chart-alloc-before
+python3 benchmarks/constructive_wind_tunnel/profile_authoring.py --repo /path/to/after --output /tmp/chart-alloc-after
+```
+
+`native_chart_compilation` measures native revolution, sweep and hollow-loft
+snapshot compilation with and without charts, including actual extraction and
+retained triangle/native correspondence. Each case records 101 fresh-compiler
+and 101 warmed-cache samples after warmup, with sources/prepared identity and
+verification outside timing. Cache-hit cases must keep one native realization;
+applied chart evidence must match the validated request. Counts distinguish
+native boundary-table payload from render vertices and delivered triangles.
+
+`native-chart-compilation-study.json` also compares the unchanged actual
+pocketed-panel authoring bridge at three qualities, across three alternating
+before/after runs. Triangle counts, buffer bytes and cache work must match.
+The default path keeps its allocation count and UV-buffer behavior; the empty
+policy-evidence pointer adds 24 bytes across three retained records in the
+allocation window (16 bytes at peak). Coarse timing has a noisy first after run;
+medium/fine medians are effectively unchanged. No speedup is claimed.
+
+All timing is native-host release work. It excludes JS/Wasm copies, SDK graph
+encoding, UI/GPU, file I/O and returned buffer destruction. The allocation window
+includes Rust-host metadata/report parsing and release, with requests/warmup
+outside it. Charted fresh compilation does additional coordinate/mapping work;
+charted cache hits reuse geometry and boxed policy evidence.
