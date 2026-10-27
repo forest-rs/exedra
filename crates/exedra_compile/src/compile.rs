@@ -10,6 +10,7 @@ use alloc::vec::Vec;
 
 use alloc::collections::BTreeSet;
 use exedra_constructive::EVAL_SCHEMA_VERSION;
+use exedra_constructive::chart::{LoftStations, SurfaceChart};
 use exedra_constructive::evaluate::{Aabb3, EvalError, GeometryReport, Severity, evaluate};
 use exedra_constructive::tessellate::EvalPolicy;
 use exedra_mesh::attributes::Domain;
@@ -45,6 +46,12 @@ pub struct CompilePolicy {
     /// Explicit native body realization accuracy and work budgets. Recipes and
     /// baked sources do not use these settings.
     pub native: exedra_analytic::realize::RealizationPolicy,
+    /// Opt-in construction chart for compatible native sources. Recipes keep
+    /// their node-authored charts; baked sources ignore this native-only setting.
+    /// Native source identity and selection scope do not depend on this policy.
+    /// Revolution, sweep and loft are supported; extrusion and bored plates
+    /// return a typed unavailable diagnosis. Full chart parameters join the cache key.
+    pub native_chart: Option<SurfaceChart>,
     /// Normal selection for every emitted body, including imported meshes.
     ///
     /// [`NormalsSource::CustomOnly`] emits zero normals for missing overrides.
@@ -117,11 +124,11 @@ pub struct PolicyFingerprint(pub u64);
 /// sources, the native realization policy, carried attributes, and the tangent request. Constructive
 /// evaluation owns fingerprinting its settings, including refinement budgets
 /// and [`EVAL_SCHEMA_VERSION`]. The prefix advanced to `v4` when tangents
-/// joined the identity; v5 includes native realization. Earlier versions never
+/// joined the identity; v5 includes native realization; v6 includes native chart policy. Earlier versions never
 /// collide with current ones.
 #[must_use]
 pub fn policy_fingerprint(policy: &CompilePolicy) -> PolicyFingerprint {
-    let mut bytes = Vec::from(&b"assembly-compile-v5"[..]);
+    let mut bytes = Vec::from(&b"assembly-compile-v6"[..]);
     bytes.extend_from_slice(&policy.native.tolerance.to_bits().to_le_bytes());
     bytes.extend_from_slice(&policy.native.geometry_gap.to_bits().to_le_bytes());
     for limit in [
@@ -184,6 +191,50 @@ pub fn policy_fingerprint(policy: &CompilePolicy) -> PolicyFingerprint {
             let name = key.name().as_bytes();
             bytes.extend_from_slice(&(name.len() as u64).to_le_bytes());
             bytes.extend_from_slice(name);
+        }
+    }
+    match policy.native_chart {
+        None => bytes.push(0),
+        Some(chart) => {
+            let (tag, wall, caps) = match chart {
+                SurfaceChart::Extrude { wall, caps } => (1, wall, caps),
+                SurfaceChart::Revolve {
+                    reference_radius,
+                    wall,
+                    caps,
+                } => {
+                    bytes.extend_from_slice(&reference_radius.to_bits().to_le_bytes());
+                    (2, wall, caps)
+                }
+                SurfaceChart::Sweep { wall, caps } => (3, wall, caps),
+                SurfaceChart::Loft {
+                    reference_section,
+                    rest_length,
+                    stations,
+                    wall,
+                    caps,
+                } => {
+                    bytes.extend_from_slice(&reference_section.to_le_bytes());
+                    bytes.extend_from_slice(&rest_length.to_bits().to_le_bytes());
+                    bytes.push(match stations {
+                        LoftStations::SectionIndex => 0,
+                        LoftStations::DatumDistance => 1,
+                        _ => 255,
+                    });
+                    (4, wall, caps)
+                }
+            };
+            bytes.push(tag);
+            for transform in [wall, caps] {
+                for value in transform
+                    .matrix
+                    .into_iter()
+                    .flatten()
+                    .chain(transform.offset)
+                {
+                    bytes.extend_from_slice(&value.to_bits().to_le_bytes());
+                }
+            }
         }
     }
     let h = fnv128(&bytes);
@@ -385,6 +436,15 @@ pub struct NativeCacheStorage {
 #[derive(Clone, Debug, PartialEq)]
 #[non_exhaustive]
 pub enum CompileError {
+    /// A requested native construction chart was unavailable or refused.
+    NativeChart {
+        /// Failing input-local part.
+        part: PartId,
+        /// Owned caller diagnostic key.
+        part_key: String,
+        /// Original chart configuration, capability or realization diagnosis.
+        error: Box<crate::NativeChartError>,
+    },
     /// Native body realization was refused; the installed source is unchanged.
     Native {
         /// Failing input-local part.
@@ -417,6 +477,14 @@ pub enum CompileError {
 impl core::fmt::Display for CompileError {
     fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
         match self {
+            Self::NativeChart {
+                part,
+                part_key,
+                error,
+            } => write!(
+                f,
+                "native chart for part {part_key:?} ({part:?}) failed: {error}"
+            ),
             Self::Native {
                 part,
                 part_key,
@@ -683,6 +751,19 @@ impl PartCompiler {
         policy: &CompilePolicy,
         retain: bool,
     ) -> Result<(CompiledParts, Vec<Arc<EvaluatedPart>>), CompileError> {
+        if let Some(chart) = &policy.native_chart {
+            for (index, input) in inputs.iter().enumerate() {
+                if let PartSource::Native(source) = input.source() {
+                    source
+                        .check_chart(chart)
+                        .map_err(|error| CompileError::NativeChart {
+                            part: PartId(crate::len_u32(index)),
+                            part_key: String::from(input.key()),
+                            error: Box::new(error),
+                        })?;
+                }
+            }
+        }
         self.drain_dirty();
         let policy_fp = policy_fingerprint(policy);
         let mut out = Vec::with_capacity(inputs.len());
@@ -848,14 +929,23 @@ fn compile_source(
             retain.then(|| EvaluatedPart::from_baked(mesh)),
         ),
         PartSource::Native(source) => {
-            let realized =
+            let realized = if let Some(chart) = &policy.native_chart {
+                source
+                    .realize_with_chart(&policy.native, chart)
+                    .map_err(|error| CompileError::NativeChart {
+                        part,
+                        part_key: String::from(part_key),
+                        error: Box::new(error),
+                    })?
+            } else {
                 source
                     .realize(&policy.native)
                     .map_err(|error| CompileError::Native {
                         part,
                         part_key: String::from(part_key),
                         error: Box::new(error),
-                    })?;
+                    })?
+            };
             let (compiled, render_mesh_faces) =
                 compile_body_with_faces(&realized.mesh, |_| None, policy, retain);
             let geometry = if retain {
@@ -870,7 +960,7 @@ fn compile_source(
                     })
                     .collect();
                 let (mesh, correspondence) =
-                    crate::NativeRealization::from_realized(realized, faces);
+                    crate::NativeRealization::from_realized(realized, faces, policy.native_chart);
                 Some(EvaluatedPart::from_native(mesh, correspondence))
             } else {
                 None
@@ -1200,5 +1290,64 @@ mod native_mapping_tests {
         let (_, omitted) =
             compile_body_with_faces(&realized.mesh, |_| None, &CompilePolicy::default(), false);
         assert!(omitted.is_empty());
+    }
+    #[test]
+    fn uv_split_native_faces_follow_actual_region_regrouping() {
+        use crate::native_chart_tests::{chart, revolution, triangle_key};
+        let source = revolution();
+        let mut realized = source
+            .realize_with_chart(
+                &exedra_analytic::realize::RealizationPolicy::default(),
+                &chart(),
+            )
+            .unwrap();
+        let mut expected = BTreeSet::new();
+        for &(face, native) in &realized.mesh_faces {
+            let points: Vec<_> = realized
+                .mesh
+                .face_loop(face)
+                .map(|c| {
+                    *realized
+                        .mesh
+                        .vertex_position(realized.mesh.from_vertex(c).unwrap())
+                        .unwrap()
+                })
+                .collect();
+            assert!(expected.insert((native.0, triangle_key(points.try_into().unwrap()))));
+        }
+        let original: Vec<_> = realized.mesh.faces().collect();
+        let mut edit = realized.mesh.edit();
+        for (index, &face) in original.iter().enumerate() {
+            exedra_mesh::op::set_face_region(
+                &mut edit,
+                face,
+                crate::len_u32((original.len() - index) % 3),
+            )
+            .unwrap();
+        }
+        let _: () = edit.finish();
+        let (compiled, faces) =
+            compile_body_with_faces(&realized.mesh, |_| None, &CompilePolicy::default(), true);
+        assert_eq!(compiled.regions.len(), 3);
+        assert!(compiled.regions.iter().all(|r| r.has_uvs));
+        assert!(
+            compiled.tri.positions.len() > realized.mesh.vertices().count(),
+            "corner charts split render vertices"
+        );
+        assert_ne!(faces, original);
+        for (indices, &face) in compiled.tri.indices.as_chunks::<3>().0.iter().zip(&faces) {
+            let native = realized
+                .mesh_faces
+                .iter()
+                .find(|&&(id, _)| id == face)
+                .unwrap()
+                .1;
+            let points = core::array::from_fn(|i| compiled.tri.positions[indices[i] as usize]);
+            assert!(
+                expected.remove(&(native.0, triangle_key(points))),
+                "actual reordered render triangle retains native face"
+            );
+        }
+        assert!(expected.is_empty());
     }
 }

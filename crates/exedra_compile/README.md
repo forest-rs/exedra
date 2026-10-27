@@ -99,3 +99,28 @@ Apache-2.0 OR MIT
 Native measure results are positive and finite when available. Unsupported family queries
 return `NativeMeasureError::Unavailable`; a supported calculation failing to produce a positive finite result returns `NumericLimit`, naming the family and measure.
 Other queries on that immutable source remain available.
+
+## Native construction charts
+
+Set `CompilePolicy::native_chart` to a compatible `SurfaceChart` when compiling
+native revolution, sweep or loft sources. The default uncharted path allocates
+no chart coordinates or policy box. Extrusion and bored-plate chart requests
+return `NativeChartError::Unavailable`; a mismatched chart operation, invalid
+transform, unrepresentable metric or failed mapping retains its typed diagnosis
+and the input part key. Recipes keep their node-authored charts; baked inputs
+ignore this native-only setting.
+
+`NativeSource::check_chart` provides constant-time scalar/family/reference-section
+preflight. Actual metric and mapped-coordinate checks happen on a cache miss.
+Loft section-index or datum-distance stations reuse the shared chart metric;
+native profile/path distances come from source curves, not display chords.
+All chart transforms, reference metrics and station modes join the policy key.
+Native source content and selection identity do not change with the chart.
+
+A retained snapshot's `NativeRealization::chart()` borrows the applied policy,
+identical to the validated request. The policy box is shared with cached geometry;
+queries do not clone it. Uncharted records carry only an empty pointer-sized field.
+Authored corner UVs can split render vertices while native topology stays shared.
+`SnapshotBody::native_render_face` follows the compiler's final triangle order,
+including UV splitting and region regrouping. Render-only compilation retains
+buffers; use `compile_snapshot` for native policy/correspondence inspection.

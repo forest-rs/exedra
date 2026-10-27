@@ -707,3 +707,49 @@ fn native_triangle_mapping_uses_revolution_metric_and_checked_storage() {
         "stack and recipe paths preserve the same mapping"
     );
 }
+
+#[test]
+fn native_loft_station_distances_share_mode_and_numeric_checks() {
+    let make = |stations, rest_length, reference_section| SurfaceChart::Loft {
+        reference_section,
+        rest_length,
+        stations,
+        wall: ChartTransform::IDENTITY,
+        caps: ChartTransform::IDENTITY,
+    };
+    let datums = [[0.0; 3], [0.0, 0.0, 2.0], [0.0, 0.0, 8.0]];
+    assert_eq!(
+        make(LoftStations::SectionIndex, 12.0, 0).loft_station_distances(datums.into_iter()),
+        Ok(vec![0.0, 6.0, 12.0])
+    );
+    assert_eq!(
+        make(LoftStations::DatumDistance, 12.0, 0).loft_station_distances(datums.into_iter()),
+        Ok(vec![0.0, 3.0, 12.0])
+    );
+    for scale in [1e-200, 1e200] {
+        let values = make(LoftStations::DatumDistance, 12.0, 0)
+            .loft_station_distances(datums.map(|p| p.map(|v| v * scale)).into_iter())
+            .unwrap();
+        assert!((values[1] - 3.0).abs() < 1e-14);
+        assert_eq!(values[2], 12.0);
+    }
+    assert_eq!(
+        make(LoftStations::DatumDistance, 12.0, 0)
+            .loft_station_distances([[0.0; 3], [0.0; 3]].into_iter()),
+        Err(ChartError::CoincidentLoftDatums { band: 0 })
+    );
+    assert_eq!(
+        make(LoftStations::DatumDistance, 12.0, 0)
+            .loft_station_distances([[0.0; 3], [1e16, 0.0, 0.0], [1e16, 1.0, 0.0]].into_iter()),
+        Err(ChartError::NumericLimit)
+    );
+    assert_eq!(
+        make(LoftStations::SectionIndex, f64::from_bits(1), 0)
+            .loft_station_distances(datums.into_iter()),
+        Err(ChartError::NumericLimit)
+    );
+    assert_eq!(
+        make(LoftStations::SectionIndex, 12.0, 3).loft_station_distances(datums.into_iter()),
+        Err(ChartError::InvalidReferenceSection { section: 3 })
+    );
+}

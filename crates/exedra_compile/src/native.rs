@@ -4,7 +4,9 @@
 //! Immutable native source installation and explicit realization correspondence.
 
 use crate::PartFingerprint;
+mod chart;
 use alloc::{boxed::Box, sync::Arc, vec::Vec};
+pub use chart::NativeChartError;
 use core::mem::{size_of, size_of_val};
 use exedra_analytic::{
     body::{Body, FaceId},
@@ -177,8 +179,18 @@ pub struct NativeRealization {
     /// Original realization accuracy and sampling evidence, including f32 emission.
     pub report: RealizationReport,
     render_faces: Vec<FaceId>,
+    chart: Option<Box<exedra_constructive::chart::SurfaceChart>>,
 }
 impl NativeRealization {
+    /// Applied native construction-chart policy, identical to the validated request.
+    ///
+    /// This evidence shares the cached realization's lifetime. Borrowing it
+    /// never clones or reconstructs the chart or native geometry. `None` means
+    /// no native construction chart was applied; extraction may still project UVs.
+    #[must_use]
+    pub fn chart(&self) -> Option<&exedra_constructive::chart::SurfaceChart> {
+        self.chart.as_deref()
+    }
     /// Native face for one triangle in the compiler's final grouped index buffer.
     /// The triangle index is an ordinal, not an index-buffer offset.
     #[must_use]
@@ -193,6 +205,7 @@ impl NativeRealization {
     pub(crate) fn from_realized(
         realized: RealizedBody,
         render_faces: Vec<FaceId>,
+        chart: Option<exedra_constructive::chart::SurfaceChart>,
     ) -> (exedra_mesh::Mesh, Self) {
         let RealizedBody {
             mesh,
@@ -209,6 +222,7 @@ impl NativeRealization {
                 edge_chains,
                 report,
                 render_faces,
+                chart: chart.map(Box::new),
             },
         )
     }

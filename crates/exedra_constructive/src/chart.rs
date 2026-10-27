@@ -6,8 +6,9 @@
 //! Charts are authored on generating nodes, in their local recipe units. They
 //! are carried by mesh corner UVs, so topology can stay shared across a texture
 //! seam. Placements move geometry without changing these rest coordinates.
-//! Profile distance means cumulative length of the sampled profile chords,
-//! not exact analytic arc length; the original sampling policy is retained.
+//! Recipe profile distance uses sampled profile chords; the original sampling
+//! policy is retained. Native geometry can supply exact source distances through
+//! the triangle mapping methods, using the same authored metric/texture policy.
 //! Realization refuses collapsed chart edges or triangle winding changes after
 //! f32 storage. Construction coordinates must fit the triangulator predicate
 //! envelope (`1e100`); stored UVs must be finite.
@@ -278,6 +279,46 @@ impl SurfaceChart {
         self.wall().validate()?;
         self.caps().validate()
     }
+    /// Computes one rest distance per authored native loft section.
+    ///
+    /// Datums are profile origins before occurrence placement. Section-index
+    /// mode uses only their count; datum-distance mode uses their finite chord
+    /// distances. The first station is zero and the last is `rest_length`.
+    /// This allocates one distance vector only when a chart is requested.
+    ///
+    /// # Errors
+    /// Refuses a different chart operation, invalid reference section/scalars,
+    /// fewer than two sections, coincident datums, or distances that cannot
+    /// remain finite and strictly increasing in f64.
+    pub fn loft_station_distances(
+        &self,
+        datums: impl ExactSizeIterator<Item = [f64; 3]>,
+    ) -> Result<Vec<f64>, ChartError> {
+        self.validate()?;
+        let Self::Loft {
+            reference_section,
+            rest_length,
+            stations,
+            ..
+        } = *self
+        else {
+            return Err(ChartError::WrongOperation);
+        };
+        if reference_section as usize >= datums.len() {
+            return Err(ChartError::InvalidReferenceSection {
+                section: reference_section,
+            });
+        }
+        let mut distances = stations.parameters(datums)?;
+        for distance in &mut distances {
+            *distance *= rest_length;
+        }
+        if distances.iter().any(|d| !d.is_finite()) || distances.windows(2).any(|p| p[1] <= p[0]) {
+            return Err(ChartError::NumericLimit);
+        }
+        Ok(distances)
+    }
+
     /// Maps native revolution wall coordinates `(theta, profile_distance)`.
     ///
     /// Applies the authored reference radius before the wall transform, using
@@ -376,6 +417,66 @@ pub enum LoftStations {
     /// nonuniform placements change them. Coincident consecutive datums give
     /// a zero-length band and are refused.
     DatumDistance,
+}
+
+impl LoftStations {
+    pub(crate) fn parameters(
+        self,
+        mut datums: impl ExactSizeIterator<Item = [f64; 3]>,
+    ) -> Result<Vec<f64>, ChartError> {
+        let count = datums.len();
+        if count < 2 || u32::try_from(count).is_err() {
+            return Err(ChartError::NumericLimit);
+        }
+        let bands = count - 1;
+        let word = |i| f64::from(u32::try_from(i).expect("bounded section count"));
+        match self {
+            Self::SectionIndex => Ok((0..count).map(|i| word(i) / word(bands)).collect()),
+            Self::DatumDistance => {
+                let mut previous = datums.next().ok_or(ChartError::NumericLimit)?;
+                if previous.iter().any(|v| !v.is_finite()) {
+                    return Err(ChartError::NumericLimit);
+                }
+                let mut cumulative = Vec::with_capacity(count);
+                cumulative.push(0.0);
+                for (band, datum) in datums.enumerate() {
+                    if datum.iter().any(|v| !v.is_finite()) {
+                        return Err(ChartError::NumericLimit);
+                    }
+                    let delta = exedra_math::sub(datum, previous);
+                    let mut length = exedra_math::norm(delta);
+                    // Preserve ordinary recipe arithmetic; hypot recovers a
+                    // representable distance when the squared norm over/underflows.
+                    if !length.is_finite() || length == 0.0 {
+                        length = libm::hypot(libm::hypot(delta[0], delta[1]), delta[2]);
+                    }
+                    if length == 0.0 {
+                        return Err(ChartError::CoincidentLoftDatums {
+                            band: crate::len_u32(band),
+                        });
+                    }
+                    let next = cumulative[band] + length;
+                    if !length.is_finite() || !next.is_finite() || next <= cumulative[band] {
+                        return Err(ChartError::NumericLimit);
+                    }
+                    cumulative.push(next);
+                    previous = datum;
+                }
+                if cumulative.len() != count {
+                    return Err(ChartError::NumericLimit);
+                }
+                let total = cumulative[bands];
+                for value in &mut cumulative {
+                    *value /= total;
+                }
+                cumulative[bands] = 1.0;
+                if cumulative.windows(2).any(|p| p[1] <= p[0]) {
+                    return Err(ChartError::NumericLimit);
+                }
+                Ok(cumulative)
+            }
+        }
+    }
 }
 
 /// Original chart metric and profile sampling, retained as surface ancestry.

@@ -2288,37 +2288,13 @@ fn loft_station_params(
     sections: &[(Placement3, &Profile2)],
     stations: crate::chart::LoftStations,
 ) -> Result<Vec<f64>, TessellateError> {
-    let bands = sections.len() - 1;
-    Ok(match stations {
-        crate::chart::LoftStations::SectionIndex => (0..sections.len())
-            .map(|i| f64::from(len_u32(i)) / f64::from(len_u32(bands)))
-            .collect(),
-        crate::chart::LoftStations::DatumDistance => {
-            let datums: Vec<[f64; 3]> = sections
+    stations
+        .parameters(
+            sections
                 .iter()
-                .map(|(placement, _)| placement.transform_point([0.0; 3]))
-                .collect();
-            let mut cumulative = Vec::with_capacity(sections.len());
-            cumulative.push(0.0);
-            for (band, pair) in datums.windows(2).enumerate() {
-                let length = norm(sub(pair[1], pair[0]));
-                // Placements are validated finite upstream, so a non-finite
-                // length is unreachable; only a zero length is expected here.
-                if !(length > 0.0 && length.is_finite()) {
-                    return Err(ChartError::CoincidentLoftDatums {
-                        band: len_u32(band),
-                    }
-                    .into());
-                }
-                cumulative.push(cumulative[band] + length);
-            }
-            let total = cumulative[bands];
-            // Pin the last section exactly at 1 so V reaches `rest_length`.
-            let mut params: Vec<f64> = cumulative.iter().map(|d| d / total).collect();
-            params[bands] = 1.0;
-            params
-        }
-    })
+                .map(|(placement, _)| placement.transform_point([0.0; 3])),
+        )
+        .map_err(TessellateError::from)
 }
 
 fn loft_impl(
