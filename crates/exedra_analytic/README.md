@@ -10,7 +10,11 @@ lengths. A cone uses `radius + slope * height` and excludes its apex and the
 nonpositive-radius nappe.
 Both torus parameters are radians; its major radius must exceed its positive
 minor radius. Horns, spindles and spherical poles are excluded.
-Supporting geometry is untrimmed. Surface parameters, boundary trims and mesh
+`CurveSpan` supplies normalized traversal of a bounded line or circle.
+`Surface::ruled` interpolates two spans exactly over a unit square and certifies
+local regularity using conservative interval bounds. It supplies all first and
+second partials; a closest-point inverse is not supplied. Other supporting
+geometry is untrimmed within its regular region. Surface parameters, boundary trims and mesh
 texture coordinates are separate concepts.
 
 `body::Body<F, E>` owns f64 vertices, bounded edges, oriented coedges, boundary
@@ -22,10 +26,10 @@ curve/vertex/support agreement against an explicit gap tolerance. It does not
 heal geometry or certify trim nesting, global self-intersection, shell containment
 or regular-solid validity. `is_closed` checks oriented edge incidence.
 
-The extrusion, revolution and sweep constructors and planar shell builder own this shared
+The extrusion, revolution, sweep and loft constructors and planar shell builder own this shared
 model and expose it through `body()`. A cloned body can outlive its construction
 record. `Body::realize` handles planar trims, four-edge cylindrical/conical
-strips and toroidal parameter rectangles, including periodic seams. Coaxial planar annuli and sectors use
+strips, toroidal parameter rectangles and complete ruled unit patches, including periodic seams where applicable. Coaxial planar annuli and sectors use
 the same paired strips to preserve their angular coordinate net. Native edges
 are sampled once into flat shared chains; paired circular edges have synchronized
 counts. Other curved trims
@@ -84,6 +88,33 @@ walls and source profile coordinates on caps. Distances are measured on the
 authored curves. The constructive `SurfaceChart::Sweep` applies texture scale
 through `map_sweep_wall_triangle` and `map_cap_triangle`. The geometry seam is
 shared while corner UVs remain distinct. Uncharted realization has no UV scratch.
+
+`loft::Loft::from_profiles` accepts corresponding placed line/arc sections via
+`IntoProfile`. Each segment can meet a line or an arc; source tags at both ends
+remain inspectable. Walls retain exact ruled surfaces, section curves and vertex
+rails are shared native edges, and caps retain their source sketch planes.
+Profile validation and native table budgets are explicit in `loft::LoftPolicy`.
+Different profile structures can be prepared by the authoring head before this
+operation. The geometry head does no implicit correspondence or cubic smoothing.
+
+Sections must advance through both neighboring local +Z planes, and every wall
+must pass a sufficient regularity check. Failures retain section, band and source
+segment context. These checks do not certify global intersections or intermediate
+hole containment. Native ruled lofts expose surface evaluation and provenance;
+exact loft volume and surface-area queries are not currently provided.
+
+The independent body can be remeshed repeatedly under new tolerances. Ruled grids
+bound source-curve chord and mixed triangulation error, share opposite edge
+counts, and refine long rulings after the source-curve error is controlled.
+The final count is resolved inside a doubling bracket to avoid excess rows.
+Per-face source-curve samples are cached across rows; emission uses two reusable
+row buffers rather than allocating per vertex or cell.
+
+`Loft::realize_with_uvs` accepts an explicit reference section and an increasing
+rest-distance list. It delivers `(exact_reference_profile_distance, station_distance)`
+on walls and source `(x,y)` on caps. `SurfaceChart::Loft::map_loft_wall_triangle`
+applies the authoring head's texture transform. Caps, profile seams, mapping
+refusals and occurrence placement follow the same contracts as other native heads.
 
 `extrusion::Extrusion` extrudes an `exedra_profile::Profile` of lines and
 circular arcs along local +Z under a checked rigid frame. The result is a closed

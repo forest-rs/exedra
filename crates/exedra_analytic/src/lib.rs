@@ -5,7 +5,8 @@
 //!
 //! [`geometry`] owns checked curves, surfaces and parameter domains. [`body`]
 //! owns bounded edges and oriented face loops independently of construction
-//! history. [`extrusion::Extrusion`], [`revolve::Revolution`], [`sweep::Sweep`] and [`AnalyticShell`] construct that model
+//! history. [`extrusion::Extrusion`], [`revolve::Revolution`], [`sweep::Sweep`],
+//! [`loft::Loft`] and [`AnalyticShell`] construct that model
 //! while preserving source roles and explicit mesh realization correspondence.
 //! Geometry, surface parameters and texture coordinates remain distinct.
 //!
@@ -23,6 +24,7 @@ compile_error!("exedra_analytic requires either the `std` or `libm` feature");
 pub mod body;
 pub mod extrusion;
 pub mod geometry;
+pub mod loft;
 mod planar;
 mod profile_geometry;
 pub mod realize;
