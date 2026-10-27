@@ -7,11 +7,12 @@ import { OrbitControls } from "three/examples/jsm/controls/OrbitControls.js";
 import { createSession, ExedraError, type AuthoringSession, type NativeDocument, type NativePart, type Realization, type FaceSelection, type NativeMeasurement } from "@exedra/authoring";
 import { authorPanel, authorCollar, authorRoundedTurn, authorFlangedSleeve, authorTurnedFitting, authorRail, authorVariableLoft, authorFinishedPlate, authorAngledBore, constructionChart, type PanelParameters, type CollarParameters } from "./sample.js";
 import sampleSource from "./sample.ts?raw";
+import { mountViews } from "./views.js";
 
 const app = document.querySelector<HTMLDivElement>("#app")!;
 app.innerHTML = `
 <main class="layout">
- <aside><div class="brand">exedra</div><label class="label" for="sample">Sample</label><select id="sample" class="quality"><option value="panel">Pocketed plate</option><option value="collar">Collar</option><option value="roundedRing">Rounded ring</option><option value="torus">Solid seal</option><option value="hollowTorus">Hollow seal / cutaway</option><option value="sleeve">Flanged sleeve</option><option value="fitting">Turned fitting</option><option value="rail">Swept rail</option><option value="hollowRail">Hollow swept rail</option><option value="loft">Variable-section loft</option><option value="fillet">Outer axial fillets</option><option value="chamfer">Inner axial chamfers</option><option value="bore">Angled bore</option></select><h1 id="study-title">Inputs</h1><p class="intro" id="study-intro"></p>
+ <aside><div class="brand">exedra</div><div class="view-control"><label class="label" for="view">View</label><select id="view" class="quality"><option value="geometry">Geometry</option><option value="scene">Scene</option></select></div><div id="geometry-controls"><label class="label" for="sample">Sample</label><select id="sample" class="quality"><option value="panel">Pocketed plate</option><option value="collar">Collar</option><option value="roundedRing">Rounded ring</option><option value="torus">Solid seal</option><option value="hollowTorus">Hollow seal / cutaway</option><option value="sleeve">Flanged sleeve</option><option value="fitting">Turned fitting</option><option value="rail">Swept rail</option><option value="hollowRail">Hollow swept rail</option><option value="loft">Variable-section loft</option><option value="fillet">Outer axial fillets</option><option value="chamfer">Inner axial chamfers</option><option value="bore">Angled bore</option></select><h1 id="study-title">Inputs</h1><p class="intro" id="study-intro"></p>
   <div id="panel-controls"><div class="control"><label class="label" for="width">Panel width <span class="value" id="width-value"></span></label><input id="width" type="range" min="100" max="160" step="1" value="120"></div>
   <div class="control"><label class="label" for="height">Panel height <span class="value" id="height-value"></span></label><input id="height" type="range" min="70" max="110" step="1" value="80"></div>
   <div class="control"><label class="label" for="thickness">Panel thickness <span class="value" id="thickness-value"></span></label><input id="thickness" type="range" min="8" max="20" step="0.5" value="12"></div>
@@ -70,13 +71,13 @@ app.innerHTML = `
   </div>
 
   <div class="divider"></div><button id="lifecycle" disabled>Check rebuild / release</button><p id="lifecycle-result" class="hint">12 rebuilds; live owner counts.</p>
- </aside>
+ </div><div id="scene-controls" hidden></div></aside>
  <section id="viewport" class="viewport" aria-label="Interactive native model">
   <div class="toolbar"><div><button id="fit">Fit model</button><button id="code-toggle" aria-expanded="false">View TypeScript</button></div><span class="revision" id="revision">Loading kernel</span></div>
   <div class="code" id="code" hidden><pre></pre></div>
   <div class="status" id="status" role="status"><strong>Loading the native kernel…</strong><div class="detail">Authoring and geometric validation run in Rust/Wasm.</div></div>
  </section>
- <aside><h2 style="margin-top:0">Measurements · <span id="source-name">panel</span></h2><div class="stats">
+ <aside id="geometry-inspector" class="geometry-inspector"><h2 style="margin-top:0">Measurements · <span id="source-name">panel</span></h2><div class="stats">
   <div class="stat wide"><small>Volume · mm³</small><b id="volume">—</b></div><div class="stat wide"><small>Surface area · mm²</small><b id="area">—</b></div>
   <div class="stat"><small>Native faces</small><b id="native-faces">—</b></div><div class="stat"><small>Shared edges</small><b id="native-edges">—</b></div></div>
   <h2>Display data</h2><div class="metrics-line"><span>Triangles</span><code id="triangles">—</code></div><div class="metrics-line"><span>Render vertices</span><code id="vertices">—</code></div><div class="metrics-line"><span>Reported error</span><code id="deviation">—</code></div><div class="metrics-line"><span>CPU display buffers</span><code id="buffers">—</code></div><div class="metrics-line"><span>Compile / cache hits</span><code id="cache">—</code></div>
@@ -86,6 +87,7 @@ app.innerHTML = `
   <h2>Export</h2><div class="downloads"></div><div id="step-result" class="step-result">STEP: one part per file.</div>
   <h2>Memory / ownership</h2><div id="ownership" class="hint">—</div>
  </aside>
+ <section id="scene-view" class="scene-slot" aria-label="Native stage" hidden></section>
 </main>`;
 const element = <T extends HTMLElement>(id: string) => document.getElementById(id) as T;
 const viewport = element<HTMLElement>("viewport");
@@ -459,7 +461,18 @@ element<HTMLButtonElement>("lifecycle").onclick = () => {
     ownership();
   } catch (error) { element("lifecycle-result").textContent = String(error); }
 };
-window.addEventListener("beforeunload", () => { setGeometryActive(false); pendingBuild = false;pendingDisplay=false; clearHighlight(); if (drawn) dispose(drawn); session?.dispose();checkerTexture?.dispose(); renderer.dispose(); orbit.dispose(); });
+const views=mountViews({
+  select:element<HTMLSelectElement>("view"),
+  geometry:[element("geometry-controls"),viewport,element("geometry-inspector")],
+  scene:element("scene-view"),sceneControls:element("scene-controls"),
+  setGeometryActive,
+  loadScene:()=>import("./scene.js"),
+});
+if(new URL(location.href).searchParams.get("view")==="scene"){
+  element<HTMLSelectElement>("view").value="scene";
+  element("view").dispatchEvent(new Event("change"));
+}
+window.addEventListener("beforeunload", () => { views.dispose(); setGeometryActive(false); pendingBuild = false;pendingDisplay=false; clearHighlight(); if (drawn) dispose(drawn); session?.dispose();checkerTexture?.dispose(); renderer.dispose(); orbit.dispose(); });
 const requestedSample=new URL(location.href).searchParams.get("sample");
 if(requestedSample&&[...element<HTMLSelectElement>("sample").options].some(o=>o.value===requestedSample)){element<HTMLSelectElement>("sample").value=requestedSample;element("sample").dispatchEvent(new Event("change"));}
 if(new URL(location.href).searchParams.get("checker")==="1")element<HTMLInputElement>("checker").checked=true;
