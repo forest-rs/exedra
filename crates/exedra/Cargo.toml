@@ -20,6 +20,7 @@ std = [
     "exedra_mesh_ops?/std",
     "exedra_analytic?/std",
     "exedra_step?/std",
+    "exedra_scene?/std",
     "exedra_assembly?/std",
     "exedra_constructive?/std",
     "exedra_compile?/std",
@@ -42,6 +43,7 @@ analytic = ["dep:exedra_analytic", "dep:exedra_profile"]
 assembly = ["dep:exedra_assembly", "compile"]
 constructive = ["dep:exedra_constructive", "dep:exedra_profile"]
 compile = ["dep:exedra_compile", "constructive"]
+scene = ["dep:exedra_scene", "compile"]
 gltf = ["dep:exedra_gltf", "compile", "exedra_assembly?/gltf", "std"]
 step = ["dep:exedra_step", "analytic"]
 isosurface = ["dep:exedra_isosurface"]
@@ -67,6 +69,7 @@ exedra_mesh.workspace = true
 exedra_mesh_ops = { optional = true, workspace = true }
 exedra_primitives = { optional = true, workspace = true }
 exedra_profile = { optional = true, workspace = true }
+exedra_scene = { optional = true, workspace = true }
 exedra_step = { optional = true, workspace = true }
 
 [lints]

@@ -3,7 +3,7 @@
 
 use crate::SceneErrorKind;
 use alloc::{collections::BTreeMap, sync::Arc, vec::Vec};
-use exedra_compile::CompilePolicy;
+use exedra_compile::{CompilePolicy, NativeRealization, NativeSource};
 use exedra_mesh::{CornerId, Mesh, NormalParams, NormalsSource, UvSource, attr};
 use layerstack::{PropertyType, TypedArray, Value};
 use layerstack_schemas::{GeneratedMesh, MeshPrimvar, ValidatedMesh};
@@ -16,12 +16,22 @@ pub(crate) struct Polygon {
     pub(crate) points: usize,
 }
 impl Polygon {
-    pub(crate) fn new(mesh: &Mesh, policy: &CompilePolicy) -> Result<Self, SceneErrorKind> {
-        polygon_properties(mesh, policy)
+    pub(crate) fn new(
+        mesh: &Mesh,
+        policy: &CompilePolicy,
+        native: Option<&NativeRealization>,
+        source: Option<&NativeSource>,
+    ) -> Result<Self, SceneErrorKind> {
+        polygon_properties(mesh, policy, native, source)
     }
 }
 
-fn polygon_properties(mesh: &Mesh, policy: &CompilePolicy) -> Result<Polygon, SceneErrorKind> {
+fn polygon_properties(
+    mesh: &Mesh,
+    policy: &CompilePolicy,
+    native: Option<&NativeRealization>,
+    source: Option<&NativeSource>,
+) -> Result<Polygon, SceneErrorKind> {
     let error = SceneErrorKind::UnrepresentableGeometry;
     let mut positions = Vec::new();
     let mut lookup = BTreeMap::new();
@@ -50,7 +60,18 @@ fn polygon_properties(mesh: &Mesh, policy: &CompilePolicy) -> Result<Polygon, Sc
     let mut uvs = Vec::new();
     let mut all_uvs = true;
     let mut regions = Vec::new();
-    for face in mesh.faces() {
+    let mut native_faces = Vec::new();
+    for (index, face) in mesh.faces().enumerate() {
+        if let Some(native) = native {
+            let &(mapped, id) = native
+                .mesh_faces
+                .get(index)
+                .ok_or(SceneErrorKind::NativeCorrespondence)?;
+            if mapped != face {
+                return Err(SceneErrorKind::NativeCorrespondence);
+            }
+            native_faces.push(id.0);
+        }
         let (plane, _) =
             exedra_mesh::dominant_box_plane(mesh, face, exedra_mesh::DEFAULT_BOX_NORMAL_EPSILON);
         let start = indices.len();
@@ -97,6 +118,9 @@ fn polygon_properties(mesh: &Mesh, policy: &CompilePolicy) -> Result<Polygon, Sc
                 .unwrap_or(0),
         );
     }
+    if native.is_some_and(|native| native.mesh_faces.len() != counts.len()) {
+        return Err(SceneErrorKind::NativeCorrespondence);
+    }
     let points = positions.len();
     let mut payload_bytes = positions.len() * 12
         + counts.len() * 4
@@ -126,6 +150,15 @@ fn polygon_properties(mesh: &Mesh, policy: &CompilePolicy) -> Result<Polygon, Sc
             "uniform"
         ),
     ];
+    if native.is_some() {
+        payload_bytes += native_faces.len() * 4;
+        primvars.push(primvar(
+            crate::NATIVE_FACE,
+            "uint[]",
+            Value::TypedArray(TypedArray::UInt(Arc::new(native_faces))),
+            "uniform",
+        ));
+    }
     if all_uvs {
         payload_bytes += uvs.len() * 8;
         primvars.push(primvar(
@@ -143,14 +176,49 @@ fn polygon_properties(mesh: &Mesh, policy: &CompilePolicy) -> Result<Polygon, Sc
     }
     .into_validated()
     .map_err(SceneErrorKind::Mesh)?;
+    let mut extent = if points == 0 {
+        Vec::new()
+    } else {
+        alloc::vec![min, max]
+    };
+    if let Some(source) = source {
+        let bounds = source
+            .conservative_bounds()
+            .map_err(SceneErrorKind::Bounds)?;
+        if extent.is_empty() {
+            extent = alloc::vec![[0.0;3];2];
+            for axis in 0..3 {
+                extent[0][axis] = outward(bounds[0][axis], false)?;
+                extent[1][axis] = outward(bounds[1][axis], true)?;
+            }
+        }
+        for axis in 0..3 {
+            extent[0][axis] = extent[0][axis].min(outward(bounds[0][axis], false)?);
+            extent[1][axis] = extent[1][axis].max(outward(bounds[1][axis], true)?);
+        }
+    }
     Ok(Polygon {
-        extent: Arc::new(if points == 0 {
-            Vec::new()
-        } else {
-            alloc::vec![min, max]
-        }),
+        extent: Arc::new(extent),
         mesh,
         payload_bytes,
         points,
     })
+}
+
+#[expect(
+    clippy::cast_possible_truncation,
+    reason = "finite narrowed bounds are adjusted outwards and checked below"
+)]
+fn outward(value: f64, upper: bool) -> Result<f32, SceneErrorKind> {
+    let mut result = value as f32;
+    if upper && f64::from(result) < value {
+        result = result.next_up();
+    }
+    if !upper && f64::from(result) > value {
+        result = result.next_down();
+    }
+    if !result.is_finite() {
+        return Err(SceneErrorKind::UnrepresentableGeometry);
+    }
+    Ok(result)
 }

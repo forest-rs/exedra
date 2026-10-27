@@ -13,6 +13,7 @@
 //! - `constructive` contains immutable recipes and deterministic evaluation.
 //! - `assembly` contains parts, instances, material bindings, and flattening.
 //! - `compile` contains standalone compilation, extraction and retained queries.
+//! - `scene` integrates caller-owned native Layerstack stages with retained geometry.
 //! - `mesh_ops` contains direct mesh modeling and geometric queries.
 //! - `edit` contains opt-in command execution, preview and reports for editors.
 //! - `primitives` contains deterministic primitive mesh generators (opt-in).
@@ -114,6 +115,11 @@ pub use exedra_constructive::ir::Recipe;
 /// Standalone callers supply explicit geometry inputs without a scene tree.
 #[cfg(feature = "compile")]
 pub use exedra_compile as compile;
+
+/// Optional caller-owned Layerstack scene evaluation and mesh publication.
+/// Geometry heads and default facade builds remain independent of USD composition.
+#[cfg(feature = "scene")]
+pub use exedra_scene as scene;
 
 /// Parts, instance trees, material binding, compilation adapters, and flattening.
 #[cfg(feature = "assembly")]

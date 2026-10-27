@@ -15,9 +15,10 @@ workspace = true
 
 [features]
 default = ["std"]
-std = ["exedra_compile/std", "exedra_constructive/std", "exedra_mesh/std", "layerstack/std", "layerstack_schemas/std"]
+std = ["exedra_analytic/std", "exedra_compile/std", "exedra_constructive/std", "exedra_mesh/std", "layerstack/std", "layerstack_schemas/std"]
 
 [dependencies]
+exedra_analytic.workspace = true
 exedra_compile.workspace = true
 exedra_constructive.workspace = true
 exedra_mesh = { features = ["libm"], workspace = true }

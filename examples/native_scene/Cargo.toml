@@ -1,5 +1,6 @@
 [package]
 name = "native_scene"
+default-run = "native_scene"
 version = "0.0.0"
 edition.workspace = true
 rust-version.workspace = true
@@ -12,6 +13,11 @@ publish = false
 workspace = true
 
 [dependencies]
+exedra_analytic = { features = ["std"], workspace = true }
 exedra_compile = { features = ["std"], workspace = true }
 exedra_constructive = { features = ["std"], workspace = true }
+exedra_math = { features = ["std"], workspace = true }
+exedra_profile.workspace = true
 exedra_scene = { features = ["std"], workspace = true }
+layerstack_usda.workspace = true
+serde_json.workspace = true

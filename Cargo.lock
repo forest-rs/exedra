@@ -305,6 +305,7 @@ dependencies = [
  "exedra_mesh_ops",
  "exedra_primitives",
  "exedra_profile",
+ "exedra_scene",
  "exedra_step",
 ]
 
@@ -526,6 +527,7 @@ dependencies = [
 name = "exedra_scene"
 version = "0.1.0"
 dependencies = [
+ "exedra_analytic",
  "exedra_compile",
  "exedra_constructive",
  "exedra_mesh",
@@ -990,6 +992,16 @@ dependencies = [
 ]
 
 [[package]]
+name = "layerstack_usda"
+version = "0.1.0"
+source = "git+https://github.com/forest-rs/layerstack?rev=08d51a9af3770eff3fc0bf7f82a05d78c2ab91d6#08d51a9af3770eff3fc0bf7f82a05d78c2ab91d6"
+dependencies = [
+ "hashbrown",
+ "layerstack",
+ "smallvec 1.16.0",
+]
+
+[[package]]
 name = "lazy_static"
 version = "1.5.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -1091,9 +1103,14 @@ dependencies = [
 name = "native_scene"
 version = "0.0.0"
 dependencies = [
+ "exedra_analytic",
  "exedra_compile",
  "exedra_constructive",
+ "exedra_math",
+ "exedra_profile",
  "exedra_scene",
+ "layerstack_usda",
+ "serde_json",
 ]
 
 [[package]]

@@ -24,7 +24,7 @@ exedra = "0.1"
 
 It enables `std`, `compile`, and `mesh_ops`; `compile` also enables
 `constructive`. `assembly` selects the same compilation service.
-`assembly`, `edit`, `analytic`, `isosurface`, `primitives`, `gltf`, `step`, and `serde`
+`assembly`, `edit`, `analytic`, `isosurface`, `primitives`, `gltf`, `step`, `scene`, and `serde`
 interchange are opt-in. `gltf` and `serde` also select `std`. For a
 `no_std` application, disable defaults and select `libm` plus the needed heads:
 
@@ -50,6 +50,7 @@ their own operations and conversions directly.
 - `exedra::isosurface`: implicit fields and surface extraction.
 - `exedra::gltf`: glTF and GLB export.
 - `exedra::step`: exact native analytic STEP exchange with explicit units and reports.
+- `exedra::scene`: caller-owned native Layerstack composition, generation and publication.
 
 The primitive, analytic, isosurface, and export namespaces are opt-in. Use the
 namespace that owns an operation instead of expecting the facade to add
@@ -75,6 +76,10 @@ The [caller-owned export example](../../examples/caller_owned_export/) serialize
 a recipe, compiles it, resolves a hierarchy and materials, and exports GLB using
 only `gltf,serde`. The exporter owns format records and encoding; callers own
 authored structure and appearance resolution.
+
+`scene` selects the optional Layerstack adapter and independent compilation; it
+does not select Assembly. Default geometry, standalone compilation and glTF
+remain independent of USD composition.
 
 ## Mixed geometry sources
 

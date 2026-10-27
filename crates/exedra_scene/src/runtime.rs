@@ -24,11 +24,13 @@ use layerstack::{
 };
 use layerstack_schemas::{
     Scene, Time,
-    procedural::{Procedural, ProceduralError, ProceduralWork},
+    procedural::{Procedural, ProceduralError, ProceduralEvaluator, ProceduralWork},
 };
 
 use crate::{
-    BOX_SCHEMA, CYLINDER_SCHEMA, SceneError, SceneErrorKind, geometry::Polygon, primitive,
+    BOX_SCHEMA, CYLINDER_SCHEMA, GeneratorIdentity, GeneratorRegistration,
+    GeneratorRegistrationError, SceneError, SceneErrorKind, generator::Generator,
+    geometry::Polygon, primitive,
 };
 
 /// Reserved output child below each supported construction prim.
@@ -56,8 +58,8 @@ struct Published {
 #[derive(Debug)]
 struct Binding {
     key: String,
-    kind: primitive::Lowering,
-    lowering: Procedural<primitive::Lowering>,
+    kind: Generator,
+    lowering: Procedural<Generator>,
 }
 
 /// One source's part-local evaluated geometry, independent of scene placement.
@@ -73,6 +75,8 @@ pub struct SourceGeometry {
     pub source: String,
     /// Store-local conventional output mesh path.
     pub output: PathId,
+    /// Generator code/configuration identity that produced this source.
+    pub generator: Arc<GeneratorIdentity>,
     geometry: PartSnapshot,
     intent: Arc<PreparedSource>,
 }
@@ -109,12 +113,33 @@ impl SourceGeometry {
     }
 
     /// Exact native source when supplied by this generator; no mesh reconstruction.
+    /// This describes authored geometry intent, independently of stronger USD
+    /// partners' edits to the composed mesh or its scene placement.
     #[must_use]
     pub fn native(&self) -> Option<&exedra_compile::NativeSource> {
         match self.intent.source() {
             PartSource::Native(source) => Some(source),
             _ => None,
         }
+    }
+
+    /// Source-scoped native selection for one polygon in the published USD mesh.
+    /// The ordinal addresses `primvars:exedra:nativeFace`, not the compiler's
+    /// regrouped render-triangle order. Returns `None` for nonnative inputs or
+    /// an unknown polygon. The selected source survives remeshing and eviction.
+    ///
+    /// This reads the retained producer snapshot, not a current composed stage.
+    /// Stronger partners can replace points, topology or provenance independently;
+    /// those composed values must be inspected before using this mapping for
+    /// their geometry. Source-native queries do not describe such overrides.
+    #[must_use]
+    pub fn published_native_face(
+        &self,
+        polygon: usize,
+    ) -> Option<exedra_compile::NativeFaceSelection> {
+        let body = self.body(0)?;
+        let &(_, face) = body.native_realization()?.mesh_faces.get(polygon)?;
+        self.native()?.select_face(face).ok()
     }
 
     /// Shared immutable body with the same query APIs as standalone compilation.
@@ -136,6 +161,13 @@ impl SourceGeometry {
     pub fn shares_geometry(&self, other: &Self) -> bool {
         Arc::ptr_eq(self.compiled(), other.compiled())
     }
+
+    /// Whether these snapshots came from the same installed host definition.
+    /// Re-registering with repeated labels/revision still creates a new definition.
+    #[must_use]
+    pub fn shares_generator_definition(&self, other: &Self) -> bool {
+        Arc::ptr_eq(&self.generator, &other.generator)
+    }
 }
 
 /// Actual work performed by one successful explicit synchronization.
@@ -149,8 +181,8 @@ pub struct SyncStats {
     pub geometry_reused: usize,
     /// Native polygon property encodings, independent of shared compilation work.
     pub polygon_encodings: usize,
-    /// Input recipes lowered after consumed composed values changed.
-    pub recipe_evaluations: usize,
+    /// Generator lowerings after consumed values or generator definitions changed.
+    pub source_evaluations: usize,
     /// Composed attribute resolutions, including input revalidation.
     pub input_resolutions: usize,
     /// Input reads skipped through retained composition evidence.
@@ -172,7 +204,7 @@ pub struct SyncStats {
 impl SyncStats {
     fn record_inputs(&mut self, before: ProceduralWork, after: ProceduralWork) {
         let count = |delta| usize::try_from(delta).expect("work bounded by primitive input count");
-        self.recipe_evaluations += count(after.evaluations - before.evaluations);
+        self.source_evaluations += count(after.evaluations - before.evaluations);
         self.input_resolutions += count(after.input_reads - before.input_reads);
         self.input_reused += count(after.query_cache_hits - before.query_cache_hits);
     }
@@ -209,6 +241,7 @@ pub struct SceneEvaluator {
     cursor: Option<ChangeCursor>,
     discovery_dirty: bool,
     bindings: BTreeMap<PathId, Binding>,
+    generators: BTreeMap<String, Generator>,
     order: Vec<PathId>,
     published: BTreeMap<PathId, Published>,
     cache: BTreeMap<ContentKey, Cached>,
@@ -239,6 +272,18 @@ impl SceneEvaluator {
             cursor: None,
             discovery_dirty: true,
             bindings: BTreeMap::new(),
+            generators: [
+                (
+                    BOX_SCHEMA.into(),
+                    Generator::new(BOX_SCHEMA, 0, primitive::Lowering::Box),
+                ),
+                (
+                    CYLINDER_SCHEMA.into(),
+                    Generator::new(CYLINDER_SCHEMA, 0, primitive::Lowering::Cylinder),
+                ),
+            ]
+            .into_iter()
+            .collect(),
             order: Vec::new(),
             published: BTreeMap::new(),
             cache: BTreeMap::new(),
@@ -247,10 +292,60 @@ impl SceneEvaluator {
         }
     }
 
+    /// Installs an immutable host generator over Layerstack's tracked inputs.
+    ///
+    /// Register its typed schema, derived from `GenerativeProcedural`, in the
+    /// caller's native registry. Exact type matches precede inherited matches;
+    /// ambiguous inherited generators are refused. The evaluator must depend
+    /// only on tracked input reads and its immutable captured configuration.
+    /// Re-register after changing external configuration or code. Replacement
+    /// resets input evidence even with the same revision label, while retaining
+    /// publication ownership and last-good geometry until a successful sync.
+    /// Generators cannot read adapter-owned generated output; inter-producer
+    /// build ordering belongs to Layerstack's procedural graph, not this atomic batch.
+    ///
+    /// # Errors
+    /// Empty names/systems and replacement of built-in schemas are refused.
+    pub fn register_generator<E>(
+        &mut self,
+        schema: &str,
+        revision: u64,
+        evaluator: E,
+    ) -> Result<GeneratorRegistration, GeneratorRegistrationError>
+    where
+        E: ProceduralEvaluator<Output = PreparedSource, Error = SceneErrorKind> + 'static,
+    {
+        Generator::validate(schema, &evaluator)?;
+        let invalidated_sources = self
+            .bindings
+            .values()
+            .filter(|binding| binding.kind.identity().schema == schema)
+            .count();
+        let replaced = self
+            .generators
+            .insert(schema.into(), Generator::new(schema, revision, evaluator))
+            .is_some();
+        self.bindings
+            .retain(|_, binding| binding.kind.identity().schema != schema);
+        self.discovery_dirty = true;
+        Ok(GeneratorRegistration {
+            replaced,
+            invalidated_sources,
+        })
+    }
+
     /// Caller-selected native publication target; this evaluator never changes it.
     #[must_use]
     pub fn edit_target(&self) -> &EditTarget {
         &self.target
+    }
+
+    /// Installed generator definitions, in deterministic schema-name order.
+    /// This exposes immutable labels, not captured host resources or callbacks.
+    pub fn generators(&self) -> impl Iterator<Item = &GeneratorIdentity> {
+        self.generators
+            .values()
+            .map(|generator| generator.identity().as_ref())
     }
 
     /// Validated content/policy encodings retained in the bounded cache.
@@ -394,12 +489,29 @@ impl SceneEvaluator {
                 {
                     continue;
                 }
-                let kind = if scene.is_a(path, BOX_SCHEMA) {
-                    primitive::Lowering::Box
-                } else if scene.is_a(path, CYLINDER_SCHEMA) {
-                    primitive::Lowering::Cylinder
+                let exact = stage
+                    .view(store)
+                    .prim(path)
+                    .and_then(|prim| prim.type_name())
+                    .and_then(|schema| self.generators.get(schema));
+                let kind = if let Some(exact) = exact {
+                    exact.clone()
                 } else {
-                    continue;
+                    let mut inherited = self
+                        .generators
+                        .iter()
+                        .filter(|(schema, _)| scene.is_a(path, schema));
+                    let Some((_, first)) = inherited.next() else {
+                        continue;
+                    };
+                    if inherited.next().is_some() {
+                        return Err(SceneError::new(
+                            store,
+                            path,
+                            SceneErrorKind::AmbiguousGenerators,
+                        ));
+                    }
+                    first.clone()
                 };
                 let mut ancestor = Some(path);
                 let mut instance = false;
@@ -429,11 +541,11 @@ impl SceneEvaluator {
             for (&path, kind) in order.iter().zip(kinds) {
                 let binding = self.bindings.entry(path).or_insert_with(|| Binding {
                     key: store.paths().display(path, store.tokens()),
-                    kind,
-                    lowering: Procedural::new(store, path, kind),
+                    kind: kind.clone(),
+                    lowering: Procedural::new(store, path, kind.clone()),
                 });
-                if binding.kind != kind {
-                    binding.kind = kind;
+                if !binding.kind.same_definition(&kind) {
+                    binding.kind = kind.clone();
                     *binding.lowering.evaluator_mut() = kind;
                 }
             }
@@ -456,6 +568,20 @@ impl SceneEvaluator {
                 };
                 SceneError::new(store, path, kind)
             })?;
+            for dependency in binding.lowering.dependencies() {
+                let mut ancestor = Some(dependency.prim);
+                while let Some(prim) = ancestor {
+                    if store
+                        .paths()
+                        .resolve(prim)
+                        .leaf()
+                        .is_some_and(|name| store.tokens().resolve(name) == GENERATED_CHILD)
+                    {
+                        return Err(SceneError::new(store, path, SceneErrorKind::GeneratedInput));
+                    }
+                    ancestor = store.paths().parent(prim);
+                }
+            }
             let after = binding.lowering.work();
             stats.record_inputs(before, after);
             inputs.push((path, binding.key.clone(), input));
@@ -468,15 +594,14 @@ impl SceneEvaluator {
         let geometry = compiler
             .compile_snapshot(&compilation_inputs, policy)
             .map_err(|error| {
-                let part = match &error {
-                    CompileError::Evaluate { part, .. } | CompileError::NoGeometry { part, .. } => {
-                        *part
-                    }
-                    _ => PartId(0),
+                let path = match &error {
+                    CompileError::Evaluate { part, .. }
+                    | CompileError::NoGeometry { part, .. }
+                    | CompileError::Native { part, .. } => inputs
+                        .get(part.0 as usize)
+                        .map_or(self.root, |input| input.0),
+                    _ => self.root,
                 };
-                let path = inputs
-                    .get(part.0 as usize)
-                    .map_or(self.root, |input| input.0);
                 SceneError::new(store, path, SceneErrorKind::Compile(Box::new(error)))
             })?;
         let after = compiler.counters();
@@ -525,8 +650,13 @@ impl SceneEvaluator {
             } else {
                 let body = geometry.body(part, 0).expect("one retained scene body");
                 let encoding = Rc::new(
-                    Polygon::new(&body.geometry().mesh, policy)
-                        .map_err(|kind| SceneError::new(store, *path, kind))?,
+                    Polygon::new(
+                        &body.geometry().mesh,
+                        policy,
+                        body.native_realization(),
+                        body.native(),
+                    )
+                    .map_err(|kind| SceneError::new(store, *path, kind))?,
                 );
                 stats.polygon_encodings += 1;
                 stats.polygon_validations += 1;
@@ -645,6 +775,7 @@ impl SceneEvaluator {
                 output,
                 geometry: geometry.part(part).expect("retained scene input"),
                 intent: input.shared_output(),
+                generator: Arc::clone(self.bindings[path].kind.identity()),
             });
         }
         for (path, previous) in &self.published {
