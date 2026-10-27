@@ -5,11 +5,16 @@
 //!
 //! Circle and cylinder angles are radians; plane coordinates and cylinder
 //! height are model lengths. Derivatives are with respect to those parameters,
-//! without normalization. Supporting geometry is untrimmed: body topology owns
+//! without normalization. Ruled patches use normalized unit parameters and
+//! certify that bounded square's regularity. Other supporting geometry is
+//! untrimmed: body topology owns
 //! the bounded portions and their oriented uses. Texture coordinates are not
 //! surface parameters.
 
 use exedra_math::{FrameError, Placement3};
+
+mod ruled;
+pub use ruled::{CurveSpan, Ruled};
 
 /// Absolute tolerance for rigid frame axis lengths and dot products.
 pub const FRAME_TOLERANCE: f64 = 1e-12;
@@ -303,7 +308,9 @@ impl Torus {
     }
 }
 
-/// Untrimmed supporting geometry. A face separately owns its trim and sense.
+/// Supporting geometry. A face separately owns its trim and sense.
+/// Ruled patches have a certified unit domain; other families are untrimmed
+/// within their documented regular regions.
 #[derive(Clone, Debug, PartialEq)]
 pub enum Surface {
     /// A plane with no periodic parameter direction.
@@ -314,6 +321,8 @@ pub enum Surface {
     Cone(Cone),
     /// A regular ring torus, periodic in both U and V with period `TAU`.
     Torus(Torus),
+    /// A certified regular unit patch interpolating two bounded source curves.
+    Ruled(Ruled),
 }
 
 /// Surface position, first and second partials, and geometric unit normal.
@@ -336,6 +345,16 @@ pub struct SurfaceEvaluation {
 }
 
 impl Surface {
+    /// Creates a ruled unit patch between bounded line/circle curves.
+    /// Coordinates are body-local; U follows each normalized source traversal
+    /// and V interpolates between them. Evaluation is restricted to `[0,1]²`.
+    ///
+    /// # Errors
+    /// Returns [`GeometryError::NonRegularRuled`] if bounded interval analysis
+    /// cannot certify a nonzero normal throughout the patch.
+    pub fn ruled(a: CurveSpan, b: CurveSpan) -> Result<Self, GeometryError> {
+        Ruled::new(a, b).map(Self::Ruled)
+    }
     /// Creates a plane from a finite right-handed orthonormal frame.
     ///
     /// # Errors
@@ -413,6 +432,7 @@ impl Surface {
             Self::Cylinder(c) => c.frame,
             Self::Cone(c) => c.frame,
             Self::Torus(t) => t.frame,
+            Self::Ruled(_) => Placement3::IDENTITY,
         }
     }
 
@@ -420,7 +440,7 @@ impl Surface {
     #[must_use]
     pub fn periods(&self) -> [Option<f64>; 2] {
         match self {
-            Self::Plane(_) => [None, None],
+            Self::Plane(_) | Self::Ruled(_) => [None, None],
             Self::Cylinder(_) | Self::Cone(_) => [Some(core::f64::consts::TAU), None],
             Self::Torus(_) => [Some(core::f64::consts::TAU); 2],
         }
@@ -433,6 +453,7 @@ impl Surface {
     /// `None` because U has no unique value. A point on the axis
     /// has no unique closest angle and returns `None`, as do non-finite inputs
     /// and overflow. Neither a face domain nor its trims are classified.
+    /// Ruled patches return `None`: a closest-point inverse is not provided.
     #[must_use]
     pub fn parameters(&self, point: [f64; 3]) -> Option<[f64; 2]> {
         if !finite(point) {
@@ -448,6 +469,7 @@ impl Surface {
             return None;
         }
         match self {
+            Self::Ruled(_) => None,
             Self::Plane(_) => Some([local[0], local[1]]),
             Self::Torus(t) => {
                 let radial = libm::hypot(local[0], local[1]);
@@ -479,12 +501,16 @@ impl Surface {
         }
     }
 
-    /// Evaluates the supporting surface without trim classification or clamping.
+    /// Evaluates without face-trim classification or parameter clamping.
+    /// Ruled patches accept only their certified unit square.
     /// Returns `None` for non-finite input or an overflowed result.
     #[must_use]
     pub fn evaluate(&self, uv: [f64; 2]) -> Option<SurfaceEvaluation> {
         if !uv.into_iter().all(f64::is_finite) {
             return None;
+        }
+        if let Self::Ruled(ruled) = self {
+            return ruled.evaluation(uv);
         }
         let frame = self.frame();
         let (point, du, dv, duu, duv, dvv, normal) = match self {
@@ -501,7 +527,7 @@ impl Surface {
                 let (radius, slope) = match self {
                     Self::Cylinder(c) => (c.radius, 0.0),
                     Self::Cone(c) => (c.radius_at(uv[1])?, c.slope),
-                    Self::Plane(_) | Self::Torus(_) => unreachable!(),
+                    Self::Plane(_) | Self::Torus(_) | Self::Ruled(_) => unreachable!(),
                 };
                 let (sin, cos) = (libm::sin(uv[0]), libm::cos(uv[0]));
                 let norm = libm::hypot(1.0, slope);
@@ -530,6 +556,7 @@ impl Surface {
                     [cv * cu, cv * su, sv],
                 )
             }
+            Self::Ruled(_) => unreachable!(),
         };
         let result = SurfaceEvaluation {
             point: frame.transform_point(point),
@@ -558,6 +585,11 @@ impl Surface {
 /// A violated geometry-construction invariant, including the supplied values.
 #[derive(Copy, Clone, Debug, PartialEq)]
 pub enum GeometryError {
+    /// A ruled patch's regularity could not be certified on this U interval.
+    NonRegularRuled {
+        /// Normalized source interval where the conservative check stopped.
+        interval: [f64; 2],
+    },
     /// A point or vector contains a non-finite component.
     NonFinite,
     /// A line's direction has no nonzero component.
@@ -588,6 +620,10 @@ pub enum GeometryError {
 impl core::fmt::Display for GeometryError {
     fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
         match self {
+            Self::NonRegularRuled { interval } => write!(
+                f,
+                "ruled surface regularity could not be certified on {interval:?}"
+            ),
             Self::NonFinite => write!(f, "geometry coordinates must be finite"),
             Self::ZeroDirection => write!(f, "line direction must be nonzero"),
             Self::Radius { radius } => write!(f, "radius {radius} must be positive and finite"),

@@ -1,13 +1,13 @@
 // Copyright 2026 the Exedra Authors
 // SPDX-License-Identifier: Apache-2.0 OR MIT
 
-//! Rectangular torus patches with authoritative shared boundary chains.
+//! Rectangular native patches with authoritative shared boundary chains.
 
 use super::{
     Chains, Groups, Patch, RealizationError, RealizationPolicy, VertexSource, distance, emit,
 };
 use crate::body::{Body, Face, FaceId, Sense};
-use crate::geometry::{Curve, ParameterRange, Surface, Torus, vector};
+use crate::geometry::{Curve, CurveSpan, ParameterRange, Surface, Torus, vector};
 use alloc::vec::Vec;
 use exedra_math::{Placement3, cross, dot, narrow, sub};
 
@@ -34,21 +34,29 @@ pub(super) struct GridPatch {
 #[derive(Copy, Clone)]
 struct Phase {
     parameter: f64,
+    middle_parameter: f64,
     point: [f64; 2],
     middle: [f64; 2],
+}
+
+struct RuledSample {
+    ends: [[f64; 3]; 2],
+    mid_tangents: [[f64; 3]; 2],
+    mid_delta: [f64; 3],
 }
 
 /// One realization-local phase schedule and two reusable vertex rows.
 #[derive(Default)]
 pub(super) struct GridScratch {
-    key: Option<([u64; 2], usize)>,
+    key: Option<([u64; 2], usize, bool)>,
     phases: Vec<Phase>,
+    ruled: Vec<RuledSample>,
     previous: Vec<u32>,
     row: Vec<u32>,
 }
 impl GridScratch {
-    fn prepare(&mut self, range: ParameterRange, n: usize) {
-        let key = (range.bounds().map(f64::to_bits), n);
+    fn prepare(&mut self, range: ParameterRange, n: usize, angular: bool) {
+        let key = (range.bounds().map(f64::to_bits), n, angular);
         if self.key != Some(key) {
             self.phases.clear();
             self.phases.reserve(n + 1);
@@ -61,8 +69,17 @@ impl GridScratch {
                 };
                 self.phases.push(Phase {
                     parameter,
-                    point: [libm::sin(parameter), libm::cos(parameter)],
-                    middle: [libm::sin(middle), libm::cos(middle)],
+                    middle_parameter: middle,
+                    point: if angular {
+                        [libm::sin(parameter), libm::cos(parameter)]
+                    } else {
+                        [0.0; 2]
+                    },
+                    middle: if angular {
+                        [libm::sin(middle), libm::cos(middle)]
+                    } else {
+                        [0.0; 2]
+                    },
                 });
             }
             self.key = Some(key);
@@ -77,6 +94,65 @@ impl GridScratch {
 impl GridPatch {
     pub(super) fn prepare<F, E>(body: &Body<F, E>, id: FaceId) -> Result<Self, RealizationError> {
         let face = &body.faces()[id.index()];
+        if let Surface::Ruled(ruled) = &face.surface {
+            let refuse = || RealizationError::UnsupportedSurfaceTrim { face: id };
+            if face.domain.u != ParameterRange::UNIT
+                || face.domain.v != ParameterRange::UNIT
+                || face.loops.len() != 1
+            {
+                return Err(refuse());
+            }
+            let coedges = &body
+                .boundary_loop(face.loops[0])
+                .expect("validated loop")
+                .coedges;
+            if coedges.len() != 4 {
+                return Err(refuse());
+            }
+            let mut sides = [None; 4];
+            let mut alignment = 0.0_f64;
+            let size = ruled
+                .curves()
+                .iter()
+                .map(CurveSpan::magnitude)
+                .fold(0.0, f64::max);
+            let slack = 128.0 * crate::geometry::FRAME_TOLERANCE * size;
+            for &coedge in coedges {
+                let edge = &body.edges()[coedge.edge.index()];
+                let mut found = None;
+                for (slot, side) in sides.iter().enumerate() {
+                    if side.is_some() {
+                        continue;
+                    }
+                    let reverse = coedge.reversed ^ (slot >= 2) ^ (face.sense == Sense::Reverse);
+                    let actual = CurveSpan::new(edge.curve.clone(), edge.range, reverse)
+                        .map_err(|_| refuse())?;
+                    let bound = ruled.boundary(slot).ok_or_else(refuse)?.alignment(&actual);
+                    if bound <= slack {
+                        found = Some((
+                            slot,
+                            Side {
+                                edge: coedge.edge,
+                                reverse,
+                            },
+                            bound,
+                        ));
+                        break;
+                    }
+                }
+                let Some((slot, side, bound)) = found else {
+                    return Err(refuse());
+                };
+                sides[slot] = Some(side);
+                alignment = alignment.max(bound);
+            }
+            let result = Self {
+                sides: sides.map(|s| s.expect("four unique slots")),
+                alignment,
+            };
+            result.check_corners(body, id)?;
+            return Ok(result);
+        }
         let Surface::Torus(torus) = &face.surface else {
             unreachable!()
         };
@@ -173,6 +249,12 @@ impl GridPatch {
             alignment = alignment.max(bound);
         }
         let sides = sides.map(|s| s.expect("four unique slots"));
+        let result = Self { sides, alignment };
+        result.check_corners(body, id)?;
+        Ok(result)
+    }
+
+    fn check_corners<F, E>(self, body: &Body<F, E>, id: FaceId) -> Result<(), RealizationError> {
         let endpoint = |side: Side, last: bool| {
             let edge = &body.edges()[side.edge.index()];
             if side.reverse ^ last {
@@ -187,11 +269,11 @@ impl GridPatch {
             (2, false, 3, true),
             (2, true, 1, true),
         ] {
-            if endpoint(sides[a], a_last) != endpoint(sides[b], b_last) {
-                return Err(refuse());
+            if endpoint(self.sides[a], a_last) != endpoint(self.sides[b], b_last) {
+                return Err(RealizationError::UnsupportedSurfaceTrim { face: id });
             }
         }
-        Ok(Self { sides, alignment })
+        Ok(())
     }
 
     pub(super) fn join(self, groups: &mut Groups) {
@@ -217,6 +299,19 @@ impl GridPatch {
         self.bound(face, self.intervals(counts)) + self.alignment
     }
     fn bound<F>(self, face: &Face<F>, [nu, nv]: [u32; 2]) -> f64 {
+        if let Surface::Ruled(ruled) = &face.surface {
+            // Eligibility already checked the unit square. Bound rounded
+            // normalized divisions without traversing potentially huge counts
+            // that a later output-budget check will refuse before allocation.
+            let step = |n: u32| {
+                if n == 1 {
+                    1.0
+                } else {
+                    1.0 / f64::from(n) + 2.0 * f64::EPSILON
+                }
+            };
+            return ruled.triangle_bound([step(nu), step(nv)]);
+        }
         let Surface::Torus(t) = &face.surface else {
             unreachable!()
         };
@@ -254,13 +349,45 @@ impl GridPatch {
         faces: &mut Vec<FaceId>,
     ) -> Result<(), RealizationError> {
         let face = &body.faces()[id.index()];
-        let Surface::Torus(torus) = &face.surface else {
-            unreachable!()
+        let torus = if let Surface::Torus(torus) = &face.surface {
+            Some(torus)
+        } else {
+            None
         };
         let [nu, nv] = self.intervals(counts).map(|n| n as usize);
-        scratch.prepare(face.domain.u, nu);
+        scratch.prepare(face.domain.u, nu, torus.is_some());
+        if let Surface::Ruled(ruled) = &face.surface {
+            scratch.ruled.clear();
+            scratch.ruled.reserve(nu + 1);
+            for phase in &scratch.phases {
+                let ends = [
+                    ruled.curves()[0]
+                        .evaluate(phase.parameter)
+                        .expect("bounded grid")
+                        .point,
+                    ruled.curves()[1]
+                        .evaluate(phase.parameter)
+                        .expect("bounded grid")
+                        .point,
+                ];
+                let mid = [
+                    ruled.curves()[0]
+                        .evaluate(phase.middle_parameter)
+                        .expect("bounded grid"),
+                    ruled.curves()[1]
+                        .evaluate(phase.middle_parameter)
+                        .expect("bounded grid"),
+                ];
+                scratch.ruled.push(RuledSample {
+                    ends,
+                    mid_tangents: mid.map(|e| e.first),
+                    mid_delta: sub(mid[1].point, mid[0].point),
+                });
+            }
+        }
         let GridScratch {
             phases,
+            ruled,
             previous,
             row,
             ..
@@ -272,8 +399,11 @@ impl GridPatch {
                 .v
                 .at(v as f64 / nv as f64)
                 .expect("grid fraction");
-            let (sv, cv) = (libm::sin(vv), libm::cos(vv));
-            let radial = torus.major_radius() + torus.minor_radius() * cv;
+            let (sv, cv) = if torus.is_some() {
+                (libm::sin(vv), libm::cos(vv))
+            } else {
+                (0.0, 0.0)
+            };
             for (u, phase) in phases.iter().enumerate() {
                 let vertex = if v == 0 {
                     self.sides[0].at(chains, u)
@@ -285,12 +415,17 @@ impl GridPatch {
                     self.sides[1].at(chains, v)
                 } else {
                     let uv = [phase.parameter, vv];
-                    let [su, cu] = phase.point;
-                    let exact = torus.frame().transform_point([
-                        radial * cu,
-                        radial * su,
-                        torus.minor_radius() * sv,
-                    ]);
+                    let exact = if let Some(torus) = torus {
+                        let [su, cu] = phase.point;
+                        let radial = torus.major_radius() + torus.minor_radius() * cv;
+                        torus.frame().transform_point([
+                            radial * cu,
+                            radial * su,
+                            torus.minor_radius() * sv,
+                        ])
+                    } else {
+                        exedra_math::lerp(ruled[u].ends[0], ruled[u].ends[1], vv)
+                    };
                     let exact = placement.transform_point(exact);
                     let point = narrow(exact);
                     if point.iter().any(|p| !p.is_finite()) {
@@ -312,11 +447,27 @@ impl GridPatch {
                             .v
                             .at((v - 1) as f64 / nv as f64)
                             .expect("grid fraction"));
-                let (sv, cv) = (libm::sin(mid_v), libm::cos(mid_v));
+                let (sv, cv) = if torus.is_some() {
+                    (libm::sin(mid_v), libm::cos(mid_v))
+                } else {
+                    (0.0, 0.0)
+                };
                 for u in 0..nu {
-                    let [su, cu] = phases[u].middle;
-                    let normal = vector(torus.frame(), [cv * cu, cv * su, sv])
-                        .map(|v| v * face.sense.sign());
+                    let normal = if let Some(torus) = torus {
+                        let [su, cu] = phases[u].middle;
+                        vector(torus.frame(), [cv * cu, cv * su, sv])
+                    } else {
+                        exedra_math::normalize(cross(
+                            exedra_math::lerp(
+                                ruled[u].mid_tangents[0],
+                                ruled[u].mid_tangents[1],
+                                mid_v,
+                            ),
+                            ruled[u].mid_delta,
+                        ))
+                        .ok_or(RealizationError::DegenerateFace { face: id })?
+                    }
+                    .map(|v| v * face.sense.sign());
                     let normal = vector(placement, normal);
                     for mut tri in [
                         [previous[u], previous[u + 1], row[u + 1]],
@@ -358,6 +509,11 @@ pub(super) fn refine<F, E>(
                 continue;
             }
             let mut best = None;
+            let preferred = if let Surface::Ruled(r) = &face.surface {
+                Some(r.refinement_axis(n, policy.tolerance * 0.75))
+            } else {
+                None
+            };
             for axis in 0..2 {
                 if n[axis] == policy.max_edge_segments {
                     continue;
@@ -365,17 +521,43 @@ pub(super) fn refine<F, E>(
                 let mut next = n;
                 next[axis] = n[axis].saturating_mul(2).min(policy.max_edge_segments);
                 let bound = patch.bound(face, next);
-                if best.is_none_or(|(_, _, b)| bound < b) {
+                if best.is_none_or(|(old, _, b)| {
+                    if let Some(preferred) = preferred {
+                        axis == preferred || (old != preferred && bound < b)
+                    } else {
+                        bound < b
+                    }
+                }) {
                     best = Some((axis, next[axis], bound));
                 }
             }
-            let Some((axis, next, _)) = best else {
+            let Some((axis, mut next, candidate_bound)) = best else {
                 return Err(RealizationError::SurfaceSampling {
                     face: FaceId(crate::usize_to_u32(i)),
                     intervals: n,
                     maximum: policy.max_edge_segments,
                 });
             };
+            if matches!(face.surface, Surface::Ruled(_))
+                && candidate_bound <= policy.tolerance * 0.75
+            {
+                // Doubling finds a bracket cheaply. Resolve the final count
+                // inside it so a barely failing wall does not allocate twice
+                // as many shared rows as its conservative bound requires.
+                let mut lo = n[axis];
+                let mut hi = next;
+                while hi - lo > 1 {
+                    let mid = lo + (hi - lo) / 2;
+                    let mut probe = n;
+                    probe[axis] = mid;
+                    if patch.bound(face, probe) <= policy.tolerance * 0.75 {
+                        hi = mid;
+                    } else {
+                        lo = mid;
+                    }
+                }
+                next = hi;
+            }
             counts[patch.sides[axis].edge.index()] = next;
             changed = true;
         }
@@ -445,6 +627,104 @@ mod tests {
     };
     use crate::geometry::ParameterDomain;
     use alloc::vec;
+
+    #[test]
+    fn independent_ruled_patches_share_full_boundary_curves_and_refuse_incompatible_domains() {
+        let p = [
+            [0.0, 0.0, 0.0],
+            [2.0, 0.0, 0.0],
+            [2.0, 2.0, 1.0],
+            [0.0, 2.0, 0.0],
+        ];
+        for reverse in [false, true] {
+            let mut edges = Vec::new();
+            for (a, b) in [(0, 1), (1, 2), (3, 2), (0, 3)] {
+                edges.push(Edge {
+                    curve: Curve::line(p[a], sub(p[b], p[a])).unwrap(),
+                    range: ParameterRange::UNIT,
+                    start: VertexId(u32::try_from(a).unwrap()),
+                    end: VertexId(u32::try_from(b).unwrap()),
+                    role: (),
+                });
+            }
+            let surface = Surface::ruled(
+                CurveSpan::new(edges[0].curve.clone(), ParameterRange::UNIT, false).unwrap(),
+                CurveSpan::new(edges[2].curve.clone(), ParameterRange::UNIT, false).unwrap(),
+            )
+            .unwrap();
+            let mut coedges: Vec<_> = (0..4)
+                .map(|i| Coedge {
+                    edge: EdgeId(i),
+                    reversed: i >= 2,
+                })
+                .collect();
+            if reverse {
+                coedges.reverse();
+                for c in &mut coedges {
+                    c.reversed = !c.reversed;
+                }
+            }
+            let body = Body::try_from_parts(
+                BodyParts {
+                    vertices: p.to_vec(),
+                    edges,
+                    loops: vec![BoundaryLoop { coedges }],
+                    faces: vec![Face {
+                        surface,
+                        domain: ParameterDomain {
+                            u: ParameterRange::UNIT,
+                            v: ParameterRange::UNIT,
+                        },
+                        sense: if reverse {
+                            Sense::Reverse
+                        } else {
+                            Sense::Forward
+                        },
+                        loops: vec![LoopId(0)],
+                        role: (),
+                    }],
+                },
+                &ValidationPolicy { max_gap: 1e-9 },
+            )
+            .unwrap();
+            let output = body
+                .realize(
+                    Placement3::IDENTITY,
+                    &RealizationPolicy {
+                        tolerance: 0.005,
+                        ..RealizationPolicy::default()
+                    },
+                )
+                .unwrap();
+            assert!(output.report.within_tolerance());
+            assert!(output.mesh.validate_deep().is_empty());
+            assert_eq!(output.mesh.boundary_loops().unwrap().len(), 1);
+            for &(vertex, source) in &output.mesh_vertices {
+                if let VertexSource::Face { face, uv } = source {
+                    let exact = body.evaluate_support(face, uv).unwrap().point;
+                    assert!(
+                        distance(
+                            exact,
+                            output.mesh.vertex_position(vertex).unwrap().map(f64::from)
+                        ) < 1e-6
+                    );
+                }
+            }
+            let mut parts = body.into_parts();
+            parts.faces[0].domain.u = ParameterRange::new(0.0, 0.9).unwrap();
+            let altered = Body::try_from_parts(parts, &ValidationPolicy { max_gap: 1.0 }).unwrap();
+            assert!(matches!(
+                altered.realize(
+                    Placement3::IDENTITY,
+                    &RealizationPolicy {
+                        geometry_gap: 1.0,
+                        ..RealizationPolicy::default()
+                    }
+                ),
+                Err(RealizationError::UnsupportedSurfaceTrim { .. })
+            ));
+        }
+    }
 
     #[test]
     fn a_single_torus_face_shares_both_periodic_seams_without_construction_history() {
