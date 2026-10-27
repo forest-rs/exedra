@@ -9,6 +9,7 @@ use alloc::{collections::BTreeMap, vec, vec::Vec};
 #[derive(Copy, Clone)]
 struct Input {
     piece: Piece,
+    center_defined: bool,
     source: InputSegment,
     tag: Option<SegTag>,
     bounds: [[f64; 2]; 2],
@@ -178,6 +179,7 @@ fn inputs(profile: &Profile, operand: Operand) -> Vec<Input> {
                 .enumerate()
                 .map(move |(segment, (piece, s))| Input {
                     piece,
+                    center_defined: matches!(s.curve, Curve::ArcCenter { .. }),
                     source: InputSegment {
                         operand,
                         segment: SegmentRef { loop_ref, segment },
@@ -416,6 +418,10 @@ fn classify(
     };
     let curve = match item.piece {
         Piece::Line(..) => Curve::Line,
+        Piece::Arc(arc) if item.center_defined => Curve::ArcCenter {
+            center: arc.center,
+            clockwise: arc.sweep * (parameters[1] - parameters[0]) < 0.0,
+        },
         Piece::Arc(arc) => Curve::Arc {
             bulge: libm::tan(arc.sweep * (parameters[1] - parameters[0]) * 0.25),
         },
@@ -442,7 +448,9 @@ fn classify(
 fn fragment_piece(f: &Fragment, nodes: &Nodes) -> Result<Piece, RegionError> {
     match f.curve {
         Curve::Line => Ok(Piece::Line(nodes.points[f.from], nodes.points[f.to])),
-        Curve::Arc { bulge } => Arc::from_bulge(nodes.points[f.from], nodes.points[f.to], bulge)
+        curve => Arc::resolve(nodes.points[f.from], nodes.points[f.to], curve)
+            .ok()
+            .flatten()
             .map(Piece::Arc)
             .ok_or(RegionError::Loop(LoopError::InvalidArc { segment: 0 })),
     }

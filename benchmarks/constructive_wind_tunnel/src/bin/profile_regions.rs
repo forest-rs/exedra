@@ -51,6 +51,11 @@ fn signature(result: &RegionResult) -> u64 {
                 add(match segment.curve {
                     Curve::Line => 0,
                     Curve::Arc { bulge } => bulge.to_bits(),
+                    Curve::ArcCenter { center, clockwise } => {
+                        center[0].to_bits()
+                            ^ center[1].to_bits().rotate_left(19)
+                            ^ u64::from(clockwise)
+                    }
                 });
                 add(segment.tag.map_or(u64::MAX, |tag| u64::from(tag.0)));
             }

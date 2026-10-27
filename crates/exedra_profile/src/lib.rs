@@ -5,8 +5,8 @@
 //!
 //! A [`Profile`] is a counter-clockwise outer [`Loop`] with clockwise holes,
 //! in `f64` model units. Segments are straight or circular arcs given by their
-//! endpoints and a bulge, so loops close exactly; an [`Arc`] derives the
-//! center, radius and sweep. Nothing here refers to recipes, policies or
+//! endpoints and either a bulge or an authoritative center/direction, so loops
+//! close exactly; [`Arc::resolve`] derives the remaining circle parameters. Nothing here refers to recipes, policies or
 //! meshes: heads lower their own profiles into this one through explicit
 //! adapters.
 //!
@@ -44,7 +44,7 @@ mod sampling;
 mod input;
 pub use input::IntoProfile;
 
-pub use arc::Arc;
+pub use arc::{Arc, ArcError};
 pub use corner::{
     Corner, CornerError, CornerKind, CornerResult, CornerSegment, CornerSelectionError,
     CornerShape, CornerSource, CornerTreatment,

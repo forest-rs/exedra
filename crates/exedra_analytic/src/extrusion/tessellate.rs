@@ -276,7 +276,7 @@ impl Extrusion {
             for (segment, s) in loop_.segments().iter().enumerate() {
                 let count = match s.curve {
                     Curve::Line => 1,
-                    Curve::Arc { .. } => {
+                    Curve::Arc { .. } | Curve::ArcCenter { .. } => {
                         let arc = loop_.arc(segment).expect("validated arc");
                         circular_edge_count(
                             arc.radius,
@@ -330,7 +330,10 @@ impl Extrusion {
                     for (band, segment) in segments {
                         let loop_ = self.boundary_loop(self.bands()[band].boundary);
                         let count = &mut counts[band][segment];
-                        let is_arc = matches!(loop_.segments()[segment].curve, Curve::Arc { .. });
+                        let is_arc = matches!(
+                            loop_.segments()[segment].curve,
+                            Curve::Arc { .. } | Curve::ArcCenter { .. }
+                        );
                         if is_arc && *count < policy.max_segment_edges {
                             *count = count.saturating_mul(2).min(policy.max_segment_edges);
                             refined = true;
@@ -358,7 +361,7 @@ impl Extrusion {
                 {
                     starts.push(points.len());
                     points.push(from);
-                    if let Curve::Arc { .. } = s.curve {
+                    if let Curve::Arc { .. } | Curve::ArcCenter { .. } = s.curve {
                         let arc = loop_.arc(segment).expect("validated arc");
                         points.extend(
                             (1..count).map(|i| arc.point_at(f64::from(i) / f64::from(count))),
@@ -747,8 +750,8 @@ fn end_tangent(loop_: &exedra_profile::Loop, index: usize, at_end: bool) -> [f64
     let from = segments[(index + segments.len() - 1) % segments.len()].to;
     let to = segments[index].to;
     let direction = match segments[index].curve {
-        Curve::Arc { bulge } => {
-            let arc = exedra_profile::Arc::from_bulge(from, to, bulge).expect("validated arc");
+        Curve::Arc { .. } | Curve::ArcCenter { .. } => {
+            let arc = loop_.arc(index).expect("validated arc");
             let point = if at_end { to } else { from };
             let radial = [point[0] - arc.center[0], point[1] - arc.center[1]];
             // Counter-clockwise travel turns the radius a quarter turn left.

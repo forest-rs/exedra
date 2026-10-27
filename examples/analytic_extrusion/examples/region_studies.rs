@@ -141,8 +141,10 @@ fn path(loop_: &Loop) -> String {
     for (from, segment) in loop_.iter_with_starts() {
         match segment.curve {
             Curve::Line => write!(path, "L{},{}", segment.to[0], segment.to[1]).unwrap(),
-            Curve::Arc { bulge } => {
-                let arc = Arc::from_bulge(from, segment.to, bulge).expect("validated arc");
+            curve => {
+                let arc = Arc::resolve(from, segment.to, curve)
+                    .expect("validated arc")
+                    .expect("non-line curve");
                 write!(
                     path,
                     "A{r},{r} 0 {large} {positive} {},{}",
@@ -185,8 +187,10 @@ fn svg(studies: &[Study]) -> String {
                     let mut d = format!("M{},{}", from[0], from[1]);
                     match segment.curve {
                         Curve::Line => write!(d, "L{},{}", segment.to[0], segment.to[1]).unwrap(),
-                        Curve::Arc { bulge } => {
-                            let arc = Arc::from_bulge(from, segment.to, bulge).unwrap();
+                        curve => {
+                            let arc = Arc::resolve(from, segment.to, curve)
+                                .unwrap()
+                                .expect("non-line curve");
                             write!(
                                 d,
                                 "A{r},{r} 0 0 {} {},{}",
@@ -221,9 +225,8 @@ fn svg(studies: &[Study]) -> String {
             .outer()
             .iter_with_starts()
             .find(|(p, s)| s.tag == Some(TRANSITION) && p[0] > 0.0 && p[1] > 0.0)
-        && let Curve::Arc { bulge } = segment.curve
+        && let Some(arc) = Arc::resolve(from, segment.to, segment.curve).unwrap()
     {
-        let arc = Arc::from_bulge(from, segment.to, bulge).unwrap();
         let index = studies.len();
         let x = (index % 3) * 320 + 8;
         let y = (index / 3) * 250 + 8;

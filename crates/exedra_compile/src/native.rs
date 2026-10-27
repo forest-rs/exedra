@@ -610,6 +610,11 @@ impl Identity {
                         self.word(1);
                         self.values([bulge]);
                     }
+                    exedra_profile::Curve::ArcCenter { center, clockwise } => {
+                        self.word(2);
+                        self.values(center);
+                        self.word(u64::from(clockwise));
+                    }
                 }
             }
         }
@@ -638,6 +643,11 @@ fn source_fingerprint(geometry: &Geometry) -> PartFingerprint {
                         exedra_profile::Curve::Arc { bulge } => {
                             id.word(1);
                             id.values([bulge]);
+                        }
+                        exedra_profile::Curve::ArcCenter { center, clockwise } => {
+                            id.word(2);
+                            id.values(center);
+                            id.word(u64::from(clockwise));
                         }
                     }
                 }
@@ -727,4 +737,42 @@ fn source_fingerprint(geometry: &Geometry) -> PartFingerprint {
         }
     }
     PartFingerprint(id.0)
+}
+
+#[cfg(test)]
+mod centered_identity_tests {
+    use super::*;
+    use alloc::vec;
+    use exedra_profile::{Loop, ProfilePolicy, Segment};
+    fn circle(center: [f64; 2], centered: bool) -> Profile {
+        let segment = |to| {
+            if centered {
+                Segment::arc_centered(to, center, false)
+            } else {
+                Segment::arc(to, 1.0)
+            }
+        };
+        Profile::new(
+            Loop::new(vec![segment([-1.0, 0.0]), segment([1.0, 0.0])]).unwrap(),
+            vec![],
+            &ProfilePolicy::new(1e-9),
+        )
+        .unwrap()
+    }
+    fn hash(profile: &Profile) -> u128 {
+        let mut id = Identity(0x6c62272e07bb014262b821756295c58d);
+        id.profile(profile);
+        id.0
+    }
+    #[test]
+    fn source_identity_keeps_curve_representation_and_authoritative_center_bits() {
+        let bulge = circle([0.0; 2], false);
+        let center = circle([0.0; 2], true);
+        let signed_center = circle([-0.0, 0.0], true);
+        assert_eq!(bulge.area(), center.area());
+        assert_eq!(center.area(), signed_center.area());
+        assert_ne!(hash(&bulge), hash(&center));
+        assert_ne!(hash(&center), hash(&signed_center));
+        assert_eq!(hash(&center), hash(&center.clone()));
+    }
 }

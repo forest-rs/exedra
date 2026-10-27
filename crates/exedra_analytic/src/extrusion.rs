@@ -528,7 +528,7 @@ impl Extrusion {
                         Curve::Line => {
                             boundary::line([from[0], from[1], z], [segment.to[0], segment.to[1], z])
                         }
-                        Curve::Arc { .. } => {
+                        Curve::Arc { .. } | Curve::ArcCenter { .. } => {
                             boundary::circle(loop_.arc(k).expect("validated arc"), z)
                         }
                     };
@@ -963,5 +963,63 @@ mod tests {
                 .frame(),
             turned
         );
+    }
+}
+
+#[cfg(test)]
+mod centered_profile_tests {
+    use super::*;
+    use crate::{geometry::Surface, realize::RealizationPolicy, revolve::Revolution};
+    use alloc::vec;
+    use exedra_profile::{Loop, Segment};
+    #[test]
+    fn shared_center_intent_drives_exact_cylinder_and_torus_supports() {
+        let tag = SegTag(39);
+        let profile = Profile::new(
+            Loop::new(vec![
+                Segment::line([3.0, 0.0]),
+                Segment::line([4.0, 0.0]),
+                Segment::arc_centered([3.0, 1.0], [3.0, 0.0], false).tagged(tag),
+            ])
+            .unwrap(),
+            vec![],
+            &ProfilePolicy::new(1e-9),
+        )
+        .unwrap();
+        let extruded = Extrusion::new(profile.clone(), Placement3::IDENTITY, 2.0).unwrap();
+        let cylinder = extruded
+            .body()
+            .faces()
+            .iter()
+            .find_map(|f| match &f.surface {
+                Surface::Cylinder(c) => Some(c),
+                _ => None,
+            })
+            .unwrap();
+        assert_eq!(cylinder.radius(), 1.0);
+        assert_eq!(cylinder.frame().rows[0][3], 3.0);
+        assert_eq!(cylinder.frame().rows[1][3], 0.0);
+        let revolved = Revolution::new(profile, Placement3::IDENTITY, 1.7).unwrap();
+        let torus = revolved
+            .body()
+            .faces()
+            .iter()
+            .find_map(|f| match &f.surface {
+                Surface::Torus(t) => Some(t),
+                _ => None,
+            })
+            .unwrap();
+        assert_eq!((torus.major_radius(), torus.minor_radius()), (3.0, 1.0));
+        assert_eq!(revolved.faces_tagged(tag).count(), 1);
+        for tolerance in [0.1, 0.02] {
+            let policy = RealizationPolicy {
+                tolerance,
+                ..RealizationPolicy::default()
+            };
+            let realized = revolved.realize(&policy).unwrap();
+            assert!(realized.report.within_tolerance());
+            assert!(realized.mesh.validate_deep().is_empty());
+            assert!(realized.mesh.boundary_loops().unwrap().is_empty());
+        }
     }
 }

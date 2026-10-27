@@ -29,6 +29,14 @@ pub enum Curve {
         /// Tangent of a quarter of the signed sweep; finite and nonzero.
         bulge: f64,
     },
+    /// A circular arc with an authoritative center and travel direction.
+    /// Radius and sweep are derived from the stored endpoints, never fitted.
+    ArcCenter {
+        /// Center in profile coordinates.
+        center: [f64; 2],
+        /// Clockwise travel; false means counter-clockwise.
+        clockwise: bool,
+    },
 }
 
 /// One segment of a loop.
@@ -59,6 +67,17 @@ impl Segment {
         Self {
             to,
             curve: Curve::Arc { bulge },
+            tag: None,
+        }
+    }
+
+    /// A center-defined arc ending at `to`; its start is the preceding endpoint.
+    /// [`Loop::new`] validates radius agreement under fixed local f64 roundoff.
+    #[must_use]
+    pub const fn arc_centered(to: [f64; 2], center: [f64; 2], clockwise: bool) -> Self {
+        Self {
+            to,
+            curve: Curve::ArcCenter { center, clockwise },
             tag: None,
         }
     }
@@ -101,7 +120,8 @@ pub enum LoopError {
         /// Offending segment.
         segment: usize,
     },
-    /// An arc has a zero or non-finite bulge, or no representable circle.
+    /// An arc has invalid input, inconsistent endpoint radii, or no representable circle.
+    /// [`Arc::resolve`] exposes the detailed geometry evidence for its segment.
     InvalidArc {
         /// Offending segment.
         segment: usize,
@@ -155,9 +175,7 @@ impl Loop {
             if from == segment.to {
                 return Err(LoopError::ZeroLength { segment: index });
             }
-            if let Curve::Arc { bulge } = segment.curve
-                && Arc::from_bulge(from, segment.to, bulge).is_none()
-            {
+            if Arc::resolve(from, segment.to, segment.curve).is_err() {
                 return Err(LoopError::InvalidArc { segment: index });
             }
         }
@@ -181,14 +199,11 @@ impl Loop {
     pub fn arc(&self, index: usize) -> Option<Arc> {
         let segment = self.segments.get(index)?;
         let from = self.segments[(index + self.segments.len() - 1) % self.segments.len()].to;
-        match segment.curve {
-            Curve::Line => None,
-            Curve::Arc { bulge } => Arc::from_bulge(from, segment.to, bulge),
-        }
+        Arc::resolve(from, segment.to, segment.curve).ok().flatten()
     }
 
     /// This loop traversed the other way: segment order reverses, bulges
-    /// negate, and tags stay with their segments.
+    /// negate, center-defined directions toggle, and tags stay with segments.
     #[must_use]
     pub fn reversed(&self) -> Self {
         let n = self.segments.len();
@@ -198,6 +213,10 @@ impl Loop {
                 let curve = match source.curve {
                     Curve::Line => Curve::Line,
                     Curve::Arc { bulge } => Curve::Arc { bulge: -bulge },
+                    Curve::ArcCenter { center, clockwise } => Curve::ArcCenter {
+                        center,
+                        clockwise: !clockwise,
+                    },
                 };
                 Segment {
                     to: self.segments[(2 * n - 2 - i) % n].to,
@@ -263,9 +282,10 @@ impl Loop {
         self.iter_with_starts()
             .map(|(from, segment)| match segment.curve {
                 Curve::Line => Piece::Line(from, segment.to),
-                Curve::Arc { bulge } => Piece::Arc(
-                    Arc::from_bulge(from, segment.to, bulge)
-                        .expect("arcs are checked by Loop::new"),
+                curve => Piece::Arc(
+                    Arc::resolve(from, segment.to, curve)
+                        .expect("arcs are checked by Loop::new")
+                        .expect("non-line curve"),
                 ),
             })
     }
@@ -1076,5 +1096,44 @@ mod tests {
             "shallow cap moment {m:?}"
         );
         assert!(p.first_moments([f64::NAN, 0.0]).is_none());
+    }
+}
+
+#[cfg(test)]
+mod centered_measure_tests {
+    use super::*;
+    use alloc::vec;
+    use core::f64::consts::PI;
+    #[test]
+    fn directed_major_arc_bounds_area_and_moments_agree_with_sector_integrals() {
+        let policy = ProfilePolicy::new(1e-9);
+        for (clockwise, sign, magnitude) in [(false, 1.0, PI / 2.0), (true, -1.0, 3.0 * PI / 2.0)] {
+            let boundary = Loop::new(vec![
+                Segment::line([1.0, 0.0]),
+                Segment::arc_centered([0.0, 1.0], [0.0; 2], clockwise),
+                Segment::line([0.0; 2]),
+            ])
+            .unwrap();
+            assert!((boundary.signed_area() - sign * magnitude / 2.0).abs() < 1e-15);
+            let outer = if clockwise {
+                boundary.reversed()
+            } else {
+                boundary
+            };
+            let profile = Profile::new(outer, vec![], &policy).unwrap();
+            let moments = profile.first_moments([0.0; 2]).unwrap();
+            let expected = if clockwise { -1.0 / 3.0 } else { 1.0 / 3.0 };
+            for moment in moments {
+                assert!((moment - expected).abs() < 1e-15);
+            }
+            assert_eq!(
+                profile.bounds(),
+                if clockwise {
+                    [[-1.0; 2], [1.0; 2]]
+                } else {
+                    [[0.0; 2], [1.0; 2]]
+                }
+            );
+        }
     }
 }
