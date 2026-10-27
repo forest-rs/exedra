@@ -57,6 +57,10 @@ pub(super) fn surface_support(
             major_radius: t.major_radius(),
             minor_radius: t.minor_radius(),
         }),
+        Surface::Sphere(_) => Err(StepError::UnsupportedSurface {
+            face,
+            family: "sphere",
+        }),
         Surface::Ruled(_) => Err(StepError::UnsupportedSurface {
             face,
             family: "ruled",

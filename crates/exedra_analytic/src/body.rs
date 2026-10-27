@@ -442,6 +442,16 @@ impl<F, E> Body<F, E> {
             if face.loops.is_empty() {
                 return Err(BodyError::EmptyFace { face: id });
             }
+            if let Surface::Sphere(_) = &face.surface
+                && face
+                    .domain
+                    .v
+                    .bounds()
+                    .iter()
+                    .any(|v| v.abs() > core::f64::consts::FRAC_PI_2)
+            {
+                return Err(BodyError::NonRegularSurface { face: id });
+            }
             if let Surface::Cone(cone) = &face.surface
                 && face
                     .domain
@@ -637,6 +647,7 @@ fn support_gap(curve: &Curve, range: ParameterRange, surface: &Surface) -> f64 {
             let (a, b) = (coordinates(frame, a.point), coordinates(frame, b.point));
             match surface {
                 Surface::Ruled(_) => unreachable!(),
+                Surface::Sphere(_) => f64::INFINITY,
                 Surface::Torus(t) => {
                     // Distance to a closed set is 1-Lipschitz. Each point of
                     // this segment is at most half its length from an endpoint;
@@ -699,6 +710,12 @@ fn support_gap(curve: &Curve, range: ParameterRange, surface: &Surface) -> f64 {
             let tilt = libm::hypot(dot(axis(0), normal), dot(axis(1), normal));
             match surface {
                 Surface::Ruled(_) => unreachable!(),
+                Surface::Sphere(sphere) => crate::geometry::sphere_harmonic_gap(
+                    sphere,
+                    cf.rows.map(|r| r[3]),
+                    cf.rows.map(|r| r[0] * circle.radius()),
+                    cf.rows.map(|r| r[1] * circle.radius()),
+                ),
                 Surface::Torus(t) => {
                     // Bound the entire circle against either an orbit or a
                     // meridian circle, independently of its parameter trim.

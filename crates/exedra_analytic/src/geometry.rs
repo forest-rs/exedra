@@ -15,7 +15,10 @@ use exedra_math::{FrameError, Placement3};
 
 pub mod intersection;
 mod ruled;
+mod sphere;
 pub use ruled::{CurveSpan, Ruled};
+pub use sphere::Sphere;
+pub(crate) use sphere::harmonic_gap as sphere_harmonic_gap;
 
 /// Absolute tolerance for rigid frame axis lengths and dot products.
 pub const FRAME_TOLERANCE: f64 = 1e-12;
@@ -421,6 +424,9 @@ pub enum Surface {
     Cone(Cone),
     /// A regular ring torus, periodic in both U and V with period `TAU`.
     Torus(Torus),
+    /// A sphere, periodic in U, with latitude V in `[-PI/2, PI/2]`.
+    /// Its coordinate poles have unique geometric normals.
+    Sphere(Sphere),
     /// A certified regular unit patch interpolating two bounded source curves.
     Ruled(Ruled),
 }
@@ -495,6 +501,14 @@ impl Surface {
         }))
     }
 
+    /// Creates spherical supporting geometry with a positive finite radius.
+    /// Longitude U is periodic; latitude V is in `[-PI/2, PI/2]`.
+    /// # Errors
+    /// Returns a checked frame violation or [`GeometryError::Radius`].
+    pub fn sphere(frame: Placement3, radius: f64) -> Result<Self, GeometryError> {
+        Sphere::new(frame, radius).map(Self::Sphere)
+    }
+
     /// Creates a regular ring torus: `major_radius > minor_radius > 0`.
     ///
     /// `P(u,v) = ((R+r*cos(v))*cos(u), (R+r*cos(v))*sin(u), r*sin(v))`
@@ -532,6 +546,7 @@ impl Surface {
             Self::Cylinder(c) => c.frame,
             Self::Cone(c) => c.frame,
             Self::Torus(t) => t.frame,
+            Self::Sphere(s) => s.frame(),
             Self::Ruled(_) => Placement3::IDENTITY,
         }
     }
@@ -541,7 +556,9 @@ impl Surface {
     pub fn periods(&self) -> [Option<f64>; 2] {
         match self {
             Self::Plane(_) | Self::Ruled(_) => [None, None],
-            Self::Cylinder(_) | Self::Cone(_) => [Some(core::f64::consts::TAU), None],
+            Self::Cylinder(_) | Self::Cone(_) | Self::Sphere(_) => {
+                [Some(core::f64::consts::TAU), None]
+            }
             Self::Torus(_) => [Some(core::f64::consts::TAU); 2],
         }
     }
@@ -553,9 +570,14 @@ impl Surface {
     /// `None` because U has no unique value. A point on the axis
     /// has no unique closest angle and returns `None`, as do non-finite inputs
     /// and overflow. Neither a face domain nor its trims are classified.
-    /// Ruled patches return `None`: a closest-point inverse is not provided.
+    /// Spheres use radial projection in their defining frame and return `None`
+    /// on the polar axis, where longitude is not unique. Ruled patches return
+    /// `None`: a closest-point inverse is not provided.
     #[must_use]
     pub fn parameters(&self, point: [f64; 3]) -> Option<[f64; 2]> {
+        if let Self::Sphere(sphere) = self {
+            return sphere.parameters(point);
+        }
         if !finite(point) {
             return None;
         }
@@ -569,7 +591,7 @@ impl Surface {
             return None;
         }
         match self {
-            Self::Ruled(_) => None,
+            Self::Ruled(_) | Self::Sphere(_) => None,
             Self::Plane(_) => Some([local[0], local[1]]),
             Self::Torus(t) => {
                 let radial = libm::hypot(local[0], local[1]);
@@ -602,7 +624,9 @@ impl Surface {
     }
 
     /// Evaluates without face-trim classification or parameter clamping.
-    /// Ruled patches accept only their certified unit square.
+    /// Ruled patches accept only their certified unit square. Spheres accept
+    /// latitude in `[-PI/2, PI/2]`, including both coordinate poles; their normal
+    /// remains unique although the U derivative vanishes there.
     /// Returns `None` for non-finite input or an overflowed result.
     #[must_use]
     pub fn evaluate(&self, uv: [f64; 2]) -> Option<SurfaceEvaluation> {
@@ -611,6 +635,9 @@ impl Surface {
         }
         if let Self::Ruled(ruled) = self {
             return ruled.evaluation(uv);
+        }
+        if let Self::Sphere(sphere) = self {
+            return sphere.evaluation(uv);
         }
         let frame = self.frame();
         let (point, du, dv, duu, duv, dvv, normal) = match self {
@@ -627,7 +654,9 @@ impl Surface {
                 let (radius, slope) = match self {
                     Self::Cylinder(c) => (c.radius, 0.0),
                     Self::Cone(c) => (c.radius_at(uv[1])?, c.slope),
-                    Self::Plane(_) | Self::Torus(_) | Self::Ruled(_) => unreachable!(),
+                    Self::Plane(_) | Self::Torus(_) | Self::Sphere(_) | Self::Ruled(_) => {
+                        unreachable!()
+                    }
                 };
                 let (sin, cos) = (libm::sin(uv[0]), libm::cos(uv[0]));
                 let norm = libm::hypot(1.0, slope);
@@ -656,7 +685,7 @@ impl Surface {
                     [cv * cu, cv * su, sv],
                 )
             }
-            Self::Ruled(_) => unreachable!(),
+            Self::Ruled(_) | Self::Sphere(_) => unreachable!(),
         };
         let result = SurfaceEvaluation {
             point: frame.transform_point(point),
@@ -825,6 +854,7 @@ pub(crate) fn ellipse_support_gap(ellipse: &Ellipse, surface: &Surface) -> f64 {
                 + norm(radial(a[0] - ideal_a[0], a[1] - ideal_a[1]))
                 + norm(radial(b[0] - ideal_b[0], b[1] - ideal_b[1]))
         }
+        Surface::Sphere(sphere) => sphere::harmonic_gap(sphere, center, a, b),
         Surface::Cone(_) | Surface::Torus(_) | Surface::Ruled(_) => f64::INFINITY,
     };
     let magnitude = ef

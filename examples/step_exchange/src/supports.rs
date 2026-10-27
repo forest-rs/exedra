@@ -214,6 +214,7 @@ pub(super) fn export_cases(
                 exedra_analytic::geometry::Surface::Cylinder(_) => "cylinder",
                 exedra_analytic::geometry::Surface::Cone(_) => "cone",
                 exedra_analytic::geometry::Surface::Torus(_) => "torus",
+                exedra_analytic::geometry::Surface::Sphere(_) => "sphere",
                 exedra_analytic::geometry::Surface::Ruled(_) => "ruled",
             };
             let entry = counts.entry(name).or_insert(serde_json::json!(0));

@@ -193,6 +193,24 @@ impl Surface {
                     bounds.include(circle(c.frame(), radius[0].abs().max(radius[1].abs()), z)?)?;
                 }
             }
+            Self::Sphere(sphere) => {
+                if domain
+                    .v
+                    .bounds()
+                    .iter()
+                    .any(|v| v.abs() > core::f64::consts::FRAC_PI_2)
+                {
+                    return Err(numeric());
+                }
+                let r = sphere.radius();
+                for x in [-r, r] {
+                    for y in [-r, r] {
+                        for z in [-r, r] {
+                            bounds.include(transformed(sphere.frame(), [x, y, z])?)?;
+                        }
+                    }
+                }
+            }
             Self::Torus(t) => {
                 let frame = t.frame();
                 let center = frame.rows.map(|r| r[3]);
@@ -299,6 +317,35 @@ mod tests {
             }
         }
     }
+    #[test]
+    fn spherical_enclosure_covers_poles_and_actual_frame_basis() {
+        let mut frame = Placement3::rotate_x_then_translate(0.7, 1e6, -8.0, 2.0);
+        frame.rows[1][1] *= 1.0 + 2e-13;
+        let sphere = Surface::sphere(frame, 3.0).unwrap();
+        let domain = ParameterDomain {
+            u: ParameterRange::new(-core::f64::consts::PI, core::f64::consts::PI).unwrap(),
+            v: ParameterRange::new(-core::f64::consts::FRAC_PI_2, core::f64::consts::FRAC_PI_2)
+                .unwrap(),
+        };
+        let bounds = sphere.conservative_bounds(domain).unwrap();
+        for i in 0..=40 {
+            for j in 0..=20 {
+                let p = sphere
+                    .evaluate([
+                        domain.u.at(f64::from(i) / 40.0).unwrap(),
+                        domain.v.at(f64::from(j) / 20.0).unwrap(),
+                    ])
+                    .unwrap()
+                    .point;
+                assert!(
+                    p.into_iter()
+                        .enumerate()
+                        .all(|(k, x)| x >= bounds[0][k] && x <= bounds[1][k])
+                );
+            }
+        }
+    }
+
     #[test]
     fn cancellation_is_bounded_by_input_arithmetic_not_output_magnitude() {
         let range = ParameterRange::new(1.0, 1.0 + f64::EPSILON).unwrap();

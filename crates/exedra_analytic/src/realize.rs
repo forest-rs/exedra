@@ -507,6 +507,9 @@ impl<F, E> Body<F, E> {
                     item.count += 1;
                 }
             }
+            if matches!(face.surface, Surface::Sphere(_)) {
+                return Err(RealizationError::UnsupportedSurfaceTrim { face: id });
+            }
             let patch = if matches!(face.surface, Surface::Torus(_) | Surface::Ruled(_)) {
                 Patch::Grid(GridPatch::prepare(self, id)?)
             } else if matches!(face.surface, Surface::Plane(_)) {

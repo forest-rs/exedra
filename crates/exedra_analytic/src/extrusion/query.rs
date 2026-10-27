@@ -39,7 +39,9 @@ impl Extrusion {
             let v = match &record.surface {
                 Surface::Plane(_) => uv[1],
                 Surface::Cylinder(c) => uv[1] * c.frame().rows[2][2],
-                Surface::Cone(_) | Surface::Torus(_) | Surface::Ruled(_) => return None,
+                Surface::Cone(_) | Surface::Torus(_) | Surface::Sphere(_) | Surface::Ruled(_) => {
+                    return None;
+                }
             };
             if !record.domain.v.contains(v) {
                 return None;
@@ -249,7 +251,10 @@ mod tests {
                         assert_eq!(face.sense, crate::body::Sense::Reverse);
                         assert!(exedra_math::dot(sample.normal, [radial[0], radial[1], 0.0]) < 0.0);
                     }
-                    Surface::Cone(_) | Surface::Torus(_) | Surface::Ruled(_) => {
+                    Surface::Cone(_)
+                    | Surface::Torus(_)
+                    | Surface::Sphere(_)
+                    | Surface::Ruled(_) => {
                         unreachable!("extrusions construct planes and cylinders")
                     }
                 }
@@ -278,7 +283,11 @@ mod tests {
             let z = attached.rows.map(|row| row[2]);
             let normal = match &face.surface {
                 Surface::Plane(plane) => plane.frame().rows.map(|r| r[2] * face.sense.sign()),
-                Surface::Cylinder(_) | Surface::Cone(_) | Surface::Torus(_) | Surface::Ruled(_) => {
+                Surface::Cylinder(_)
+                | Surface::Cone(_)
+                | Surface::Torus(_)
+                | Surface::Sphere(_)
+                | Surface::Ruled(_) => {
                     unreachable!()
                 }
             };
