@@ -392,7 +392,9 @@ fn bounds_of_positions(positions: &[[f32; 3]]) -> Option<Aabb3> {
 pub struct CompileCounters {
     /// Parts tessellated (cache misses).
     pub parts_compiled: u64,
-    /// Explicit native body realizations performed on cache misses/upgrades.
+    /// Successful native compilation results installed on cache misses/upgrades.
+    /// Refused compilation attempts are excluded; a successful realization's
+    /// bounded sampling attempts are reported by its own accuracy/work evidence.
     pub native_realizations: u64,
     /// Cache hits (a compiled entry was reused).
     pub cache_hits: u64,

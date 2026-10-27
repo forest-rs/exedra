@@ -197,6 +197,19 @@ impl Default for ChartTransform {
     }
 }
 
+/// Generating operation whose construction coordinates a chart maps.
+#[derive(Copy, Clone, Debug, PartialEq, Eq, Hash)]
+pub enum SurfaceChartKind {
+    /// Profile carried along a linear extrusion.
+    Extrude,
+    /// Profile turned around a revolution axis.
+    Revolve,
+    /// Corresponding authored profile sections.
+    Loft,
+    /// Constant profile carried along a path.
+    Sweep,
+}
+
 /// Construction metric and texture mapping for one generating node.
 ///
 /// Bind with [`crate::ir::Node::with_surface_chart`]. Other node kinds reject
@@ -262,6 +275,16 @@ pub enum SurfaceChart {
     },
 }
 impl SurfaceChart {
+    /// The generating operation, independently of metric values or transforms.
+    #[must_use]
+    pub const fn kind(&self) -> SurfaceChartKind {
+        match self {
+            Self::Extrude { .. } => SurfaceChartKind::Extrude,
+            Self::Revolve { .. } => SurfaceChartKind::Revolve,
+            Self::Loft { .. } => SurfaceChartKind::Loft,
+            Self::Sweep { .. } => SurfaceChartKind::Sweep,
+        }
+    }
     /// Checks chart scalars; the recipe builder also checks the node kind.
     pub fn validate(&self) -> Result<(), ChartError> {
         if let Self::Revolve {
