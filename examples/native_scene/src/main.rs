@@ -637,7 +637,7 @@ fn run(output: &std::path::Path, instances: u32) -> Result<(), Box<dyn Error>> {
         );
         std::fs::write(output.join(name), text)?;
     }
-    let summary = serde_json::json!({"units":"mm","metersPerUnit":0.001,"upAxis":"Z","instances":instances,"layerstackRevision":"08d51a9af3770eff3fc0bf7f82a05d78c2ab91d6","generatorRevision":fine.sources[0].generator.revision,"operations":evidence,"stageEdits":stage_edits,
+    let summary = serde_json::json!({"units":"mm","metersPerUnit":0.001,"upAxis":"Z","instances":instances,"layerstackRevision":"416e6ef4ffe484dc0b8b6404fdced70a0017be19","generatorRevision":fine.sources[0].generator.revision,"operations":evidence,"stageEdits":stage_edits,
         "nativeVolume":fine.sources[0].native().unwrap().volume()?,"nativeArea":fine.sources[0].native().unwrap().surface_area()?,"nativeBounds":fine.sources[0].native().unwrap().conservative_bounds()?,"publishedSource":fine.sources[0].source,
         "pickingScope":"retained generated asset polygons, not composed partner overrides","nativeFaceProperty":exedra_scene::NATIVE_FACE,"encodingPayloadBytesBeforeClear":encoding_payload_bytes,"heldSnapshotAfterEviction":true});
     std::fs::write(

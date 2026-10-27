@@ -1,0 +1,23 @@
+[package]
+name = "exedra_scene_web_bridge"
+version = "0.0.0"
+publish = false
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+description = "Lazy native stage and Exedra scene integration for browser hosts"
+
+[lib]
+crate-type = ["cdylib", "rlib"]
+
+[dependencies]
+exedra_compile = { features = ["std"], workspace = true }
+exedra_scene = { features = ["std"], workspace = true }
+layerstack_usda.workspace = true
+native_scene = { path = "../../examples/native_scene" }
+serde_json.workspace = true
+wasm-bindgen.workspace = true
+
+[lints]
+workspace = true
