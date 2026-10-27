@@ -14,18 +14,15 @@ use alloc::{
     string::{String, ToString},
     vec::Vec,
 };
-use exedra_analytic::{
-    extrusion::{Extrusion, FaceRole},
-    geometry::Surface,
-};
+use exedra_compile::NativeGeometryRef;
 use exedra_compile::{
     CompilePolicy, NativeSource, PartCompiler, PartId, PartInput, PartSource, PreparedSource,
 };
-use exedra_math::Placement3;
 use serde::{Deserialize, Serialize};
 use wasm_bindgen::prelude::*;
 
 mod authoring;
+mod inspect;
 use authoring::{Request, Units};
 
 #[derive(Debug, Serialize)]
@@ -85,11 +82,6 @@ impl InstalledPart {
             unreachable!("authoring installs native sources only")
         };
         native
-    }
-    fn solid(&self) -> &Extrusion {
-        self.native()
-            .as_extrusion()
-            .expect("authoring creates extrusion families")
     }
 }
 #[derive(Debug)]
@@ -260,10 +252,26 @@ impl Session {
     fn workplane(&self, document: u32, part: u32, face: u32) -> Result<String, Error> {
         let (_, part) = self.part(document, part)?;
         let frame = part
-            .solid()
-            .workplane(exedra_analytic::body::FaceId(face))
-            .map_err(|e| Error::new("selection.workplane", "part.workplane", e.to_string()))?
-            .frame();
+            .native()
+            .planar_frame(exedra_analytic::body::FaceId(face))
+            .map_err(|e| {
+                Error::new(
+                    match e {
+                        exedra_compile::NativeSelectionError::NotPlanar { .. } => {
+                            "selection.notPlanar"
+                        }
+                        exedra_compile::NativeSelectionError::UnknownFace { .. } => {
+                            "selection.face"
+                        }
+                        exedra_compile::NativeSelectionError::PlaneNumericLimit { .. } => {
+                            "selection.numericLimit"
+                        }
+                        exedra_compile::NativeSelectionError::SourceMismatch => "selection.stale",
+                    },
+                    "part.workplane",
+                    e.to_string(),
+                )
+            })?;
         Ok(json(
             &serde_json::json!({"origin":frame.rows.map(|r|r[3]),"xAxis":frame.rows.map(|r|r[0]),"yAxis":frame.rows.map(|r|r[1]),"zAxis":frame.rows.map(|r|r[2])}),
         ))
@@ -275,7 +283,7 @@ impl Session {
         options: ExchangeOptions,
     ) -> Result<NativeStepFile, Error> {
         let (doc, part) = self.part(document, part)?;
-        let native = part.solid();
+        let native = part.native();
         let units = match doc.units {
             Units::Millimetre => exedra_step::LengthUnit::Millimetre,
             Units::Metre => exedra_step::LengthUnit::Metre,
@@ -288,8 +296,29 @@ impl Session {
             tolerance: options.tolerance.unwrap_or(doc.separation),
             ..exedra_step::StepOptions::default()
         };
-        let file = exedra_step::export_body(native.body(), native.frame(), &options)
-            .map_err(|e| Error::new("exchange.step", "part.exportStep", e.to_string()))?;
+        let file = match native.geometry() {
+            NativeGeometryRef::Extrusion(v) => {
+                exedra_step::export_body(v.body(), v.frame(), &options)
+            }
+            NativeGeometryRef::Revolution(v) => {
+                exedra_step::export_body(v.body(), v.frame(), &options)
+            }
+            NativeGeometryRef::Sweep(v) => exedra_step::export_body(v.body(), v.frame(), &options),
+            NativeGeometryRef::Loft(v) => exedra_step::export_body(v.body(), v.frame(), &options),
+        }
+        .map_err(|e| {
+            Error::new(
+                match e {
+                    exedra_step::StepError::UnsupportedSurface { .. } => {
+                        "exchange.unsupportedSurface"
+                    }
+                    exedra_step::StepError::Numeric => "exchange.numericLimit",
+                    _ => "exchange.step",
+                },
+                "part.exportStep",
+                e.to_string(),
+            )
+        })?;
         let report = serde_json::json!({"schema":file.report.schema,"units":doc.units,"declaredUncertainty":file.report.declared_uncertainty,
         "maxDeviation":file.report.max_deviation,"maxNativeSupportGap":file.report.max_native_support_gap,
         "frameRoundoffBound":file.report.frame_roundoff_bound,
@@ -342,64 +371,17 @@ impl Document {
     fn metadata(&self, id: u32) -> Result<String, Error> {
         let mut parts = Vec::with_capacity(self.parts.len());
         for (index, part) in self.parts.iter().enumerate() {
-            let solid = part.solid();
-            let bounds = placed_bounds(solid.local_bounds(), solid.frame());
-            let volume = part.native().volume().map_err(|e| {
-                Error::new("measurement.numericLimit", "part.measure", e.to_string())
-            })?;
-            let area = part.native().surface_area().map_err(|e| {
-                Error::new("measurement.numericLimit", "part.measure", e.to_string())
-            })?;
-            if bounds.iter().flatten().any(|v| !v.is_finite()) {
-                return Err(Error::new(
-                    "measurement.unrepresentable",
-                    "document.inspect",
-                    "Native measurements exceed finite f64 coordinates",
-                ));
-            }
-            let faces: Vec<_> = solid
-                .indexed_faces()
-                .map(|(id, face)| {
-                    let role = match face.role {
-                        FaceRole::Cap(_) => "cap",
-                        FaceRole::Wall { .. } => "wall",
-                        FaceRole::Floor { .. } => "floor",
-                    };
-                    let surface = match face.surface {
-                        Surface::Plane(_) => "plane",
-                        Surface::Cylinder(_) => "cylinder",
-                        Surface::Cone(_) => "cone",
-                        Surface::Torus(_) => "torus",
-                        Surface::Ruled(_) => "ruled",
-                    };
-                    let mut value = serde_json::json!({"id":id.0,"role":role,"surface":surface});
-                    if let Some(feature) = solid.face_tag(id).and_then(|t| self.names.get(&t.0)) {
-                        value["feature"] = serde_json::json!(feature);
-                    }
-                    value
-                })
-                .collect();
-            parts.push(serde_json::json!({"name":part.name,"index":index,"fingerprint":format!("{:032x}",part.source.fingerprint().0),
-                "measurements":{"volume":volume,"surfaceArea":area,"bounds":bounds,
-                    "faces":solid.faces().len(),"edges":solid.edges().len(),"vertices":solid.vertices().len()},"faces":faces}));
+            let mut value = inspect::metadata(part.native(), &self.names)?;
+            value["name"] = serde_json::json!(part.name);
+            value["index"] = serde_json::json!(index);
+            value["fingerprint"] =
+                serde_json::json!(format!("{:032x}", part.source.fingerprint().0));
+            parts.push(value);
         }
         Ok(json(
             &serde_json::json!({"id":id,"units":self.units,"parts":parts}),
         ))
     }
-}
-fn placed_bounds(bounds: [[f64; 3]; 2], frame: Placement3) -> [[f64; 3]; 2] {
-    let mut result = [[f64::INFINITY; 3], [f64::NEG_INFINITY; 3]];
-    for i in 0..8 {
-        let p = frame.transform_point(core::array::from_fn(|k| {
-            bounds[usize::from(i & (1 << k) != 0)][k]
-        }));
-        for (k, &value) in p.iter().enumerate() {
-            result[0][k] = result[0][k].min(value);
-            result[1][k] = result[1][k].max(value);
-        }
-    }
-    result
 }
 
 /// Explicit native-document and compiler-cache owner for a browser host.
@@ -570,12 +552,24 @@ mod tests {
         let mut session = Session::new();
         let metadata = value(&session.build(panel_request(120.0, 5.0)).unwrap());
         let panel = &metadata["parts"][0];
-        assert_eq!(
-            panel["measurements"]["bounds"],
-            serde_json::json!([[-60.0, -40.0, 0.0], [60.0, 40.0, 12.0]])
+        for (actual, expected) in panel["measurements"]["bounds"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .flat_map(|v| v.as_array().unwrap())
+            .zip([[-60.0, -40.0, 0.0], [60.0, 40.0, 12.0]].iter().flatten())
+        {
+            assert!((actual.as_f64().unwrap() - expected).abs() < 1e-8);
+        }
+        assert!(
+            (metadata["parts"][1]["measurements"]["bounds"][0][2]
+                .as_f64()
+                .unwrap()
+                - 7.5)
+                .abs()
+                < 1e-8
         );
-        assert_eq!(metadata["parts"][1]["measurements"]["bounds"][0][2], 7.5);
-        let volume = panel["measurements"]["volume"].as_f64().unwrap();
+        let volume = panel["measurements"]["volume"]["value"].as_f64().unwrap();
         let expected = 108864.0 - 5.0 * (512.0 + 64.0 * core::f64::consts::PI);
         assert!((volume - expected).abs() < 1e-8);
         let coarse = display(&mut session, 1, 0.45);
@@ -605,7 +599,7 @@ mod tests {
         );
         let again = value(&session.documents[&1].metadata(1).unwrap());
         assert_eq!(again["parts"][0]["fingerprint"], panel["fingerprint"]);
-        assert_eq!(again["parts"][0]["measurements"]["volume"], volume);
+        assert_eq!(again["parts"][0]["measurements"]["volume"]["value"], volume);
         let step = session
             .step(
                 1,
@@ -657,6 +651,59 @@ mod tests {
         assert_eq!(stats["documents"], 0);
         assert_eq!(stats["cacheEntries"], 0);
         assert_eq!(stats["cacheNativeSources"], 0);
+    }
+    #[test]
+    fn native_revolution_installs_realizes_and_exports_with_scoped_inspection() {
+        let request=decode(&json(&serde_json::json!({"units":"mm","separation":1e-6,
+            "profiles":[{"kind":"rectangle","width":7,"height":30},{"kind":"translated","profile":0,"offset":[15.5,15]},{"kind":"tagged","profile":1,"name":"collar"}],
+            "nodes":[{"kind":"revolve","profile":2,"angle":1.5*core::f64::consts::PI,"placement":{"rotationXYZ":[core::f64::consts::FRAC_PI_2,0,0]}}],
+            "roots":[{"name":"collar","node":0}]
+        }))).unwrap();
+        let mut session = Session::new();
+        let metadata = value(&session.build(request).unwrap());
+        let collar = &metadata["parts"][0];
+        assert_eq!(collar["family"], "revolution");
+        assert_eq!(collar["measurements"]["volume"]["status"], "available");
+        let expected = 0.75 * core::f64::consts::PI * (19.0 * 19.0 - 12.0 * 12.0) * 30.0;
+        assert!(
+            (collar["measurements"]["volume"]["value"].as_f64().unwrap() - expected).abs() < 1e-8
+        );
+        let coarse = display(&mut session, 1, 0.45);
+        let fine = display(&mut session, 1, 0.035);
+        assert!(fine.indices.len() > coarse.indices.len());
+        let faces = collar["faces"].as_array().unwrap();
+        let plane = faces.iter().find(|f| f["surface"] == "plane").unwrap()["id"]
+            .as_u64()
+            .unwrap();
+        assert!(
+            session
+                .workplane(1, 0, u32::try_from(plane).unwrap())
+                .is_ok()
+        );
+        let cylinder = faces.iter().find(|f| f["surface"] == "cylinder").unwrap()["id"]
+            .as_u64()
+            .unwrap();
+        assert_eq!(
+            session
+                .workplane(1, 0, u32::try_from(cylinder).unwrap())
+                .unwrap_err()
+                .code,
+            "selection.notPlanar"
+        );
+        let step = session
+            .step(
+                1,
+                0,
+                ExchangeOptions {
+                    name: None,
+                    timestamp: "2026-10-27T00:00:00Z".into(),
+                    tolerance: None,
+                },
+            )
+            .unwrap();
+        assert!(step.text.contains("CYLINDRICAL_SURFACE"));
+        session.release(1);
+        assert_eq!(value(&session.stats())["cacheEntries"], 0);
     }
     #[test]
     fn unknown_documents_fail_without_work() {

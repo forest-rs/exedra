@@ -4,6 +4,18 @@
 /** Model lengths are expressed in the document's explicitly selected unit. */
 export type LengthUnit = "mm" | "m";
 export type XY = readonly [number, number];
+export type XYZ = readonly [number, number, number];
+export type NativeFamily = "extrusion" | "revolution" | "sweep" | "loft";
+/** Rigid placement intent: fixed-axis X, Y, Z rotations in radians, then translation. */
+export interface Placement {
+  readonly translation: XYZ;
+  readonly rotationXYZ: XYZ;
+}
+function point3(value: XYZ): XYZ { return Object.freeze(value.map((v,i)=>finite(v,`coordinate ${i}`))) as unknown as XYZ; }
+/** Geometry and validation of the frame stay in Rust; this snapshots placement intent. */
+export function placement(options: { translation?: XYZ; rotationXYZ?: XYZ } = {}): Placement {
+  return Object.freeze({ translation: point3(options.translation ?? [0,0,0]), rotationXYZ: point3(options.rotationXYZ ?? [0,0,0]) });
+}
 export type End = "start" | "end";
 
 export interface Diagnostic {
@@ -13,6 +25,8 @@ export interface Diagnostic {
   node?: number;
   profile?: number;
   feature?: string;
+  family?: NativeFamily;
+  measure?: "volume" | "surfaceArea";
 }
 /** A structured authoring, native geometry, lifecycle or realization refusal. */
 export class ExedraError extends Error {
@@ -40,6 +54,7 @@ function point(value: XY): XY {
 }
 
 type ProfileNode =
+  | { kind: "polygon"; points: readonly XY[] }
   | { kind: "rectangle"; width: number; height: number }
   | { kind: "roundedRectangle"; width: number; height: number; radius: number }
   | { kind: "circle"; radius: number }
@@ -54,6 +69,15 @@ export class Profile {
   private constructor(node: ProfileNode) {
     profileNodes.set(this, Object.freeze(node));
     Object.freeze(this);
+  }
+  /** Closed line outline; vertices are authored once, with winding checked by Rust. */
+  static polygon(vertices: Iterable<XY>): Profile {
+    const points: XY[]=[];
+    for (const vertex of vertices) {
+      if (points.length===4096) fail("budget.profileSegments","At most 4096 profile vertices are allowed");
+      points.push(point(vertex));
+    }
+    return new Profile({kind:"polygon",points:Object.freeze(points)});
   }
   static rectangle(options: { width: number; height: number }): Profile {
     return new Profile({ kind: "rectangle", width: finite(options.width, "width"), height: finite(options.height, "height") });
@@ -85,6 +109,7 @@ export class Profile {
   }
 }
 export const profiles = Object.freeze({
+  polygon: Profile.polygon,
   rectangle: Profile.rectangle,
   roundedRectangle: Profile.roundedRectangle,
   circle: Profile.circle,
@@ -93,7 +118,8 @@ export const profiles = Object.freeze({
 
 type FaceSelector = { kind: "floor"; feature: string } | { kind: "cap"; end: End };
 type SolidNode =
-  | { kind: "extrude"; profile: Profile; height: number }
+  | { kind: "extrude"; profile: Profile; height: number; placement: Placement }
+  | { kind: "revolve"; profile: Profile; angle: number; placement: Placement }
   | { kind: "pocket"; base: Solid; profile: Profile; end: End; depth: number; at: XY }
   | { kind: "onFace"; host: Solid; face: FaceSelector; profile: Profile; height: number; offset: number; at: XY };
 const solidNodes = new WeakMap<Solid, SolidNode>();
@@ -104,8 +130,12 @@ export class Solid {
     solidNodes.set(this, Object.freeze(node));
     Object.freeze(this);
   }
-  static extrude(profile: Profile, options: { height: number }): Solid {
-    return new Solid({ kind: "extrude", profile, height: finite(options.height, "height") });
+  static extrude(profile: Profile, options: { height: number; placement?: Placement }): Solid {
+    return new Solid({ kind: "extrude", profile, height: finite(options.height, "height"), placement: placement(options.placement) });
+  }
+  /** Revolves profile X as positive radius and profile Y as height, about local +Y. */
+  static revolve(profile: Profile, options: { angle?: number; placement?: Placement } = {}): Solid {
+    return new Solid({ kind: "revolve", profile, angle: finite(options.angle ?? 2*Math.PI,"angle"), placement: placement(options.placement) });
   }
   pocket(profile: Profile, options: { end: End; depth: number; at?: XY }): Solid {
     return new Solid({ kind: "pocket", base: this, profile, end: options.end, depth: finite(options.depth, "depth"), at: point(options.at ?? [0, 0]) });
@@ -123,6 +153,7 @@ export class Solid {
   }
 }
 export const extrude = Solid.extrude;
+export const revolve = Solid.revolve;
 
 /** A selector in an authored graph, resolved against native geometry during build. */
 export class AuthoredFace {
@@ -160,15 +191,21 @@ export class AuthoringWorkplane {
 
 /** Native source geometry measurements, independent of display tessellation. */
 export interface NativeMeasurements {
-  volume: number;
-  surfaceArea: number;
+  volume: NativeMeasurement;
+  surfaceArea: NativeMeasurement;
   bounds: readonly [readonly [number, number, number], readonly [number, number, number]];
+  boundsKind: "conservativeNativeSupport";
   faces: number;
   edges: number;
   vertices: number;
 }
+/** A native integral is never replaced with a tessellated estimate or a fabricated zero. */
+export type NativeMeasurement =
+  | { readonly status: "available"; readonly value: number }
+  | { readonly status: "unavailable" | "numericLimit"; readonly diagnostic: Readonly<Diagnostic> };
 export interface NativeFace {
   id: number;
+  features: readonly string[];
   feature?: string;
   role: "cap" | "wall" | "floor";
   surface: "plane" | "cylinder" | "cone" | "torus" | "ruled";
@@ -203,7 +240,7 @@ export interface StepReport {
     faces: readonly (number | null)[];
   };
 }
-interface PartMetadata { name: string; index: number; fingerprint: string; measurements: NativeMeasurements; faces: NativeFace[] }
+interface PartMetadata { family: NativeFamily; name: string; index: number; fingerprint: string; measurements: NativeMeasurements; faces: NativeFace[] }
 interface DocumentMetadata { id: number; units: LengthUnit; parts: PartMetadata[] }
 
 /** Buffer-transfer surface implemented by the Wasm bridge. Each buffer is taken once. */
@@ -265,7 +302,7 @@ function graph(parts: Record<string, Solid>, units: LengthUnit, separation: numb
     visiting.add(solid);
     const source = solidNodes.get(solid); if (!source) fail("graph.solid", "Expected an Exedra Solid");
     const profile = visitProfile(source.profile);
-    const wire = source.kind === "extrude" ? { ...source, profile }
+    const wire = source.kind === "extrude" || source.kind === "revolve" ? { ...source, profile }
       : source.kind === "pocket" ? { ...source, profile, base: visit(source.base) }
       : { ...source, profile, host: visit(source.host) };
     if (nodes.length === 256) fail("budget.nodes", "At most 256 construction nodes are allowed");
@@ -351,6 +388,7 @@ export class NativeDocument {
 
 /** A queryable immutable native part, scoped to one installed document. */
 export class NativePart {
+  readonly family: NativeFamily;
   readonly name: string;
   readonly id: string;
   readonly fingerprint: string;
@@ -359,15 +397,16 @@ export class NativePart {
   private readonly index: number;
   private readonly faceTable: readonly NativeFace[];
   constructor(document: NativeDocument, metadata: PartMetadata) {
-    this.document = document; this.index = metadata.index; this.name = metadata.name;
+    this.family = metadata.family; this.document = document; this.index = metadata.index; this.name = metadata.name;
     this.id = `${document.id}/part-${metadata.index}`; this.fingerprint = metadata.fingerprint;
-    this.measurements = Object.freeze({ ...metadata.measurements, bounds: Object.freeze(metadata.measurements.bounds.map(corner => Object.freeze([...corner]))) as unknown as NativeMeasurements["bounds"] });
-    this.faceTable = Object.freeze(metadata.faces.map(face => Object.freeze(face)));
+    const freezeMeasure = (value: NativeMeasurement): NativeMeasurement => value.status === "available" ? Object.freeze({...value}) : Object.freeze({...value,diagnostic:Object.freeze({...value.diagnostic})});
+    this.measurements = Object.freeze({ ...metadata.measurements, volume:freezeMeasure(metadata.measurements.volume),surfaceArea:freezeMeasure(metadata.measurements.surfaceArea), bounds: Object.freeze(metadata.measurements.bounds.map(corner => Object.freeze([...corner]))) as unknown as NativeMeasurements["bounds"] });
+    this.faceTable = Object.freeze(metadata.faces.map(face => Object.freeze({...face,features:Object.freeze([...face.features])})));
     Object.freeze(this);
   }
   faces(feature?: string): readonly FaceSelection[] {
     this.document.backend();
-    return this.faceTable.filter(f => feature === undefined || f.feature === feature).map(f => new FaceSelection(this, f));
+    return this.faceTable.filter(f => feature === undefined || f.features.includes(feature)).map(f => new FaceSelection(this, f));
   }
   /** Returns one labelled floor, with distinct missing and ambiguous diagnostics. */
   floor(feature: string): FaceSelection {
@@ -416,11 +455,12 @@ export class FaceSelection {
   readonly partId: string;
   readonly nativeId: number;
   readonly feature?: string;
+  readonly features: readonly string[];
   readonly role: NativeFace["role"];
   readonly surface: NativeFace["surface"];
   constructor(part: NativePart, face: NativeFace) {
     this.part = part;
-    this.partId = part.id; this.nativeId = face.id; this.feature = face.feature;
+    this.partId = part.id; this.nativeId = face.id; this.features = Object.freeze([...face.features]); this.feature = this.features.length === 1 ? this.features[0] : undefined;
     this.role = face.role; this.surface = face.surface; Object.freeze(this);
   }
   workplane(): NativeWorkplane { return this.part.workplane(this); }

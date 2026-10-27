@@ -10,9 +10,15 @@ use alloc::{
     string::{String, ToString},
     vec::Vec,
 };
-use exedra_analytic::extrusion::{End, Extrusion, Pocket};
+use exedra_analytic::{
+    extrusion::{End, Extrusion, Pocket},
+    revolve::Revolution,
+};
 use exedra_compile::NativeSource;
-use exedra_constructive::{builders, profile::Profile2};
+use exedra_constructive::{
+    builders,
+    profile::{Loop2, Profile2, Seg2},
+};
 use exedra_math::Placement3;
 use exedra_profile::{ProfilePolicy, SegTag};
 use serde::Deserialize;
@@ -47,6 +53,9 @@ impl From<InputEnd> for End {
 #[derive(Debug, Deserialize)]
 #[serde(tag = "kind", rename_all = "camelCase", deny_unknown_fields)]
 enum ProfileNode {
+    Polygon {
+        points: Vec<[f64; 2]>,
+    },
     Rectangle {
         width: f64,
         height: f64,
@@ -83,12 +92,58 @@ enum FaceSelector {
     Floor { feature: String },
     Cap { end: InputEnd },
 }
+#[derive(Copy, Clone, Debug, Default, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+struct InputPlacement {
+    #[serde(default)]
+    translation: [f64; 3],
+    #[serde(default, rename = "rotationXYZ")]
+    rotation_xyz: [f64; 3],
+}
+impl InputPlacement {
+    fn frame(self) -> Placement3 {
+        let [x, y, z] = self.rotation_xyz;
+        Placement3::euler_extrinsic_xyz_then_translate(x, y, z, self.translation)
+    }
+}
+#[derive(Debug)]
+enum Model {
+    Extrusion(Extrusion),
+    Revolution(Revolution),
+}
+impl Model {
+    fn extrusion(&self) -> Result<&Extrusion, Error> {
+        if let Self::Extrusion(v) = self {
+            Ok(v)
+        } else {
+            Err(Error::new(
+                "operation.unsupportedFamily",
+                "solid.extrusionFeature",
+                "This operation requires an extrusion source",
+            ))
+        }
+    }
+    fn install(self) -> NativeSource {
+        match self {
+            Self::Extrusion(v) => NativeSource::from(v),
+            Self::Revolution(v) => NativeSource::from(v),
+        }
+    }
+}
 #[derive(Debug, Deserialize)]
 #[serde(tag = "kind", rename_all = "camelCase", deny_unknown_fields)]
 enum Node {
     Extrude {
         profile: u32,
         height: f64,
+        #[serde(default)]
+        placement: InputPlacement,
+    },
+    Revolve {
+        profile: u32,
+        angle: f64,
+        #[serde(default)]
+        placement: InputPlacement,
     },
     Pocket {
         base: u32,
@@ -213,6 +268,7 @@ impl Request {
                 ProfileNode::Rectangle { .. } | ProfileNode::Slot { .. } => 4,
                 ProfileNode::RoundedRectangle { .. } => 8,
                 ProfileNode::Circle { .. } => 2,
+                ProfileNode::Polygon { points } => points.len(),
                 ProfileNode::Tagged { profile, .. } | ProfileNode::Translated { profile, .. } => {
                     counts[*profile as usize]
                 }
@@ -240,7 +296,7 @@ impl Request {
         let mut depths: Vec<u16> = Vec::with_capacity(self.nodes.len());
         for (i, node) in self.nodes.iter().enumerate() {
             let (profile, parent) = match node {
-                Node::Extrude { profile, .. } => (*profile, None),
+                Node::Extrude { profile, .. } | Node::Revolve { profile, .. } => (*profile, None),
                 Node::Pocket { profile, base, .. } => (*profile, Some(*base)),
                 Node::OnFace { profile, host, .. } => (*profile, Some(*host)),
             };
@@ -324,6 +380,18 @@ impl Request {
             };
             let mut feature = None;
             let geometry = match node {
+                ProfileNode::Polygon { points } => Profile2::new(
+                    Loop2::new(
+                        points
+                            .into_iter()
+                            .map(|p| Seg2::line((p[0], p[1])))
+                            .collect(),
+                    )
+                    .map_err(|e| failure(e.to_string()))?,
+                    Vec::new(),
+                )
+                .map(|p| p.tagged(UNNAMED))
+                .map_err(|e| failure(e.to_string()))?,
                 ProfileNode::Rectangle { width, height } => builders::rect_centered(width, height)
                     .map(|p| p.tagged(UNNAMED))
                     .map_err(|e| failure(e.to_string()))?,
@@ -369,19 +437,42 @@ impl Request {
             };
             profiles.push(AuthoredProfile { geometry, feature });
         }
-        let mut models: Vec<Extrusion> = Vec::with_capacity(self.nodes.len());
+        let mut models: Vec<Model> = Vec::with_capacity(self.nodes.len());
         for (i, node) in self.nodes.into_iter().enumerate() {
             let failure = |code: &'static str, operation: &'static str, message: String| {
                 Error::new(code, operation, message).node(i)
             };
             let solid = match node {
-                Node::Extrude { profile, height } => Extrusion::from_profile(
-                    &profiles[profile as usize].geometry,
-                    Placement3::IDENTITY,
+                Node::Extrude {
+                    profile,
                     height,
-                    &policy,
-                )
-                .map_err(|e| failure("extrude.invalid", "solid.extrude", e.to_string()))?,
+                    placement,
+                } => Model::Extrusion(
+                    Extrusion::from_profile(
+                        &profiles[profile as usize].geometry,
+                        placement.frame(),
+                        height,
+                        &policy,
+                    )
+                    .map_err(|e| failure("extrude.invalid", "solid.extrude", e.to_string()))?,
+                ),
+                Node::Revolve {
+                    profile,
+                    angle,
+                    placement,
+                } => Model::Revolution(
+                    Revolution::new(
+                        profiles[profile as usize]
+                            .geometry
+                            .to_line_arc(&policy)
+                            .map_err(|e| {
+                                failure("revolve.profile", "solid.revolve", e.to_string())
+                            })?,
+                        placement.frame(),
+                        angle,
+                    )
+                    .map_err(|e| failure("revolve.invalid", "solid.revolve", e.to_string()))?,
+                ),
                 Node::Pocket {
                     base,
                     profile,
@@ -402,10 +493,15 @@ impl Request {
                     if let Some(feature) = feature {
                         pocket = pocket.tagged(feature);
                     }
-                    models[base as usize]
-                        .clone()
-                        .with_pocket(pocket, &policy)
-                        .map_err(|e| failure("pocket.invalid", "solid.pocket", e.to_string()))?
+                    Model::Extrusion(
+                        models[base as usize]
+                            .extrusion()?
+                            .clone()
+                            .with_pocket(pocket, &policy)
+                            .map_err(|e| {
+                                failure("pocket.invalid", "solid.pocket", e.to_string())
+                            })?,
+                    )
                 }
                 Node::OnFace {
                     host,
@@ -415,7 +511,7 @@ impl Request {
                     offset,
                     at,
                 } => {
-                    let host = &models[host as usize];
+                    let host = models[host as usize].extrusion()?;
                     let face = match face {
                         FaceSelector::Cap { end } => host.cap(end.into()),
                         FaceSelector::Floor { feature } => {
@@ -446,11 +542,13 @@ impl Request {
                         .map_err(|e| {
                             failure("workplane.invalid", "workplane.translated", e.to_string())
                         })?;
-                    plane
-                        .extrude_profile(&profiles[profile as usize].geometry, height, &policy)
-                        .map_err(|e| {
-                            failure("extrude.invalid", "workplane.extrude", e.to_string())
-                        })?
+                    Model::Extrusion(
+                        plane
+                            .extrude_profile(&profiles[profile as usize].geometry, height, &policy)
+                            .map_err(|e| {
+                                failure("extrude.invalid", "workplane.extrude", e.to_string())
+                            })?,
+                    )
                 }
             };
             models.push(solid);
@@ -460,7 +558,7 @@ impl Request {
             .into_iter()
             .enumerate()
             .filter(|(i, _)| wanted.contains(i))
-            .map(|(i, solid)| (i, NativeSource::from(solid)))
+            .map(|(i, solid)| (i, solid.install()))
             .collect();
         let roots = self
             .roots
