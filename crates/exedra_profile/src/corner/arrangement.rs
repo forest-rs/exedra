@@ -57,6 +57,55 @@ fn corner(loop_: &Loop, reference: SegmentRef) -> Corner {
 }
 
 impl Profile {
+    /// Identifies exactly one boundary vertex within `max_distance` of `point`.
+    ///
+    /// The distance is inclusive, in profile units; zero requires an exact
+    /// coordinate match. Outer and hole boundaries participate equally. This
+    /// is an intentional selection, not a nearest-point or snapping operation.
+    /// Use the returned [`Corner::segment`] with [`Self::with_corners`], and
+    /// select again after editing the profile. Smooth and arc junctions remain
+    /// inspectable even when a particular treatment cannot handle them.
+    ///
+    /// # Errors
+    ///
+    /// Returns invalid-input, missing or ambiguous selection evidence. A large
+    /// search distance never silently chooses one of several matching vertices.
+    pub fn corner_at(
+        &self,
+        point: [f64; 2],
+        max_distance: f64,
+    ) -> Result<Corner, CornerSelectionError> {
+        if !point.iter().all(|v| v.is_finite()) || !max_distance.is_finite() || max_distance < 0.0 {
+            return Err(CornerSelectionError::Input {
+                point,
+                max_distance,
+            });
+        }
+        let mut found: Option<Corner> = None;
+        for (loop_ref, boundary) in loops(self) {
+            for (segment, candidate) in boundary.segments().iter().enumerate() {
+                let distance = libm::hypot(candidate.to[0] - point[0], candidate.to[1] - point[1]);
+                if distance <= max_distance {
+                    let reference = SegmentRef { loop_ref, segment };
+                    if let Some(first) = found {
+                        return Err(CornerSelectionError::Ambiguous {
+                            point,
+                            max_distance,
+                            matches: [first.segment, reference],
+                        });
+                    }
+                    // Tangents/classification are needed only for the matching
+                    // vertex, not for every vertex rejected by position.
+                    found = Some(corner(boundary, reference));
+                }
+            }
+        }
+        found.ok_or(CornerSelectionError::Missing {
+            point,
+            max_distance,
+        })
+    }
+
     /// Boundary vertices classified relative to the filled material.
     /// References are local to this immutable profile; select again after an edit.
     pub fn corners(&self) -> impl Iterator<Item = Corner> + '_ {

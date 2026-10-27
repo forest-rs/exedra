@@ -257,3 +257,68 @@ fn verify_retained_sources(input: &Profile, result: &CornerResult) {
         }
     }
 }
+
+#[test]
+fn coordinate_corner_selection_is_unique_inclusive_and_scoped_to_the_profile() {
+    let profile = rectangle([0.0, 0.0], [10.0, 6.0]);
+    let exact = profile.corner_at([10.0, 0.0], 0.0).unwrap();
+    assert_eq!(exact.kind, CornerKind::Convex);
+    assert_eq!(profile.corner_at([10.25, 0.0], 0.25).unwrap(), exact);
+    assert!(matches!(
+        profile.corner_at([5.0, 3.0], 0.0),
+        Err(CornerSelectionError::Missing { .. })
+    ));
+    assert!(matches!(
+        profile.corner_at([5.0, 0.0], 5.0),
+        Err(CornerSelectionError::Ambiguous { .. })
+    ));
+    for (point, distance) in [
+        ([f64::NAN, 0.0], 1.0),
+        ([0.0, 0.0], -1.0),
+        ([0.0, 0.0], f64::INFINITY),
+    ] {
+        assert!(matches!(
+            profile.corner_at(point, distance),
+            Err(CornerSelectionError::Input { .. })
+        ));
+    }
+    let rounded = profile
+        .with_corners([exact.segment], CornerTreatment::fillet(1.0), &POLICY)
+        .unwrap();
+    assert!(matches!(
+        rounded.profile.corner_at(exact.point, 0.0),
+        Err(CornerSelectionError::Missing { .. })
+    ));
+    assert!(rounded.segments.iter().any(|s| s.source
+        == CornerSource::Transition {
+            corner: exact.segment
+        }));
+}
+
+#[test]
+fn coordinate_selection_includes_holes_without_guessing_between_boundaries() {
+    let hole = rectangle([2.0, 2.0], [4.0, 4.0]).outer().reversed();
+    let profile = Profile::new(
+        rectangle([0.0, 0.0], [10.0, 10.0]).outer().clone(),
+        vec![hole],
+        &POLICY,
+    )
+    .unwrap();
+    let corner = profile.corner_at([2.0, 2.0], 0.0).unwrap();
+    assert!(matches!(corner.segment.loop_ref, LoopRef::Hole(0)));
+    assert_eq!(corner.kind, CornerKind::Concave);
+    let treated = profile
+        .with_corners(
+            [corner.segment],
+            CornerTreatment::chamfer(0.25).tagged(SegTag(77)),
+            &POLICY,
+        )
+        .unwrap();
+    assert_eq!(treated.changed_corners, 1);
+    assert!(
+        treated.profile.holes()[0]
+            .segments()
+            .iter()
+            .any(|s| s.tag == Some(SegTag(77)))
+    );
+}

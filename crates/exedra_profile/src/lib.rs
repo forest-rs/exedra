@@ -36,6 +36,7 @@ extern crate alloc;
 
 mod arc;
 mod corner;
+mod placement;
 mod profile;
 mod region;
 mod sampling;
@@ -45,9 +46,10 @@ pub use input::IntoProfile;
 
 pub use arc::Arc;
 pub use corner::{
-    Corner, CornerError, CornerKind, CornerResult, CornerSegment, CornerShape, CornerSource,
-    CornerTreatment,
+    Corner, CornerError, CornerKind, CornerResult, CornerSegment, CornerSelectionError,
+    CornerShape, CornerSource, CornerTreatment,
 };
+pub use placement::ProfileTranslationError;
 pub use profile::{
     Curve, Loop, LoopError, LoopRef, Profile, ProfileError, ProfilePolicy, SegTag, Segment,
     SegmentRef,

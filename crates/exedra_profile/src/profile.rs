@@ -543,6 +543,18 @@ impl Profile {
         Ok(())
     }
 
+    /// Replaces every boundary segment's tag without changing geometry or storage.
+    /// Generated transitions can subsequently receive a more specific tag.
+    #[must_use]
+    pub fn tagged(mut self, tag: SegTag) -> Self {
+        for boundary in core::iter::once(&mut self.outer).chain(self.holes.iter_mut()) {
+            for segment in &mut boundary.segments {
+                segment.tag = Some(tag);
+            }
+        }
+        self
+    }
+
     /// The counter-clockwise outer loop.
     #[must_use]
     pub fn outer(&self) -> &Loop {

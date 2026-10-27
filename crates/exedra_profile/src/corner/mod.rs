@@ -34,6 +34,62 @@ pub struct Corner {
     pub turn: f64,
 }
 
+/// Why a position query cannot identify exactly one profile corner.
+#[derive(Clone, Debug, PartialEq)]
+#[non_exhaustive]
+pub enum CornerSelectionError {
+    /// Coordinates must be finite and the search distance finite and nonnegative.
+    Input {
+        /// Requested position in profile units.
+        point: [f64; 2],
+        /// Requested inclusive search distance.
+        max_distance: f64,
+    },
+    /// No boundary vertex lies within the requested distance.
+    Missing {
+        /// Requested position in profile units.
+        point: [f64; 2],
+        /// Requested inclusive search distance.
+        max_distance: f64,
+    },
+    /// More than one boundary vertex matches; a nearest corner is not guessed.
+    Ambiguous {
+        /// Requested position in profile units.
+        point: [f64; 2],
+        /// Requested inclusive search distance.
+        max_distance: f64,
+        /// First two matches, in outer-then-hole boundary order.
+        matches: [SegmentRef; 2],
+    },
+}
+
+impl core::fmt::Display for CornerSelectionError {
+    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+        match self {
+            Self::Input {
+                point,
+                max_distance,
+            } => write!(
+                f,
+                "corner position {point:?} and search distance {max_distance} must be finite, with a nonnegative distance"
+            ),
+            Self::Missing {
+                point,
+                max_distance,
+            } => write!(f, "no profile corner within {max_distance} of {point:?}"),
+            Self::Ambiguous {
+                point,
+                max_distance,
+                matches,
+            } => write!(
+                f,
+                "multiple profile corners within {max_distance} of {point:?}: {matches:?}"
+            ),
+        }
+    }
+}
+impl core::error::Error for CornerSelectionError {}
+
 /// Geometry to insert between two trimmed straight segments.
 #[derive(Copy, Clone, Debug, PartialEq)]
 pub enum CornerShape {
