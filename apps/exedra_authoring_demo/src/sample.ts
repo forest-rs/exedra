@@ -1,7 +1,7 @@
 // Copyright 2026 the Exedra Authors
 // SPDX-License-Identifier: Apache-2.0 OR MIT
 
-import { extrude, profiles, revolve, sweep, loft, paths, placement } from "@exedra/authoring";
+import { ExedraError, extrude, profiles, revolve, sweep, loft, paths, placement } from "@exedra/authoring";
 
 export interface PanelParameters {
   width: number;
@@ -64,9 +64,20 @@ export function authorRoundedTurn(p: CollarParameters, kind: "roundedRing" | "to
   return {ring:revolve(outline,{angle:p.angle*Math.PI/180,placement:placement({rotationXYZ:[Math.PI/2,0,0]})})};
 }
 
-export function authorFlangedSleeve(p: CollarParameters) {
-  const r=p.radius,w=p.wall,h=p.collarHeight;
-  const section=profiles.polygon([[r,0],[r+w,0],[r+w,h*.25],[r+w*.6,h*.25],[r+w*.6,h],[r,h]]).tagged("sleeve");
+export interface FlangeParameters {
+  boreRadius:number;
+  sleeveOuterRadius:number;
+  flangeOuterRadius:number;
+  shoulderHeight:number;
+  height:number;
+  angle:number;
+}
+/** Independent radial and axial dimensions; the native profile validates material geometry. */
+export function authorFlangedSleeve(p:FlangeParameters) {
+  if(!(p.shoulderHeight>0&&p.shoulderHeight<p.height))throw new ExedraError({code:"input.flangeHeight",operation:"sample.flangedSleeve",message:"Shoulder height must be positive and less than total height."});
+  const r=p.boreRadius,upper=p.sleeveOuterRadius,bottom=p.flangeOuterRadius,t=p.shoulderHeight,h=p.height;
+  const points:readonly (readonly [number,number])[]=upper===bottom?[[r,0],[upper,0],[upper,h],[r,h]]:[[r,0],[bottom,0],[bottom,t],[upper,t],[upper,h],[r,h]];
+  const section=profiles.polygon(points).tagged("sleeve");
   return {sleeve:revolve(section,{angle:p.angle*Math.PI/180,placement:placement({rotationXYZ:[Math.PI/2,0,0]})})};
 }
 

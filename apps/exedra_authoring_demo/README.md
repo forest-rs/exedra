@@ -98,3 +98,8 @@ The app shell can mount into separate viewport/inspector and control slots.
 its edits/undo. `dispose()` releases it on teardown; changing instance count is
 an explicit reset. `/scene.html` is also a standalone integration entry for
 testing this same module.
+
+The flanged sleeve has independent bore, sleeve and flange radii, shoulder height,
+total height and turn angle. Changing total height leaves shoulder height fixed.
+Each field retains its value when switching samples. Invalid dimensions preserve
+the last valid model with a diagnostic; values are not silently clamped.
