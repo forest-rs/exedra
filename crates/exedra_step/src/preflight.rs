@@ -9,6 +9,33 @@ use exedra_analytic::{
 };
 use exedra_math::{Placement3, norm};
 
+pub(super) enum SurfaceSupport {
+    Plane,
+    Cylinder { radius: f64 },
+}
+
+pub(super) fn surface_support(
+    surface: &Surface,
+    face: FaceId,
+) -> Result<SurfaceSupport, StepError> {
+    match surface {
+        Surface::Plane(_) => Ok(SurfaceSupport::Plane),
+        Surface::Cylinder(c) => Ok(SurfaceSupport::Cylinder { radius: c.radius() }),
+        Surface::Cone(_) => Err(StepError::UnsupportedSurface {
+            face,
+            family: "cone",
+        }),
+        Surface::Torus(_) => Err(StepError::UnsupportedSurface {
+            face,
+            family: "torus",
+        }),
+        Surface::Ruled(_) => Err(StepError::UnsupportedSurface {
+            face,
+            family: "ruled",
+        }),
+    }
+}
+
 pub(super) struct Prepared {
     pub vertices: Vec<bool>,
     pub edges: Vec<bool>,
@@ -87,31 +114,13 @@ pub(super) fn prepare<F, E>(
     let magnitude = |p: [f64; 3]| p.into_iter().map(f64::abs).fold(0.0, f64::max);
     for (i, face) in body.faces().iter().enumerate() {
         let id = FaceId(u32::try_from(i).expect("input budget"));
-        let radius = match &face.surface {
-            Surface::Plane(_) => 0.0,
-            Surface::Cylinder(c) => {
+        let radius = match surface_support(&face.surface, id)? {
+            SurfaceSupport::Plane => 0.0,
+            SurfaceSupport::Cylinder { radius } => {
                 if face.domain.u.span() > core::f64::consts::TAU * (1.0 + 64.0 * f64::EPSILON) {
                     return Err(StepError::CylinderDomain { face: id });
                 }
-                c.radius()
-            }
-            Surface::Cone(_) => {
-                return Err(StepError::UnsupportedSurface {
-                    face: id,
-                    family: "cone",
-                });
-            }
-            Surface::Torus(_) => {
-                return Err(StepError::UnsupportedSurface {
-                    face: id,
-                    family: "torus",
-                });
-            }
-            Surface::Ruled(_) => {
-                return Err(StepError::UnsupportedSurface {
-                    face: id,
-                    family: "ruled",
-                });
+                radius
             }
         };
         scale = scale.max(magnitude(face.surface.frame().rows.map(|r| r[3])) + radius);

@@ -27,6 +27,8 @@ export interface Diagnostic {
   feature?: string;
   family?: NativeFamily;
   measure?: "volume" | "surfaceArea";
+  face?: number;
+  geometryFamily?: string;
 }
 /** Host-observed elapsed milliseconds at the SDK/Wasm boundary; never GPU or presentation time. */
 export interface KernelCallTiming {
@@ -257,6 +259,10 @@ export interface RealizationReport {
   cacheHits: number;
   nativeRealizations: number;
 }
+/** Structural geometry support; export still validates tolerance, topology and budgets. */
+export type StepSupport =
+  | { readonly status: "supported" }
+  | { readonly status: "unsupported"; readonly diagnostic: Readonly<Diagnostic> };
 export interface StepReport {
   schema: string;
   units: LengthUnit;
@@ -275,7 +281,7 @@ export interface StepReport {
     faces: readonly (number | null)[];
   };
 }
-interface PartMetadata { family: NativeFamily; name: string; index: number; fingerprint: string; measurements: NativeMeasurements; faces: NativeFace[] }
+interface PartMetadata { family: NativeFamily; name: string; index: number; fingerprint: string; stepSupport: StepSupport; measurements: NativeMeasurements; faces: NativeFace[] }
 interface DocumentMetadata { id: number; units: LengthUnit; parts: PartMetadata[] }
 
 /** Buffer-transfer surface implemented by the Wasm bridge. Each buffer is taken once. */
@@ -440,12 +446,14 @@ export class NativePart {
   readonly id: string;
   readonly fingerprint: string;
   readonly measurements: Readonly<NativeMeasurements>;
+  readonly stepSupport: StepSupport;
   private readonly document: NativeDocument;
   private readonly index: number;
   private readonly faceTable: readonly NativeFace[];
   constructor(document: NativeDocument, metadata: PartMetadata) {
     this.family = metadata.family; this.document = document; this.index = metadata.index; this.name = metadata.name;
     this.id = `${document.id}/part-${metadata.index}`; this.fingerprint = metadata.fingerprint;
+    this.stepSupport = metadata.stepSupport.status === "supported" ? Object.freeze({...metadata.stepSupport}) : Object.freeze({...metadata.stepSupport,diagnostic:Object.freeze({...metadata.stepSupport.diagnostic})});
     const freezeMeasure = (value: NativeMeasurement): NativeMeasurement => value.status === "available" ? Object.freeze({...value}) : Object.freeze({...value,diagnostic:Object.freeze({...value.diagnostic})});
     this.measurements = Object.freeze({ ...metadata.measurements, volume:freezeMeasure(metadata.measurements.volume),surfaceArea:freezeMeasure(metadata.measurements.surfaceArea), bounds: Object.freeze(metadata.measurements.bounds.map(corner => Object.freeze([...corner]))) as unknown as NativeMeasurements["bounds"] });
     this.faceTable = Object.freeze(metadata.faces.map(face => Object.freeze({...face,features:Object.freeze([...face.features])})));

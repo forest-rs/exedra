@@ -20,7 +20,9 @@ Wasm package in release mode and runs wasm-opt. Dependencies resolve from the pu
 The lockfile check rejects private registry URLs before CI installs dependencies.
 The first build may download wasm-pack's matching wasm-bindgen
 tool. `npm run build` creates the production app; `npm run preview` serves it.
-`npm run test:sdk` runs the SDK ownership/authoring regressions.
+`npm run test:sdk` runs the SDK ownership/authoring regressions. After building,
+`npm run test:wasm` exercises every sample through the generated Wasm, including
+cached/fresh correspondence, held documents, accuracy outcomes and STEP support.
 
 [The actual authoring function](src/sample.ts) is also available through **View
 TypeScript** in the app. Geometry/validation live in Rust, reusable descriptions
@@ -38,7 +40,9 @@ compiler cache.
 
 Download buttons export one named native part per STEP file in millimetres when
 its geometry is supported. Plane/cylinder samples export; cone, torus and ruled
-supports produce an explicit unsupported-surface diagnosis. They do not imply an assembly export and never pass through
+supports show a disabled export button with the unsupported face/family reason.
+The SDK still returns a typed refusal if export is called directly. Structural
+support does not guarantee final tolerance, topology or budget validation. They do not imply an assembly export and never pass through
 the display mesh. The report includes native support/frame tolerance evidence
 and native-face to STEP-entity correspondence. Invalid drafts disable download
 until a valid rebuild succeeds.

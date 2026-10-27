@@ -34,6 +34,10 @@ struct Error {
     node: Option<usize>,
     #[serde(skip_serializing_if = "Option::is_none")]
     profile: Option<usize>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    face: Option<u32>,
+    #[serde(rename = "geometryFamily", skip_serializing_if = "Option::is_none")]
+    geometry_family: Option<&'static str>,
 }
 impl Error {
     fn new(code: &'static str, operation: &'static str, message: impl Into<String>) -> Self {
@@ -43,6 +47,8 @@ impl Error {
             message: message.into(),
             node: None,
             profile: None,
+            face: None,
+            geometry_family: None,
         }
     }
     fn node(mut self, node: usize) -> Self {
@@ -52,6 +58,19 @@ impl Error {
     fn profile(mut self, profile: usize) -> Self {
         self.profile = Some(profile);
         self
+    }
+    fn step(operation: &'static str, error: exedra_step::StepError) -> Self {
+        let code = match &error {
+            exedra_step::StepError::UnsupportedSurface { .. } => "exchange.unsupportedSurface",
+            exedra_step::StepError::Numeric => "exchange.numericLimit",
+            _ => "exchange.step",
+        };
+        let mut diagnostic = Self::new(code, operation, error.to_string());
+        if let exedra_step::StepError::UnsupportedSurface { face, family } = &error {
+            diagnostic.face = Some(face.0);
+            diagnostic.geometry_family = Some(family);
+        }
+        diagnostic
     }
     fn js(self) -> JsValue {
         JsValue::from_str(&json(&self))
@@ -306,19 +325,7 @@ impl Session {
             NativeGeometryRef::Sweep(v) => exedra_step::export_body(v.body(), v.frame(), &options),
             NativeGeometryRef::Loft(v) => exedra_step::export_body(v.body(), v.frame(), &options),
         }
-        .map_err(|e| {
-            Error::new(
-                match e {
-                    exedra_step::StepError::UnsupportedSurface { .. } => {
-                        "exchange.unsupportedSurface"
-                    }
-                    exedra_step::StepError::Numeric => "exchange.numericLimit",
-                    _ => "exchange.step",
-                },
-                "part.exportStep",
-                e.to_string(),
-            )
-        })?;
+        .map_err(|error| Error::step("part.exportStep", error))?;
         let report = serde_json::json!({"schema":file.report.schema,"units":doc.units,"declaredUncertainty":file.report.declared_uncertainty,
         "maxDeviation":file.report.max_deviation,"maxNativeSupportGap":file.report.max_native_support_gap,
         "frameRoundoffBound":file.report.frame_roundoff_bound,
@@ -663,6 +670,7 @@ mod tests {
         let metadata = value(&session.build(request).unwrap());
         let collar = &metadata["parts"][0];
         assert_eq!(collar["family"], "revolution");
+        assert_eq!(collar["stepSupport"]["status"], "supported");
         assert_eq!(collar["measurements"]["volume"]["status"], "available");
         let expected = 0.75 * core::f64::consts::PI * (19.0 * 19.0 - 12.0 * 12.0) * 30.0;
         assert!(

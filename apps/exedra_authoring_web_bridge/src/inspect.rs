@@ -94,12 +94,24 @@ pub(crate) fn metadata(
             exedra_analytic::loft::FaceRole::Wall { .. } => "wall",
         }),
     };
+    let support = match native.geometry() {
+        NativeGeometryRef::Extrusion(v) => exedra_step::check_geometry_support(v.body()),
+        NativeGeometryRef::Revolution(v) => exedra_step::check_geometry_support(v.body()),
+        NativeGeometryRef::Sweep(v) => exedra_step::check_geometry_support(v.body()),
+        NativeGeometryRef::Loft(v) => exedra_step::check_geometry_support(v.body()),
+    };
+    let step_support = match support {
+        Ok(()) => json!({"status":"supported"}),
+        Err(error) => {
+            json!({"status":"unsupported","diagnostic":Error::step("part.stepSupport",error)})
+        }
+    };
     let storage = native.boundary_storage();
     let bounds = native
         .conservative_bounds()
         .map_err(|error| Error::new("bounds.numericLimit", "part.inspect", error.to_string()))?;
     Ok(
-        json!({"family":family(native.family()),"faces":faces,"measurements":{
+        json!({"family":family(native.family()),"stepSupport":step_support,"faces":faces,"measurements":{
             "volume":measure(native.volume(),"volume"),"surfaceArea":measure(native.surface_area(),"surfaceArea"),
             "bounds":bounds,"boundsKind":"conservativeNativeSupport","faces":storage.faces,"edges":storage.edges,"vertices":storage.vertices
         }}),
@@ -127,6 +139,11 @@ mod tests {
         .unwrap();
         let value = metadata(&NativeSource::from(loft), &BTreeMap::new()).unwrap();
         assert_eq!(value["family"], "loft");
+        assert_eq!(value["stepSupport"]["status"], "unsupported");
+        assert_eq!(
+            value["stepSupport"]["diagnostic"]["geometryFamily"],
+            "ruled"
+        );
         for measure in ["volume", "surfaceArea"] {
             assert_eq!(value["measurements"][measure]["status"], "unavailable");
             assert_eq!(

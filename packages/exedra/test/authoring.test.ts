@@ -9,7 +9,7 @@ function host() {
     build_document(text) {
       const graph = JSON.parse(text); requests.push(graph);
       if (graph.nodes.some((n: any) => n.depth === 99)) throw JSON.stringify({code:"pocket.invalid",operation:"solid.pocket",message:"Depth exceeds panel thickness",node:1});
-      return JSON.stringify({id:++next,units:graph.units,parts:graph.roots.map((r: any,index: number) => ({family:"extrusion",name:r.name,index,fingerprint:"f123456789abcdef123456789abcdef0",measurements:{volume:{status:"available",value:10},surfaceArea:{status:"available",value:20},boundsKind:"conservativeNativeSupport",bounds:[[0,0,0],[2,3,4]],faces:2,edges:3,vertices:4},faces:[{id:0,role:"floor",surface:"plane",feature:"recess",features:["recess"]},{id:1,role:"wall",surface:"cylinder",feature:"vents",features:["vents"]}]}))});
+      return JSON.stringify({id:++next,units:graph.units,parts:graph.roots.map((r: any,index: number) => ({family:"extrusion",name:r.name,index,fingerprint:"f123456789abcdef123456789abcdef0",stepSupport:{status:"supported"},measurements:{volume:{status:"available",value:10},surfaceArea:{status:"available",value:20},boundsKind:"conservativeNativeSupport",bounds:[[0,0,0],[2,3,4]],faces:2,edges:3,vertices:4},faces:[{id:0,role:"floor",surface:"plane",feature:"recess",features:["recess"]},{id:1,role:"wall",surface:"cylinder",feature:"vents",features:["vents"]}]}))});
     },
     release_document() { released++; },
     stats_json() { return JSON.stringify({documents:next-released,nativeParts:next-released,cacheEntries:0}); },

@@ -303,11 +303,16 @@ renderer.domElement.addEventListener("pointerup", event => {
   const entry = drawn.entries.find(e => e.mesh === hit.object)!;
   showSelection(entry.display.pickTriangle(hit.faceIndex)); element("selection-notice").textContent = "";
 });
-function setExportDisabled(disabled: boolean) { for (const button of document.querySelectorAll<HTMLButtonElement>(".downloads button")) button.disabled=disabled; }
+function setExportDisabled(disabled: boolean) { for (const button of document.querySelectorAll<HTMLButtonElement>(".downloads button")) button.disabled=disabled || button.dataset.stepSupported !== "true"; }
 function renderDownloads() {
   const box=document.querySelector<HTMLDivElement>(".downloads")!; box.replaceChildren();
-  for (const part of Object.keys(current?.parts ?? {})) {
-    const button=document.createElement("button"); button.id=`step-${part}`;button.textContent=`Download ${part} STEP`;button.onclick=()=>downloadStep(part);box.append(button);
+  for (const [name,part] of Object.entries(current?.parts ?? {})) {
+    const support=part.stepSupport;
+    const button=document.createElement("button"); button.id=`step-${name}`;button.textContent=`Download ${name} STEP`;button.onclick=()=>downloadStep(name);
+    button.dataset.stepSupported=String(support.status === "supported");button.disabled=support.status !== "supported" || !!draftError || !!displayError;box.append(button);
+    if(support.status === "unsupported") {
+      const reason=document.createElement("small");reason.textContent=`${name}: STEP does not support ${support.diagnostic.geometryFamily ?? "this geometry"}${support.diagnostic.face === undefined ? "" : ` (face ${support.diagnostic.face})`}.`;reason.title=support.diagnostic.message;box.append(reason);
+    }
   }
 }
 function downloadStep(part: string) {

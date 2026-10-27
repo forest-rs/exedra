@@ -12,7 +12,8 @@
     "predev": "npm run prepare:sdk",
     "build": "npm run prepare:sdk && tsc --noEmit && vite build",
     "preview": "vite preview --host 127.0.0.1 --port 5174 --strictPort",
-    "test:sdk": "node --experimental-strip-types --test ../../packages/exedra/test/*.test.ts"
+    "test:sdk": "node --experimental-strip-types --test ../../packages/exedra/test/*.test.ts",
+    "test:wasm": "node --experimental-strip-types scripts/smoke-wasm.mjs"
   },
   "dependencies": {
     "@exedra/authoring": "file:../../packages/exedra",

@@ -286,6 +286,23 @@ impl core::error::Error for StepError {
         }
     }
 }
+/// Checks structural STEP support without allocating output or realizing a mesh.
+///
+/// This checks supported native geometry families only. A successful result
+/// does not validate incidence, trims, placement, requested tolerance, timestamp
+/// or output budgets; [`export_body`] checks those independently. The same
+/// surface-family policy is used by the exporter's full preflight.
+/// # Errors
+/// Returns [`StepError::UnsupportedSurface`] with the native face and family.
+pub fn check_geometry_support<F, E>(body: &Body<F, E>) -> Result<(), StepError> {
+    for (index, face) in body.faces().iter().enumerate() {
+        preflight::surface_support(
+            &face.surface,
+            FaceId(u32::try_from(index).expect("native face IDs fit u32")),
+        )?;
+    }
+    Ok(())
+}
 
 /// Exports one connected, closed native shell with exact supported defining geometry.
 ///
