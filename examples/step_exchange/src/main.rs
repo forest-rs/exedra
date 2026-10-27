@@ -155,6 +155,59 @@ fn main() -> Result<(), Box<dyn Error>> {
             document.text.len()
         );
     }
+    for (name, placement, units, bounds) in [
+        (
+            "oblique-bore",
+            Placement3::IDENTITY,
+            LengthUnit::Millimetre,
+            [[-20.0, -15.0, 0.0], [20.0, 15.0, 10.0]],
+        ),
+        (
+            "placed-oblique-bore",
+            Placement3::from_axes(
+                [0.0, 0.0, -1.0],
+                [0.0, 1.0, 0.0],
+                [1.0, 0.0, 0.0],
+                [100.0, -30.0, 7.0],
+            ),
+            LengthUnit::Metre,
+            [[100.0, -45.0, -13.0], [110.0, -15.0, 27.0]],
+        ),
+    ] {
+        let plate = solid(rectangle(20.0, 15.0), vec![], 10.0);
+        let bored = plate.with_through_bore(
+            exedra_analytic::bore::Bore::new([0.0; 3], [0.5, 0.25, 1.0], 2.0)?.tagged(SegTag(91)),
+            &exedra_analytic::bore::BorePolicy {
+                separation: 1e-6,
+                geometry_gap: 1e-9,
+                min_axis_dot: 0.1,
+            },
+        )?;
+        let document = export_body(
+            bored.body(),
+            placement,
+            &StepOptions {
+                name,
+                units,
+                timestamp: "2026-01-01T00:00:00Z",
+                ..Default::default()
+            },
+        )?;
+        save(
+            &output,
+            &mut expected,
+            name,
+            &document,
+            bored.volume(),
+            bored.surface_area(),
+            bounds,
+        )?;
+        expected.last_mut().unwrap()["witnesses"] = serde_json::json!([
+            {"point":placement.transform_point([2.5,1.25,5.0]),"state":"outside"},
+            {"point":placement.transform_point([15.0,10.0,5.0]),"state":"inside"},
+            {"point":placement.transform_point([0.0,0.0,-2.0]),"state":"outside"}
+        ]);
+    }
     let body = periodic::cylinder();
     let unicode_name = "Café \\ Ω ' 🌀";
     let document = export_body(

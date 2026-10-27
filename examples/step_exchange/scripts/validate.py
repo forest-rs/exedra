@@ -9,6 +9,8 @@ import pathlib
 import sys
 
 try:
+    from OCP.BRepClass3d import BRepClass3d_SolidClassifier
+    from OCP.gp import gp_Pnt
     from OCP.BRepBndLib import BRepBndLib
     from OCP.BRepCheck import BRepCheck_Analyzer
     from OCP.BRepGProp import BRepGProp
@@ -17,7 +19,7 @@ try:
     from OCP.IFSelect import IFSelect_RetDone
     from OCP.STEPControl import STEPControl_Reader
     from OCP.StepBasic import StepBasic_Product
-    from OCP.TopAbs import TopAbs_EDGE, TopAbs_FACE, TopAbs_SHELL, TopAbs_SOLID, TopAbs_VERTEX
+    from OCP.TopAbs import TopAbs_IN, TopAbs_OUT, TopAbs_EDGE, TopAbs_FACE, TopAbs_SHELL, TopAbs_SOLID, TopAbs_VERTEX
     from OCP.TopExp import TopExp_Explorer
 except ImportError as error:
     print(json.dumps({"status": "unavailable", "reason": str(error)}))
@@ -88,11 +90,18 @@ def validate(folder, fixture):
     for actual, expected in zip(actual_bounds, fixture["bounds"]):
         for value, source in zip(actual, expected):
             close(value, source * scale)
+    witnesses = []
+    for witness in fixture.get("witnesses", []):
+        point = [v * scale for v in witness["point"]]
+        classifier = BRepClass3d_SolidClassifier(shape, gp_Pnt(*point), fixture["uncertainty"] * scale)
+        expected_state = {"inside": TopAbs_IN, "outside": TopAbs_OUT}[witness["state"]]
+        assert classifier.State() == expected_state, (witness, classifier.State())
+        witnesses.append({"point_mm": point, "state": witness["state"]})
     assert fixture["max_deviation"] <= fixture["uncertainty"]
     return {"file": fixture["file"], "valid": True, "solids": 1, "shells": 1,
             "faces": fixture["faces"], "edges": fixture["edges"], "vertices": fixture["vertices"],
             "volume_mm3": volume.Mass(), "area_mm2": area.Mass(), "bounds_mm": actual_bounds,
-            "product_name": product_name, "model_checks": model_checks, "transfer_checks": transfer_checks}
+            "product_name": product_name, "model_checks": model_checks, "transfer_checks": transfer_checks, "material_witnesses": witnesses}
 
 
 folder = pathlib.Path(sys.argv[1] if len(sys.argv) > 1 else "step-fixtures")

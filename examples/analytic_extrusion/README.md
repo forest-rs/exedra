@@ -199,3 +199,24 @@ Each edit returns an independent exact solid and maps transition walls to the
 original selected edges. The sample reselects after its second edit and requires
 deep validity, closure and a 0.03 mm mesh deviation contract. Full-length profile
 seams are the supported family; cap rims and pocket seams require other operations.
+
+
+## Exact oblique bores
+
+```sh
+cargo run --release -p analytic_extrusion --example oblique_bores -- /tmp/oblique-bores.glb
+blender --background --python examples/analytic_extrusion/render_oblique_bores.py -- /tmp/oblique-bores.glb /tmp/oblique-bores.png
+blender --background --python examples/analytic_extrusion/render_oblique_bores.py -- /tmp/oblique-bores.glb /tmp/oblique-bores-wire.png wire
+```
+
+Normal, 30° and 60° cylindrical bores pass completely through rectangular plates.
+Orange walls retain cylinders and exact ellipse rims; plate faces retain their
+source roles and tags. One authoring operation produces an immutable native
+result, rather than a sequence of faceted hole punches. All three display meshes
+must be closed, deeply valid and within 0.025 mm. The wire view overlays actual
+display triangles. The STEP exchange example independently checks corresponding
+native solids, measures, topology, units and material witnesses with OCCT.
+
+The first contract requires a plain unperforated rectangular plate and a bore
+whose entire section clears every sidewall by the requested separation. Parallel,
+near-parallel, sidewall-contact and unsupported source cases return diagnostics.
