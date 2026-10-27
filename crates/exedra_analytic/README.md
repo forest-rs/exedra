@@ -141,6 +141,22 @@ material callbacks can group whole features without guessing table indexes.
 An unlabelled pocket keeps its individual wall-segment tags. These caller
 labels are separate from each solid's local topology IDs.
 
+`profile_axial_edges` selects full-length profile seams, and
+`profile_axial_edges_tagged(label)` selects seams between pieces sharing a feature
+label. `with_axial_corners` applies shared `CornerTreatment` geometry directly
+to those native edge IDs. Chamfers retain planar transition walls; tangent
+fillets retain cylinders. The result includes every new profile segment's source
+interval or generating corner, plus each transition wall's original edge ID.
+Generated walls can receive one explicit feature tag for material selection.
+
+This bounded operation handles line-line corners on outer and hole loops.
+Cap rims, pocket seams, smooth seams and arc junctions are typed refusals.
+It returns an independent extrusion and preserves occurrence placement, length
+and pocket identities. Pockets are revalidated against each complete end once,
+with original pocket indices attached to arrangement diagnostics; depth and
+opposite-floor web checks share the ordinary pocket-construction logic. Native
+tables are built once after validation. No mesh rounding or Boolean is involved.
+
 `Extrusion::tessellate` realizes it under an explicit `TessellationPolicy`:
 - Each segment's sample count is chosen once and shared by both caps and its
   wall, so the mesh is closed by construction rather than welding.
@@ -186,7 +202,7 @@ plus its analytic-face provenance and emitted vertex displacement.
 Its builder shares edges by vertex identity and validates on `build()`.
 
 This crate is deliberately not a full CAD kernel: no surface intersections,
-booleans, fillets, healing or reverse conversion from meshes.
+booleans, general edge fillets, healing or reverse conversion from meshes.
 
 The default `std` feature selects native floating-point support. For `no_std`,
 disable defaults and enable `libm`. Realization trig always uses `libm`.

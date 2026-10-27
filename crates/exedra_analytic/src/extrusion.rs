@@ -49,12 +49,15 @@ use exedra_profile::{Curve, Loop, LoopRef, Profile, ProfileError, ProfilePolicy,
 
 mod authoring;
 mod boundary;
+mod finish;
+mod pocket;
 mod query;
 mod selection;
 mod tessellate;
 mod workplane;
 
 pub use authoring::ProfileExtrusionError;
+pub use finish::{AxialFinish, AxialFinishError, AxialTransition};
 pub use query::SurfacePoint;
 pub use workplane::{FaceSelectionError, Workplane, WorkplaneError};
 
@@ -432,75 +435,18 @@ impl Extrusion {
         pocket: Pocket,
         policy: &ProfilePolicy,
     ) -> Result<Self, ExtrusionError> {
-        let index = self.pockets.len();
-        let refuse = |error| ExtrusionError::Pocket {
-            pocket: index,
-            error,
-        };
-        let separation = policy.min_separation;
-        // Compare the remaining material directly: adding a small separation
-        // to a depth can round back to that depth and admit a zero web.
-        if !(pocket.depth.is_finite()
-            && pocket.depth > 0.0
-            && self.length - pocket.depth >= separation)
-        {
-            return Err(refuse(PocketError::InvalidDepth {
-                depth: pocket.depth,
-                length: self.length,
-                remaining: self.length - pocket.depth,
-                min_separation: separation,
-            }));
-        }
-        let holes_with = |others: &mut dyn Iterator<Item = &Loop>| {
-            let mut holes = self.profile.holes().to_vec();
-            holes.extend(others.cloned());
-            holes.push(pocket.outline.clone());
-            Profile::new(self.profile.outer().clone(), holes, policy)
-        };
-        holes_with(
-            &mut self
-                .pockets
-                .iter()
-                .filter(|p| p.end == pocket.end)
-                .map(|p| &p.outline),
-        )
-        .map_err(|error| refuse(PocketError::Arrangement(error)))?;
-        // Opposite pockets whose regions overlap share a web of material
-        // between their floors.
-        let mut webs = self.webs.clone();
-        for (other, existing) in self.pockets.iter().enumerate() {
-            if existing.end == pocket.end
-                || holes_with(&mut core::iter::once(&existing.outline)).is_ok()
-            {
-                continue;
-            }
-            let (end_depth, start_depth) = if pocket.end == End::End {
-                (pocket.depth, existing.depth)
-            } else {
-                (existing.depth, pocket.depth)
-            };
-            // Use the same floor coordinates stored by build().
-            if (self.length - end_depth) - start_depth < separation {
-                return Err(refuse(PocketError::BreaksThrough {
-                    other,
-                    remaining: (self.length - end_depth) - start_depth,
-                    min_separation: separation,
-                }));
-            }
-            webs.push(if pocket.end == End::End {
-                [index, other]
-            } else {
-                [other, index]
-            });
-        }
+        let additions =
+            pocket::checked_webs(&self.profile, self.length, &self.pockets, &pocket, policy)?;
         let Self {
             profile,
             frame,
             length,
             mut pockets,
+            mut webs,
             ..
         } = self;
         pockets.push(pocket);
+        webs.extend(additions);
         Self::build(profile, frame, length, pockets, webs)
     }
 
