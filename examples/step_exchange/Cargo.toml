@@ -8,10 +8,10 @@ repository.workspace = true
 publish = false
 
 [dependencies]
-exedra_step = { features = ["std"], workspace = true }
 exedra_analytic = { features = ["std"], workspace = true }
 exedra_math = { features = ["std"], workspace = true }
 exedra_profile.workspace = true
+exedra_step = { features = ["std"], workspace = true }
 serde_json.workspace = true
 
 [lints]

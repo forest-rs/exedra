@@ -24,7 +24,7 @@ exedra = "0.1"
 
 It enables `std`, `compile`, and `mesh_ops`; `compile` also enables
 `constructive`. `assembly` selects the same compilation service.
-`assembly`, `edit`, `analytic`, `isosurface`, `primitives`, `gltf`, and `serde`
+`assembly`, `edit`, `analytic`, `isosurface`, `primitives`, `gltf`, `step`, and `serde`
 interchange are opt-in. `gltf` and `serde` also select `std`. For a
 `no_std` application, disable defaults and select `libm` plus the needed heads:
 
@@ -49,6 +49,7 @@ their own operations and conversions directly.
 - `exedra::analytic`: planar analytic topology and tessellation.
 - `exedra::isosurface`: implicit fields and surface extraction.
 - `exedra::gltf`: glTF and GLB export.
+- `exedra::step`: exact native analytic STEP exchange with explicit units and reports.
 
 The primitive, analytic, isosurface, and export namespaces are opt-in. Use the
 namespace that owns an operation instead of expecting the facade to add

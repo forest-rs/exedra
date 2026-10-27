@@ -3,6 +3,7 @@
 # SPDX-License-Identifier: Apache-2.0 OR MIT
 """Independent OCCT oracle. Install cadquery-ocp separately; exit 77 if unavailable."""
 import json
+import importlib.metadata
 import math
 import pathlib
 import sys
@@ -15,6 +16,7 @@ try:
     from OCP.GProp import GProp_GProps
     from OCP.IFSelect import IFSelect_RetDone
     from OCP.STEPControl import STEPControl_Reader
+    from OCP.StepBasic import StepBasic_Product
     from OCP.TopAbs import TopAbs_EDGE, TopAbs_FACE, TopAbs_SHELL, TopAbs_SOLID, TopAbs_VERTEX
     from OCP.TopExp import TopExp_Explorer
 except ImportError as error:
@@ -53,8 +55,15 @@ def close(actual, expected, absolute=1e-7):
 def validate(folder, fixture):
     reader = STEPControl_Reader()
     assert reader.ReadFile(str(folder / fixture["file"])) == IFSelect_RetDone
+    reader.SetSystemLengthUnit(1.0)
     model_checks = checks(reader.WS().ModelCheckList(False))
     assert not model_checks, model_checks
+    model = reader.Model()
+    products = [model.Value(i) for i in range(1, model.NbEntities() + 1)
+                if isinstance(model.Value(i), StepBasic_Product)]
+    assert len(products) == 1
+    product_name = products[0].Name().ToCString()
+    assert product_name == fixture.get("product_name", pathlib.Path(fixture["file"]).stem)
     assert reader.TransferRoots() == 1
     transfer_checks = checks(reader.WS().TransferReader().TransientProcess().CheckList(False))
     assert not transfer_checks, transfer_checks
@@ -83,13 +92,13 @@ def validate(folder, fixture):
     return {"file": fixture["file"], "valid": True, "solids": 1, "shells": 1,
             "faces": fixture["faces"], "edges": fixture["edges"], "vertices": fixture["vertices"],
             "volume_mm3": volume.Mass(), "area_mm2": area.Mass(), "bounds_mm": actual_bounds,
-            "model_checks": model_checks, "transfer_checks": transfer_checks}
+            "product_name": product_name, "model_checks": model_checks, "transfer_checks": transfer_checks}
 
 
 folder = pathlib.Path(sys.argv[1] if len(sys.argv) > 1 else "step-fixtures")
 try:
     fixtures = json.loads((folder / "expected.json").read_text())
-    report = {"status": "passed", "reader": "OCCT via cadquery-ocp", "fixtures": [validate(folder, f) for f in fixtures]}
+    report = {"status": "passed", "reader": "OCCT via cadquery-ocp", "reader_package_version": importlib.metadata.version("cadquery-ocp"), "fixtures": [validate(folder, f) for f in fixtures]}
 except Exception as error:
     print(json.dumps({"status": "failed", "reason": str(error)}))
     raise

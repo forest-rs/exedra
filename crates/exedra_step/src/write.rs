@@ -15,7 +15,7 @@ use exedra_math::{Placement3, norm};
 
 struct Buffer {
     text: String,
-    next: u32,
+    next: u64,
     entities: u32,
     bytes: usize,
     required: usize,
@@ -40,14 +40,14 @@ impl Buffer {
         })
     }
     fn entity(&mut self, args: fmt::Arguments<'_>) -> Result<StepEntityId, StepError> {
-        if self.next > self.entities {
+        if self.next > u64::from(self.entities) {
             return Err(StepError::Budget {
                 resource: "entities",
-                required: self.next as usize,
+                required: usize::try_from(self.next).unwrap_or(usize::MAX),
                 maximum: self.entities as usize,
             });
         }
-        let id = StepEntityId(self.next);
+        let id = StepEntityId(u32::try_from(self.next).expect("entity budget"));
         self.next += 1;
         self.append(format_args!("{}={};\n", Id(id), args))?;
         Ok(id)
@@ -308,7 +308,7 @@ pub(super) fn export<F, E>(
         Id(representation)
     ))?;
     out.append(format_args!("ENDSEC;\nEND-ISO-10303-21;\n"))?;
-    prepared.counts.entities = out.next - 1;
+    prepared.counts.entities = u32::try_from(out.next - 1).expect("entity budget");
     let report = StepReport {
         schema: SCHEMA,
         units: options.units,
@@ -329,6 +329,27 @@ pub(super) fn export<F, E>(
 mod tests {
     use super::*;
     use alloc::format;
+    #[test]
+    fn maximum_entity_id_is_emitted_without_counter_overflow() {
+        let mut buffer = Buffer {
+            text: String::new(),
+            next: u64::from(u32::MAX),
+            entities: u32::MAX,
+            bytes: 256,
+            required: 0,
+        };
+        assert_eq!(
+            buffer.entity(format_args!("DUMMY()")).unwrap(),
+            StepEntityId(u32::MAX)
+        );
+        assert!(matches!(
+            buffer.entity(format_args!("DUMMY()")),
+            Err(StepError::Budget {
+                resource: "entities",
+                ..
+            })
+        ));
+    }
     #[test]
     fn step_reals_round_trip_binary64_and_always_have_real_lexical_form() {
         for value in [
