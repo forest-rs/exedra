@@ -70,7 +70,11 @@ const ground = new THREE.Mesh(new THREE.PlaneGeometry(500, 400), new THREE.Shado
 const grid = new THREE.GridHelper(400, 40, 0x60717d, 0x3c4c59); grid.rotation.x = Math.PI / 2; grid.position.z = -0.25; (grid.material as THREE.Material).transparent = true; (grid.material as THREE.Material).opacity = 0.2; scene.add(grid);
 const resize = () => { const { width, height } = viewport.getBoundingClientRect(); renderer.setSize(width, height); camera.aspect = width / height; camera.updateProjectionMatrix(); };
 new ResizeObserver(resize).observe(viewport); resize();
-function frame() { orbit.update(); renderer.render(scene, camera); requestAnimationFrame(frame); }
+function frame() {
+  // Consume the latest edit before drawing, so the new model is submitted in this frame.
+  if (pendingBuild) { pendingBuild = false; rebuild(); }
+  orbit.update(); renderer.render(scene, camera); requestAnimationFrame(frame);
+}
 requestAnimationFrame(frame);
 
 interface Entry { part: NativePart; display: Realization; mesh: THREE.Mesh<THREE.BufferGeometry, THREE.MeshStandardMaterial[]> }
@@ -215,11 +219,13 @@ function rebuild() {
   try { candidate = session.build(authorPanel(parameters())); const view = draw(candidate); accept(candidate, view, true); }
   catch (error) { candidate?.dispose(); draftError = error; reportError(error); }
 }
-let timer: ReturnType<typeof setTimeout>;
+// One pending frame reads the latest controls; dragging never queues obsolete builds.
+let pendingBuild = false;
+function scheduleBuild() { pendingBuild = true; }
 for (const key of controlsNames) {
   const input = element<HTMLInputElement>(key);
   const label = () => { element(`${key}-value`).textContent = `${input.value} mm`; };
-  label(); input.addEventListener("input", () => { label(); clearTimeout(timer); timer = setTimeout(rebuild, 110); });
+  label(); input.addEventListener("input", () => { label(); scheduleBuild(); });
 }
 element<HTMLSelectElement>("quality").onchange = () => {
   if (!current) return;
@@ -262,7 +268,7 @@ element<HTMLButtonElement>("lifecycle").onclick = () => {
     ownership();
   } catch (error) { element("lifecycle-result").textContent = String(error); }
 };
-window.addEventListener("beforeunload", () => { clearHighlight(); if (drawn) dispose(drawn); session?.dispose(); renderer.dispose(); orbit.dispose(); });
+window.addEventListener("beforeunload", () => { pendingBuild = false; clearHighlight(); if (drawn) dispose(drawn); session?.dispose(); renderer.dispose(); orbit.dispose(); });
 try {
   session = await createSession({ units: "mm", separation: 1e-6 });
   rebuild(); element<HTMLButtonElement>("lifecycle").disabled = false;
