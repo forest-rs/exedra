@@ -119,7 +119,7 @@ export class Solid {
   }
   /** @internal Lowered only by the authoring workplane. */
   static onFace(host: Solid, face: FaceSelector, profile: Profile, height: number, offset: number, at: XY): Solid {
-    return new Solid({ kind: "onFace", host, face, profile, height, offset, at });
+    return new Solid({ kind: "onFace", host, face: Object.freeze({ ...face }), profile, height: finite(height, "height"), offset: finite(offset, "offset"), at: point(at) });
   }
 }
 export const extrude = Solid.extrude;
@@ -144,7 +144,7 @@ export class AuthoringWorkplane {
   private readonly distance: number;
   private readonly at: XY;
   constructor(host: Solid, selector: FaceSelector, distance = 0, at: XY = [0, 0]) {
-    this.host = host; this.selector = selector; this.distance = distance; this.at = at;
+    this.host = host; this.selector = Object.freeze({ ...selector }); this.distance = finite(distance, "offset"); this.at = point(at);
     Object.freeze(this);
   }
   offset(distance: number): AuthoringWorkplane {
@@ -162,7 +162,7 @@ export class AuthoringWorkplane {
 export interface NativeMeasurements {
   volume: number;
   surfaceArea: number;
-  bounds: [[number, number, number], [number, number, number]];
+  bounds: readonly [readonly [number, number, number], readonly [number, number, number]];
   faces: number;
   edges: number;
   vertices: number;
@@ -274,6 +274,18 @@ function graph(parts: Record<string, Solid>, units: LengthUnit, separation: numb
   const roots = Object.entries(parts).map(([key, solid]) => ({ name: name(key), node: visit(solid) }));
   return { units, separation, profiles: profileSpecs, nodes, roots };
 }
+/** Logical owners and payloads; document/cache payloads overlap and exclude render buffers and allocator overhead. */
+export interface OwnershipStats {
+  documents: number;
+  nativeParts: number;
+  cacheEntries: number;
+  documentNativeSources: number;
+  documentBoundaryBytes: number;
+  cacheNativeSources: number;
+  cacheBoundaryBytes: number;
+  maxDocuments: number;
+  cacheCapacity: number;
+}
 let nextSession = 1;
 
 /** Owns native documents and a bounded compiler cache. Dispose when the host releases the session. */
@@ -297,7 +309,7 @@ export class AuthoringSession {
     this.documents.add(document);
     return document as NativeDocument & { readonly parts: { readonly [K in keyof T]: NativePart } };
   }
-  stats(): { documents: number; nativeParts: number; cacheEntries: number } {
+  stats(): OwnershipStats {
     return JSON.parse(nativeCall(() => this.backend().stats_json()));
   }
   dispose(): void {
@@ -349,7 +361,7 @@ export class NativePart {
   constructor(document: NativeDocument, metadata: PartMetadata) {
     this.document = document; this.index = metadata.index; this.name = metadata.name;
     this.id = `${document.id}/part-${metadata.index}`; this.fingerprint = metadata.fingerprint;
-    this.measurements = Object.freeze(metadata.measurements);
+    this.measurements = Object.freeze({ ...metadata.measurements, bounds: Object.freeze(metadata.measurements.bounds.map(corner => Object.freeze([...corner]))) as unknown as NativeMeasurements["bounds"] });
     this.faceTable = Object.freeze(metadata.faces.map(face => Object.freeze(face)));
     Object.freeze(this);
   }
