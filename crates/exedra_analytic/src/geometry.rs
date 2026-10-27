@@ -657,9 +657,7 @@ pub(crate) fn rigid(frame: Placement3) -> Result<(), GeometryError> {
     .map_err(GeometryError::Frame)
 }
 pub(crate) fn vector(frame: Placement3, p: [f64; 3]) -> [f64; 3] {
-    frame
-        .rows
-        .map(|row| row[0] * p[0] + row[1] * p[1] + row[2] * p[2])
+    frame.transform_vector(p)
 }
 fn finite(p: [f64; 3]) -> bool {
     p.into_iter().all(f64::is_finite)

@@ -342,6 +342,31 @@ mod tests {
     use super::*;
 
     #[test]
+    fn placement_vectors_preserve_linear_transform_and_ignore_translation() {
+        let affine = Placement3::from_axes(
+            [2.0, 0.0, 0.0],
+            [0.0, -3.0, 0.0],
+            [0.0, 0.0, 0.5],
+            [100.0, -20.0, 7.0],
+        );
+        let vector = [1.0, 2.0, 4.0];
+        assert_eq!(affine.transform_vector(vector), [2.0, -6.0, 2.0]);
+        assert_eq!(affine.transform_point(vector), [102.0, -26.0, 9.0]);
+        assert_eq!(affine.transform_vector([0.0; 3]), [0.0; 3]);
+        let shear = Placement3::from_axes(
+            [1.0, 0.0, 0.0],
+            [0.5, 1.0, 0.0],
+            [0.0, 0.0, 1.0],
+            [-3.0, 8.0, 1.0],
+        );
+        assert_eq!(
+            (shear * affine).transform_vector(vector),
+            shear.transform_vector(affine.transform_vector(vector))
+        );
+        assert_eq!((shear * affine).transform_vector(vector), [-1.0, -6.0, 2.0]);
+    }
+
+    #[test]
     fn axis_rotations_agree_with_quaternions_and_are_right_handed() {
         let angle = 0.7_f64;
         for (axis, placement) in [
