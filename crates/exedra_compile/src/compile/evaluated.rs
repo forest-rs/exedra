@@ -274,6 +274,8 @@ impl SnapshotBody {
     }
 
     /// Selects the native source of a topology face in this realization.
+    /// The input mesh ID is local to this realization; the returned source-scoped
+    /// token remains valid across display-policy changes.
     /// Returns `None` for nonnative bodies or an unknown mesh face.
     #[must_use]
     pub fn native_face(&self, face: exedra_mesh::FaceId) -> Option<crate::NativeFaceSelection> {
@@ -284,6 +286,8 @@ impl SnapshotBody {
     }
 
     /// Selects the native source of one final render triangle ordinal.
+    /// The ordinal is local to this realization; the returned source-scoped token
+    /// remains valid across display-policy changes.
     /// This follows the compiler's actual regrouping and needs no region decoding.
     /// Returns `None` for nonnative bodies or unknown triangle ordinals.
     #[must_use]

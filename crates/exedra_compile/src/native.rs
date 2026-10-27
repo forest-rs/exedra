@@ -156,7 +156,9 @@ pub struct NativeBoundaryStorage {
 ///
 /// Native IDs refer to [`crate::SnapshotBody::native`]'s installed source.
 /// The source remains immutable while each display policy produces its own
-/// realization. Mapping through this record never reconstructs source geometry.
+/// realization. Mesh IDs and triangle ordinals are local to this particular
+/// realization; retain a [`NativeFaceSelection`] to cross display-policy changes.
+/// Mapping through this record never reconstructs source geometry.
 #[derive(Clone, Debug)]
 pub struct NativeRealization {
     /// Native source of each mesh face, in mesh-face order.

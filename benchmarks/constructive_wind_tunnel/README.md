@@ -306,3 +306,22 @@ The comparison separates authoring, prepared construction, exact queries, fresh
 meshing, indexed output and end-to-end work, with independent geometric checks
 and explicit angular/tolerance/cache policies. It includes both public build123d
 extraction and indexed OCCT extraction through Python bindings.
+
+## Native retention
+
+```sh
+cargo run --release -p constructive_wind_tunnel --bin native_retention
+```
+
+The rounded pocketed panel is installed once and displayed at coarse and fine
+policies. Before timing, the workload verifies closed valid meshes, native floor
+workplane access, final render-triangle correspondence, fresh equal-content
+selection rejection, shared cached buffers, and snapshot survival after eviction.
+It also registers the native part in a two-occurrence assembly and checks that
+legacy interchange returns its typed unsupported-source diagnosis.
+
+It reports installation with constructor cloning separately from cold realization
+and prepared cache-hit snapshots. All raw timing samples are emitted, with three
+warmups and destruction outside timing. Native boundary-table payload and cache
+work counters are separate from mesh/render buffers; the payload is explicitly
+not total source memory. Cache-hit samples must perform no new native realization.
