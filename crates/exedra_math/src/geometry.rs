@@ -221,6 +221,18 @@ impl Placement3 {
         self.rows
             .map(|r| r[0] * point[0] + r[1] * point[1] + r[2] * point[2] + r[3])
     }
+
+    /// Maps a vector by the linear part, without applying translation.
+    ///
+    /// Lengths and angles follow the placement's linear map; the result is not
+    /// normalized. This is suitable for displacements and curve derivatives.
+    /// Transforming normals under a non-rigid placement requires its inverse
+    /// transpose instead.
+    #[must_use]
+    pub fn transform_vector(&self, vector: [f64; 3]) -> [f64; 3] {
+        self.rows
+            .map(|r| r[0] * vector[0] + r[1] * vector[1] + r[2] * vector[2])
+    }
 }
 
 /// `outer * inner` applies `inner` first, then `outer`.
