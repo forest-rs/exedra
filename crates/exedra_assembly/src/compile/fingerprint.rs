@@ -67,6 +67,7 @@ pub fn assembly_fingerprint(assembly: &Assembly) -> u128 {
         let content = match def.source() {
             PartSource::Recipe(recipe) => recipe.recipe_fingerprint().0,
             PartSource::Baked(mesh) => baked_geometry_fingerprint(mesh).0,
+            PartSource::Native(source) => source.fingerprint().0,
         };
         bytes.extend_from_slice(&content.to_le_bytes());
         bytes.extend_from_slice(&crate::len_u32(def.slots().len()).to_le_bytes());

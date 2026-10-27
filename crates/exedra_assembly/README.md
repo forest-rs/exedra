@@ -1,7 +1,7 @@
 # `exedra_assembly`
 
 Structure head for the Exedra geometry stack: part definitions (constructive
-recipes or baked meshes), instance trees with stable string-key identity,
+recipes, baked meshes or immutable native constructions), instance trees with stable string-key identity,
 material slot binding, content-addressed part compilation, and a flat
 `RenderList` seam for drawables with placed world bounds. Compiled parts expose
 once-per-part, part-local geometry accounting; render lists expose placed,
@@ -32,6 +32,14 @@ workflows. Neither `gltf` nor `serde` selects it. Use `assembly,gltf` or
 Assembly remains a standalone structure/export surface with part registration,
 placements and opaque material binding. It owns no evaluation or extraction
 algorithm and no separate geometry cache.
+
+`add_native_part` registers a compiler-owned `NativeSource` with explicit material
+slots. Compilation retains the installed analytic model and its separate display
+realization through the ordinary snapshot service. Native selections survive
+display-quality changes; mesh selections keep their existing snapshot scope.
+The v1 recipe/baked interchange remains unchanged: `interchange::to_dto` is
+fallible and reports a native part's index, key and family instead of silently
+baking or dropping it. Use a native CAD exchange adapter for that geometry.
 
 `CompiledBody::signed_volume()` measures the existing part-local triangle buffers
 without retaining topology or evaluating geometry again. The returned

@@ -2,7 +2,7 @@
 
 Content-addressed geometry compilation and retained queries, independently of
 assembly or scene composition. Supply borrowed `PartInput` records containing
-caller-owned diagnostic keys and recipes or baked meshes. The service owns no
+caller-owned diagnostic keys and recipes, baked meshes or installed native models. The service owns no
 hierarchy, occurrence placements, appearance binding or persistent scene identity.
 
 `PartCompiler::compile_parts` produces triangle buffers and complete recipe
@@ -43,6 +43,37 @@ callers can use these records and snapshots directly without creating an
 `Assembly`. The crate is `no_std` with `alloc` and requires
 pointer-width atomics; the `std` feature forwards host support to dependencies.
 
+## Retained native models
+
+Install an immutable analytic construction with `NativeSource::from(extrusion)`
+and `PreparedSource::new(PartSource::Native(native.clone()))`. Extrusions,
+revolutions, sweeps and ruled lofts retain their original typed geometry and source
+roles. Canonical source identity is captured once at installation, independently
+of display tolerance. Cloning the source shares that installation.
+
+`CompilePolicy::native` explicitly controls native realization accuracy and work
+budgets. Compile the same prepared input at coarse and fine tolerances; each
+snapshot retains its mesh and `native_realization()` report/correspondence while
+`SnapshotBody::native()` exposes the original immutable constructor. Native area
+and volume queries avoid meshing; unsupported measures, currently ruled-loft
+area/volume, return a typed availability error. Use the original typed extrusion
+for tagged floor/workplane queries and generic-body CAD export.
+
+`native_render_face(triangle)` follows the actual grouped render index buffer.
+It returns a source-scoped native selection, without inferring provenance from
+render regions or requiring a draw group per native face. Native selections
+survive tolerance changes and eviction. A freshly installed equal-content source
+can share cached render buffers but rejects the earlier source's native selections.
+Mesh workplanes and other mesh query selections retain their existing per-snapshot
+scope. The mesh source map describes the realized mesh; native provenance comes
+from the explicit native correspondence record.
+
+`CompileCounters::native_realizations` counts real cache-miss/upgrade work.
+`native_storage()` surveys distinct sources retained by cache entries separately
+from display buffers. Its boundary payload byte count excludes construction
+records, allocator overhead and spare capacity; it is not total heap residency.
+Held sources and snapshots can outlive cache eviction and remain usable.
+
 ## Input identity migration
 
 Replace `PartInput { key, source }` literals with `PartInput::new(key, source)`.
@@ -57,3 +88,7 @@ installation boundary for part registration and replacement.
 ## License
 
 Apache-2.0 OR MIT
+
+Native measure results are positive and finite when available. Unsupported family queries
+return `NativeMeasureError::Unavailable`; a supported calculation failing to produce a positive finite result returns `NumericLimit`, naming the family and measure.
+Other queries on that immutable source remain available.

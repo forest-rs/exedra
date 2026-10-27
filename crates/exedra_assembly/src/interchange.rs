@@ -189,6 +189,16 @@ pub struct MetadataDto {
 pub enum AssemblyInterchangeError {
     /// Wrong format name or unsupported version.
     UnsupportedFormat,
+    /// The v1 document cannot encode a retained native source. Live assembly
+    /// compilation remains supported; no implicit mesh conversion is performed.
+    UnsupportedNativeSource {
+        /// Input-local part index.
+        part: u32,
+        /// Original caller part key.
+        key: String,
+        /// Native construction family requiring another exchange path.
+        family: exedra_compile::NativeFamily,
+    },
     /// An embedded recipe failed to rebuild.
     Recipe(InterchangeError),
     /// A baked mesh failed to rebuild.
@@ -206,6 +216,10 @@ impl core::fmt::Display for AssemblyInterchangeError {
     fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
         match self {
             Self::UnsupportedFormat => write!(f, "unsupported format or version"),
+            Self::UnsupportedNativeSource { part, key, family } => write!(
+                f,
+                "assembly v1 cannot encode native part {key:?} ({part}, {family:?})"
+            ),
             Self::Recipe(e) => write!(f, "embedded recipe failed to rebuild: {e}"),
             Self::InvalidMesh => write!(f, "baked mesh failed to rebuild"),
             Self::DanglingPart(i) => write!(f, "instance references unknown part index {i}"),
@@ -225,13 +239,17 @@ impl From<AssemblyError> for AssemblyInterchangeError {
     }
 }
 
-/// Serializes an assembly to its interchange document.
-#[must_use]
-pub fn to_dto(assembly: &Assembly) -> AssemblyDto {
+/// Serializes supported recipe and baked parts to the v1 interchange document.
+///
+/// # Errors
+/// Native sources are refused with their part index, key and construction family.
+/// Exporting never silently bakes or drops native geometry.
+pub fn to_dto(assembly: &Assembly) -> Result<AssemblyDto, AssemblyInterchangeError> {
     let parts = assembly
         .parts()
         .iter()
-        .map(|def| {
+        .enumerate()
+        .map(|(index, def)| {
             let source = match def.source() {
                 PartSource::Recipe(recipe) => PartSourceDto::Recipe {
                     recipe: exedra_constructive::interchange::to_dto(recipe),
@@ -240,11 +258,18 @@ pub fn to_dto(assembly: &Assembly) -> AssemblyDto {
                     mesh: mesh_to_dto(mesh),
                     slots: def.slots().to_vec(),
                 },
+                PartSource::Native(source) => {
+                    return Err(AssemblyInterchangeError::UnsupportedNativeSource {
+                        part: crate::len_u32(index),
+                        key: String::from(def.key()),
+                        family: source.family(),
+                    });
+                }
             };
             let slot_name = |index: crate::assembly::SlotIndex| -> String {
                 def.slots()[index.0 as usize].clone()
             };
-            PartDto {
+            Ok(PartDto {
                 key: String::from(def.key()),
                 source,
                 region_slots: def
@@ -276,9 +301,9 @@ pub fn to_dto(assembly: &Assembly) -> AssemblyDto {
                         })
                     })
                     .collect(),
-            }
+            })
         })
-        .collect();
+        .collect::<Result<Vec<_>, _>>()?;
     let instances = assembly
         .instances()
         .iter()
@@ -340,13 +365,13 @@ pub fn to_dto(assembly: &Assembly) -> AssemblyDto {
             }
         })
         .collect();
-    AssemblyDto {
+    Ok(AssemblyDto {
         format: String::from(FORMAT),
         version: VERSION,
         parts,
         instances,
         placement_sets,
-    }
+    })
 }
 
 /// Rebuilds an assembly from its interchange document, re-running every
@@ -476,7 +501,9 @@ fn mesh_from_dto(dto: &MeshDto) -> Result<exedra_mesh::Mesh, AssemblyInterchange
 /// Exposed for hosts that want the same check this crate's tests run.
 #[must_use]
 pub fn round_trips(assembly: &Assembly) -> bool {
-    let dto = to_dto(assembly);
+    let Ok(dto) = to_dto(assembly) else {
+        return false;
+    };
     match from_dto(&dto) {
         Ok(rebuilt) => assembly_fingerprint(&rebuilt) == assembly_fingerprint(assembly),
         Err(_) => false,
@@ -567,7 +594,7 @@ mod tests {
         let asm = corpus_assembly();
         assert!(round_trips(&asm), "corpus must round-trip bit-exactly");
         // And through actual JSON text, not just DTOs.
-        let json = serde_json::to_string(&to_dto(&asm)).unwrap();
+        let json = serde_json::to_string(&to_dto(&asm).unwrap()).unwrap();
         let dto: AssemblyDto = serde_json::from_str(&json).unwrap();
         let rebuilt = from_dto(&dto).unwrap();
         assert_eq!(
@@ -592,7 +619,7 @@ mod tests {
         source
             .add_frame(None, "frame", Placement3::IDENTITY)
             .unwrap();
-        let wire = serde_json::to_value(to_dto(&source)).unwrap();
+        let wire = serde_json::to_value(to_dto(&source).unwrap()).unwrap();
         assert_eq!(wire["instances"][0]["part"], 0);
         assert!(wire["instances"][1]["part"].is_null());
         let dto: AssemblyDto = serde_json::from_value(wire.clone()).unwrap();
@@ -618,25 +645,25 @@ mod tests {
     #[test]
     fn header_and_reference_validation() {
         let asm = corpus_assembly();
-        let mut dto = to_dto(&asm);
+        let mut dto = to_dto(&asm).unwrap();
         dto.format = String::from("other");
         assert!(matches!(
             from_dto(&dto),
             Err(AssemblyInterchangeError::UnsupportedFormat)
         ));
-        let mut dto = to_dto(&asm);
+        let mut dto = to_dto(&asm).unwrap();
         dto.version = VERSION + 1;
         assert!(matches!(
             from_dto(&dto),
             Err(AssemblyInterchangeError::UnsupportedFormat)
         ));
-        let mut dto = to_dto(&asm);
+        let mut dto = to_dto(&asm).unwrap();
         dto.instances[0].part = Some(99);
         assert!(matches!(
             from_dto(&dto),
             Err(AssemblyInterchangeError::DanglingPart(99))
         ));
-        let mut dto = to_dto(&asm);
+        let mut dto = to_dto(&asm).unwrap();
         dto.instances[0].parent = Some(5);
         assert!(matches!(
             from_dto(&dto),
@@ -647,7 +674,7 @@ mod tests {
     #[test]
     fn unknown_fields_tolerated_unknown_kinds_rejected() {
         let asm = corpus_assembly();
-        let json = serde_json::to_string(&to_dto(&asm)).unwrap();
+        let json = serde_json::to_string(&to_dto(&asm).unwrap()).unwrap();
         // Additive tolerance: inject an unknown field.
         let extended = json.replacen(
             "\"format\":",
@@ -683,7 +710,7 @@ mod tests {
     #[ignore = "regenerates the frozen schema corpus; run deliberately"]
     fn bless_frozen_schema() {
         let asm = corpus_assembly();
-        let json = serde_json::to_string_pretty(&to_dto(&asm)).unwrap();
+        let json = serde_json::to_string_pretty(&to_dto(&asm).unwrap()).unwrap();
         let fingerprint = alloc::format!("{:#034x}\n", assembly_fingerprint(&asm));
         let dir = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("goldens");
         std::fs::create_dir_all(&dir).expect("goldens dir");
@@ -716,7 +743,7 @@ mod tests {
         asm.add_placement_set(None, "loose", panel, alloc::vec![Placement3::IDENTITY])
             .unwrap();
 
-        let dto = to_dto(&asm);
+        let dto = to_dto(&asm).unwrap();
         assert_eq!(dto.placement_sets.len(), 2);
         assert!(round_trips(&asm));
 

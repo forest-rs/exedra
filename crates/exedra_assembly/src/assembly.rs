@@ -421,6 +421,33 @@ impl Assembly {
         self.add_part_inner(key, PartSource::Baked(mesh), slots, None)
     }
 
+    /// Registers an immutable native model with explicitly declared material slots.
+    /// Native geometry and display realization stay separate through compilation.
+    /// The legacy v1 interchange refuses native parts explicitly.
+    ///
+    /// # Errors
+    /// Fails on duplicate/invalid part keys or duplicate slot names.
+    pub fn add_native_part(
+        &mut self,
+        key: &str,
+        source: exedra_compile::NativeSource,
+        slots: &[&str],
+    ) -> Result<PartId, AssemblyError> {
+        let mut seen = Vec::new();
+        for slot in slots {
+            if seen.contains(slot) {
+                return Err(AssemblyError::DuplicateSlot((*slot).to_string()));
+            }
+            seen.push(slot);
+        }
+        self.add_part_inner(
+            key,
+            PartSource::Native(source),
+            slots.iter().map(|s| (*s).to_string()).collect(),
+            None,
+        )
+    }
+
     fn add_part_inner(
         &mut self,
         key: &str,

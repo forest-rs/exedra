@@ -332,6 +332,10 @@ fn compile_scenario(params: &BasilicaPremises, compiler: &mut PartCompiler) -> S
 
 fn counter_delta(before: CompileCounters, after: CompileCounters) -> CompileCounters {
     CompileCounters {
+        native_realizations: after
+            .native_realizations
+            .checked_sub(before.native_realizations)
+            .expect("compiler counters are monotonic"),
         parts_compiled: after
             .parts_compiled
             .checked_sub(before.parts_compiled)
