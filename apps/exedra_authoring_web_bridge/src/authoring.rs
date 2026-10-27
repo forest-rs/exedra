@@ -72,6 +72,9 @@ enum ProfileNode {
     Polygon {
         points: Vec<[f64; 2]>,
     },
+    Loop {
+        segments: Vec<ProfileSegment>,
+    },
     Rectangle {
         width: f64,
         height: f64,
@@ -101,6 +104,44 @@ enum ProfileNode {
         template: u32,
         positions: Vec<[f64; 2]>,
     },
+}
+#[derive(Debug, Deserialize)]
+#[serde(tag = "kind", rename_all = "camelCase", deny_unknown_fields)]
+enum ProfileSegment {
+    Line {
+        to: [f64; 2],
+        feature: Option<String>,
+    },
+    Arc {
+        to: [f64; 2],
+        center: [f64; 2],
+        clockwise: bool,
+        feature: Option<String>,
+    },
+}
+impl ProfileSegment {
+    fn feature(&self) -> Option<&str> {
+        match self {
+            Self::Line { feature, .. } | Self::Arc { feature, .. } => feature.as_deref(),
+        }
+    }
+    fn lower(&self, labels: &BTreeMap<String, SegTag>) -> exedra_profile::Segment {
+        let tag = self
+            .feature()
+            .and_then(|name| labels.get(name))
+            .copied()
+            .unwrap_or(UNNAMED);
+        match self {
+            Self::Line { to, .. } => exedra_profile::Segment::line(*to),
+            Self::Arc {
+                to,
+                center,
+                clockwise,
+                ..
+            } => exedra_profile::Segment::arc_centered(*to, *center, *clockwise),
+        }
+        .tagged(tag)
+    }
 }
 #[derive(Debug, Deserialize)]
 #[serde(tag = "kind", rename_all = "camelCase", deny_unknown_fields)]
@@ -447,6 +488,16 @@ impl Request {
                     labels.insert(name.clone());
                 }
                 ProfileNode::Translated { profile, .. } => dependency(*profile)?,
+                ProfileNode::Loop { segments } => {
+                    for segment in segments {
+                        if let Some(feature) = segment.feature() {
+                            if !label(feature) {
+                                return Err(Error::new("input.name","document.validate","Segment feature names must contain text and fit in 128 UTF-8 bytes").profile(i));
+                            }
+                            labels.insert(feature.to_string());
+                        }
+                    }
+                }
                 ProfileNode::Corners {
                     profile,
                     at,
@@ -505,6 +556,7 @@ impl Request {
                 ProfileNode::RoundedRectangle { .. } => 8,
                 ProfileNode::Circle { .. } => 2,
                 ProfileNode::Polygon { points } => points.len(),
+                ProfileNode::Loop { segments } => segments.len(),
                 ProfileNode::Tagged { profile, .. } | ProfileNode::Translated { profile, .. } => {
                     counts[*profile as usize]
                 }
@@ -704,6 +756,57 @@ impl Request {
                     )
                     .map_err(|e| failure(e.to_string()))?,
                 )?,
+                ProfileNode::Loop { segments } => {
+                    let lowered = segments
+                        .iter()
+                        .map(|segment| segment.lower(&labels))
+                        .collect();
+                    let boundary = exedra_profile::Loop::new(lowered).map_err(|error| {
+                        if let exedra_profile::LoopError::InvalidArc { segment } = error {
+                            let current = segments[segment].lower(&labels);
+                            let from = segments[(segment + segments.len() - 1) % segments.len()]
+                                .lower(&labels)
+                                .to;
+                            let error =
+                                exedra_profile::Arc::resolve(from, current.to, current.curve)
+                                    .expect_err("invalid arc");
+                            let code = match error {
+                                exedra_profile::ArcError::EndpointRadii { .. } => {
+                                    "profile.arc.endpointRadii"
+                                }
+                                exedra_profile::ArcError::NumericLimit => {
+                                    "profile.arc.numericLimit"
+                                }
+                                _ => "profile.arc.input",
+                            };
+                            let mut diagnostic =
+                                Error::new(code, "profile.loop", error.to_string()).profile(i);
+                            diagnostic.context_mut().segment = Some(segment);
+                            if let exedra_profile::ArcError::EndpointRadii {
+                                start_radius,
+                                end_radius,
+                                roundoff_bound,
+                            } = error
+                            {
+                                diagnostic.context_mut().start_radius = Some(start_radius);
+                                diagnostic.context_mut().end_radius = Some(end_radius);
+                                diagnostic.context_mut().radius_roundoff_bound =
+                                    Some(roundoff_bound);
+                            }
+                            if let Some(tag) = current.tag {
+                                diagnostic.context_mut().feature = labels
+                                    .iter()
+                                    .find(|(_, v)| **v == tag)
+                                    .map(|(name, _)| name.clone());
+                            }
+                            diagnostic
+                        } else {
+                            failure(error.to_string())
+                        }
+                    })?;
+                    SharedProfile::new(boundary, Vec::new(), &policy)
+                        .map_err(|error| failure(error.to_string()))?
+                }
                 ProfileNode::Rectangle { width, height } => canonical(
                     builders::rect_centered(width, height).map_err(|e| failure(e.to_string()))?,
                 )?,
@@ -1103,6 +1206,54 @@ mod tests {
     use super::*;
     fn request(nodes: serde_json::Value) -> Request {
         serde_json::from_value(serde_json::json!({"units":"mm","separation":1e-6,"profiles":[{"kind":"rectangle","width":40,"height":30}],"nodes":nodes,"roots":[{"name":"panel","node":0}]})).unwrap()
+    }
+    #[test]
+    fn centered_curve_profile_lowers_once_with_native_tags_and_typed_radial_refusal() {
+        let input = |end_y| {
+            serde_json::json!({
+                "units":"mm","separation":1e-6,
+                "profiles":[{"kind":"loop","segments":[
+                    {"kind":"line","to":[3,0]}, {"kind":"line","to":[4,0]},
+                    {"kind":"arc","to":[3,end_y],"center":[3,0],"clockwise":false,"feature":"rim"}
+                ]}],
+                "nodes":[{"kind":"extrude","profile":0,"height":2},{"kind":"revolve","profile":0,"angle":1.7}],
+                "roots":[{"name":"plate","node":0},{"name":"turned","node":1}]
+            })
+        };
+        let request: Request = serde_json::from_value(input(1.0)).unwrap();
+        let built = request.build().unwrap();
+        assert_eq!(built.roots.len(), 2);
+        let tag = SegTag(
+            *built
+                .names
+                .iter()
+                .find(|(_, name)| name.as_str() == "rim")
+                .unwrap()
+                .0,
+        );
+        for (_, source) in &built.roots {
+            assert_eq!(
+                source
+                    .face_tags(match source.geometry() {
+                        NativeGeometryRef::Extrusion(v) => v.faces_tagged(tag).next().unwrap().0,
+                        NativeGeometryRef::Revolution(v) => v.faces_tagged(tag).next().unwrap(),
+                        _ => panic!("expected authored family"),
+                    })
+                    .unwrap()
+                    .collect::<Vec<_>>(),
+                alloc::vec![tag]
+            );
+        }
+        let bad: Request = serde_json::from_value(input(2.0)).unwrap();
+        let error = bad.build().unwrap_err();
+        assert_eq!(error.code, "profile.arc.endpointRadii");
+        let context = error.context.unwrap();
+        assert_eq!(context.profile, Some(0));
+        assert_eq!(context.segment, Some(2));
+        assert_eq!(context.feature.as_deref(), Some("rim"));
+        assert_eq!(context.start_radius, Some(1.0));
+        assert_eq!(context.end_radius, Some(2.0));
+        assert!(context.radius_roundoff_bound.unwrap() < 1e-12);
     }
     #[test]
     fn graph_validation_precedes_geometry_work_and_refuses_cycles() {

@@ -66,6 +66,17 @@ struct ErrorContext {
     #[serde(skip_serializing_if = "Option::is_none")]
     profile: Option<usize>,
     #[serde(skip_serializing_if = "Option::is_none")]
+    segment: Option<usize>,
+    #[serde(rename = "startRadius", skip_serializing_if = "Option::is_none")]
+    start_radius: Option<f64>,
+    #[serde(rename = "endRadius", skip_serializing_if = "Option::is_none")]
+    end_radius: Option<f64>,
+    #[serde(
+        rename = "radiusRoundoffBound",
+        skip_serializing_if = "Option::is_none"
+    )]
+    radius_roundoff_bound: Option<f64>,
+    #[serde(skip_serializing_if = "Option::is_none")]
     face: Option<u32>,
     #[serde(rename = "geometryFamily", skip_serializing_if = "Option::is_none")]
     geometry_family: Option<&'static str>,

@@ -3,7 +3,7 @@
 
 import assert from "node:assert/strict";
 import { readFile } from "node:fs/promises";
-import { AuthoringSession, ExedraError, extrude, placement, profiles, charts, uvTransform } from "@exedra/authoring";
+import { AuthoringSession, ExedraError, extrude, revolve, placement, profiles, charts, uvTransform } from "@exedra/authoring";
 import { AuthoringKernel, default as initialize } from "../../../packages/exedra/dist/wasm_pkg/exedra_authoring_web_bridge.js";
 import { authorPanel, authorFlangedSleeve } from "../src/sample.ts";
 import { galleryCases } from "./gallery-cases.mjs";
@@ -140,5 +140,33 @@ try {
  assert.equal(chartSession.stats().documents,0);assert.equal(chartSession.stats().cacheEntries,0);
  results.push({sample:"construction-charts-and-bore-evidence",outcome:"success",chartedFamilies:3});
 } finally {chartSession.dispose();}
+
+// Authoritative centers feed ordinary native operations and typed recovery.
+const centerSession=new AuthoringSession(new AuthoringKernel(),{units:"mm"});
+try {
+ const outline=profiles.loop([
+  {kind:"line",to:[3,0]}, {kind:"line",to:[4,0]},
+  {kind:"arc",to:[3,1],center:[3,0],clockwise:false,feature:"rim"},
+ ]);
+ const document=centerSession.build({plate:extrude(outline,{height:2}),turned:revolve(outline,{angle:1.7})});
+ try {
+  assert.ok(Math.abs(document.parts.plate.measurements.volume.value-Math.PI/2)<1e-12);
+  assert.ok(Math.abs(document.parts.turned.measurements.volume.value-1.7*(3*Math.PI/4+1/3))<1e-12);
+  for(const part of Object.values(document.parts)){
+   const rim=part.faces("rim");assert.equal(rim.length,1);
+   assert.equal(rim[0].surface,part.family==="extrusion"?"cylinder":"torus");
+   const display=part.realize(policy);within(display);assert.ok(display.nativeFaces.includes(rim[0].nativeId));
+   part.exportStep({timestamp});
+  }
+  const bad=profiles.loop([
+   {kind:"line",to:[1e16,0]}, {kind:"line",to:[1e16+2,0]},
+   {kind:"arc",to:[1e16,4],center:[1e16,0],clockwise:false,feature:"rim"},
+  ]);
+  assert.throws(()=>centerSession.build({bad:extrude(bad,{height:2})}),error=>error instanceof ExedraError&&error.diagnostic.code==="profile.arc.endpointRadii"&&error.diagnostic.startRadius===2&&error.diagnostic.endRadius===4&&error.diagnostic.radiusRoundoffBound<1e-12&&error.diagnostic.segment===2);
+  document.parts.turned.realize(policy);
+ }finally{document.dispose();}
+ assert.equal(centerSession.stats().documents,0);assert.equal(centerSession.stats().cacheEntries,0);
+ results.push({sample:"center-defined-profile",outcome:"success",nativeFamilies:2,refusedMismatch:"2 vs 4 at datum 1e16"});
+}finally{centerSession.dispose();}
 
 console.log(JSON.stringify({samples:results},null,2));

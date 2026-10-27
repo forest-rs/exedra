@@ -209,6 +209,29 @@ and relevant numeric evidence. Elliptical rims and the cylindrical wall remain
 native, including in supported STEP export. `part.bore` reports local axis inputs,
 document-space evidence, rim semiaxes and native wall identity.
 
+Closed outlines can preserve exact construction centers:
+
+```ts
+const section = profiles.loop([
+  { kind: "line", to: [3, 0] },
+  { kind: "line", to: [4, 0] },
+  { kind: "arc", to: [3, 1], center: [3, 0], clockwise: false, feature: "rim" },
+]);
+const turned = revolve(section, { angle: Math.PI });
+const plate = extrude(section, { height: 2 });
+```
+
+Each segment starts at the preceding endpoint, cyclically. The direction chooses
+minor or major circular travel; full circles need two arcs. Inputs are copied
+and immutable. Rust derives radius and sweep without moving the center or
+endpoints; the same outline feeds the existing native operations. A radius
+mismatch returns `profile.arc.endpointRadii` with profile/segment, feature,
+`startRadius`, `endRadius` and `radiusRoundoffBound`. The bound covers local
+arithmetic, independently of session separation or distance from the origin.
+`profile.arc.input` and `profile.arc.numericLimit` distinguish invalid source
+intent from unrepresentable derived geometry. Winding and arrangement validation
+remain the same as for other profiles.
+
 Reusable profile corner treatments select positions in profile coordinates:
 
 ```ts
