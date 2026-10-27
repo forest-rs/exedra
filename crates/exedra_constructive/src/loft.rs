@@ -1,10 +1,11 @@
 // Copyright 2026 the Exedra Authors
 // SPDX-License-Identifier: Apache-2.0 OR MIT
 
-//! Uniform cubic loft trajectories, bounded sampling, and local evidence.
+//! Exact profile correspondence, bounded loft sampling, and local evidence.
 //!
-//! Correspondence is authored loop/segment order. This module never aligns
-//! sections geometrically. Smooth interpolation is C1 in section-index space,
+//! [`correspond_profiles`] prepares exact line/arc subdivisions using authored
+//! seams and landmarks. Loft interpolation then uses that explicit segment order.
+//! Smooth interpolation is C1 in section-index space,
 //! with centered interior tangents and one-sided endpoint secants.
 
 use crate::tessellate::ProfileBoundaryEdge;
@@ -12,11 +13,21 @@ use alloc::boxed::Box;
 use alloc::vec::Vec;
 use exedra_math::{add, dot, lerp, norm, scale, sub};
 
-/// Accuracy and finite work limits for smooth loft trajectories.
+mod correspondence;
+pub use correspondence::{
+    BoundaryPoint, CorrespondenceError, CorrespondencePolicy, CorrespondenceProfile,
+    CorrespondenceReport, CorrespondenceResult, LandmarkError, MatchedProfile, ProfileSegmentSpan,
+    correspond_profiles,
+};
+mod surface;
+pub(crate) use surface::sample_surface;
+
+/// Accuracy and finite work limits for ruled and smooth loft walls.
 #[derive(Copy, Clone, Debug, PartialEq)]
 pub struct LoftSamplingPolicy {
-    /// Maximum trajectory chord deviation in placed recipe units, before f32
-    /// storage. Does not bound profile discretization or mesh quantization.
+    /// Maximum side-surface sampling deviation in placed recipe units, before
+    /// f32 storage. Includes trajectory chords and twisted-quad triangulation;
+    /// profile discretization is controlled separately.
     pub chord_tolerance: f64,
     /// Maximum subdivisions of one authored section band, in `1..=65535`.
     pub max_band_edges: u32,
@@ -55,13 +66,16 @@ pub struct LoftSpan {
     pub band: u16,
     /// Inclusive parameter interval in `[0, 1]` within the authored band.
     pub parameter: [f64; 2],
-    /// Conservative maximum point-trajectory chord error, with f64 headroom.
+    /// Conservative point-trajectory approximation error, with f64 headroom.
     pub chord_bound: f64,
+    /// Side-surface error including trajectory approximation and diagonal
+    /// triangulation of the sampled profile chords, before f32 emission.
+    pub surface_bound: f64,
 }
 
-/// Original sampling evidence and local realization checks for a smooth loft.
+/// Original sampling evidence and local realization checks for a loft.
 ///
-/// Every trajectory has positive derivative projection on its band's secant.
+/// Smooth trajectories have positive derivative projection on their band's secant.
 /// Both diagonals of emitted wall quads and emitted cap triangles retain their
 /// f64 orientation after f32 narrowing. This does not check distant surface
 /// intersections or certify a solid. Mutating the mesh invalidates these checks.
@@ -75,15 +89,34 @@ pub struct LoftSampling {
     pub section_vertices: u32,
     /// Shared sample intervals in output ring order.
     pub spans: Vec<LoftSpan>,
+    /// Largest original-construction-frame displacement from f32 emission.
+    pub max_vertex_displacement: f64,
+}
+impl LoftSampling {
+    /// Side-surface deviation for already-discretized profiles, including f32
+    /// emission. Excludes profile discretization and later instance placement.
+    #[must_use]
+    pub fn surface_deviation_bound(&self) -> f64 {
+        self.spans
+            .iter()
+            .map(|s| s.surface_bound)
+            .fold(0.0_f64, f64::max)
+            + self.max_vertex_displacement
+    }
+    /// Whether the original emitted walls meet their side-surface policy.
+    #[must_use]
+    pub fn within_surface_tolerance(&self) -> bool {
+        self.surface_deviation_bound() <= self.policy.chord_tolerance
+    }
 }
 
-/// A smooth loft could not honor its interpolation or sampling contract.
+/// A loft could not honor its interpolation or sampling contract.
 #[derive(Clone, Debug, PartialEq)]
 #[non_exhaustive]
 pub enum LoftError {
     /// Tolerance must be positive and finite, and budgets must be nonzero.
     InvalidPolicy,
-    /// Smooth lofts require 2 through 65536 corresponding sections.
+    /// Lofts require 2 through 65536 corresponding sections.
     InvalidSections,
     /// Required sampling exceeds a per-band or total vertex work budget.
     BudgetExceeded,
@@ -126,12 +159,12 @@ pub struct LoftFoldoverWitness {
 impl core::fmt::Display for LoftError {
     fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
         match self {
-            Self::InvalidPolicy => f.write_str("invalid smooth-loft sampling policy"),
+            Self::InvalidPolicy => f.write_str("invalid loft sampling policy"),
             Self::InvalidSections => {
-                f.write_str("smooth loft needs 2 through 65536 corresponding sections")
+                f.write_str("loft needs 2 through 65536 corresponding sections")
             }
-            Self::BudgetExceeded => f.write_str("smooth-loft sampling budget exceeded"),
-            Self::NumericLimit => f.write_str("smooth-loft construction exceeds numeric limits"),
+            Self::BudgetExceeded => f.write_str("loft sampling budget exceeded"),
+            Self::NumericLimit => f.write_str("loft construction exceeds numeric limits"),
             Self::Foldover {
                 band,
                 vertex,
@@ -280,6 +313,7 @@ pub(crate) fn sample(
                 band: u16::try_from(band).expect("validated section count"),
                 parameter: [f64::from(step - 1) / f64::from(edges), t],
                 chord_bound: bound,
+                surface_bound: bound,
             });
         }
     }
@@ -289,6 +323,7 @@ pub(crate) fn sample(
             policy,
             section_vertices: count,
             spans,
+            max_vertex_displacement: 0.0,
         },
     })
 }

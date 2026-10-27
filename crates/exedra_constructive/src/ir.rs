@@ -312,6 +312,8 @@ pub enum NodeKind {
     /// freely in size and in which segments are curved. Sections with
     /// different structures are refused at evaluation with an
     /// `eval.loft.section_mismatch` diagnostic.
+    /// Use [`crate::loft::correspond_profiles`] to prepare different line/arc
+    /// structures with explicit seams and landmarks before adding profiles.
     Loft {
         /// Sections in order; at least two.
         sections: Vec<LoftSection>,
