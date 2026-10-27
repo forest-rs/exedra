@@ -364,6 +364,15 @@ impl Cone {
     pub const fn slope(&self) -> f64 {
         self.slope
     }
+    /// Signed angle between a generator and the local +Z axis, in radians.
+    ///
+    /// Its tangent is the radial slope. Zero denotes cylindrical geometry.
+    /// For extreme finite slopes, rounding can produce exactly `±PI/2`;
+    /// consumers requiring a regular angle representation must check that limit.
+    #[must_use]
+    pub fn semi_angle(&self) -> f64 {
+        libm::atan(self.slope)
+    }
     /// Radius at a height, or `None` at/past the apex or on overflow.
     #[must_use]
     pub fn radius_at(&self, height: f64) -> Option<f64> {
@@ -1070,5 +1079,25 @@ mod tests {
         assert!(surface.parameters([10.0, 0.0, 0.0]).is_none());
         assert!(Surface::torus(Placement3::IDENTITY, 2.0, 2.0).is_err());
         assert!(Surface::torus(Placement3::IDENTITY, 1.0, 2.0).is_err());
+    }
+}
+
+#[cfg(test)]
+mod cone_angle_tests {
+    use super::*;
+    #[test]
+    fn signed_angle_preserves_cylindrical_and_rounded_limit_cases() {
+        for slope in [0.0, -0.0, 0.5, -0.5, 1.0, -1.0, f64::MAX, -f64::MAX] {
+            let Surface::Cone(cone) = Surface::cone(Placement3::IDENTITY, 2.0, slope).unwrap()
+            else {
+                unreachable!()
+            };
+            let angle = cone.semi_angle();
+            assert_eq!(angle.is_sign_negative(), slope.is_sign_negative());
+            assert!(angle.abs() <= core::f64::consts::FRAC_PI_2);
+            if slope.abs() <= 1.0 {
+                assert!((libm::tan(angle) - slope).abs() <= f64::EPSILON);
+            }
+        }
     }
 }
