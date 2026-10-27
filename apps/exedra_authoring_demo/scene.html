@@ -1,0 +1,2 @@
+<!doctype html>
+<html lang="en"><head><meta charset="UTF-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>Exedra native stage</title><style>body{margin:0;font-family:system-ui,sans-serif}#app{height:100vh}</style></head><body><div id="app"></div><script type="module">import {mountScene} from "/src/scene.ts";const view=await mountScene({container:document.querySelector("#app")});window.addEventListener("pagehide",()=>view.dispose(),{once:true});</script></body></html>

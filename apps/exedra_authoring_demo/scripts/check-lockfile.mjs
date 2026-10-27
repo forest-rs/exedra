@@ -10,6 +10,7 @@ export function checkLockfile(lock) {
   for (const [name, entry] of Object.entries(lock.packages ?? {})) {
     if (!entry.resolved) continue;
     if (name === "node_modules/@exedra/authoring" && entry.link === true && entry.resolved === "../../packages/exedra") continue;
+    if (name === "node_modules/@layerstack/client" && entry.link === true && entry.resolved === "../../.local/partners/layerstack/packages/client") continue;
     let url;
     try { url = new URL(entry.resolved); } catch { errors.push(`${name}: unexpected local dependency`); continue; }
     if (url.protocol !== "https:" || url.hostname !== "registry.npmjs.org" || url.username || url.password || url.port)

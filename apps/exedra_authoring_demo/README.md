@@ -13,6 +13,8 @@ From this directory, with Node.js 22.18+ (or 24+), Rust's
 `wasm32-unknown-unknown` target, and `wasm-pack` installed:
 
 ```sh
+git clone https://github.com/forest-rs/layerstack ../../.local/partners/layerstack
+git -C ../../.local/partners/layerstack checkout --detach "$(node scripts/check-layerstack-partner.mjs --revision)"
 npm run check:lockfile
 npm ci
 npm run dev
@@ -63,3 +65,36 @@ decoding and cleanup; these are not GPU or presentation timings. After building,
 `npm run bench:wasm` performs four warmups and seventeen actual parameter edits
 per sample, reporting p50/p95 times, buffer bytes, work/cache counts and released
 logical native ownership. It excludes view creation and GPU work.
+
+## Native stage view
+
+`/scene.html` runs the native Layerstack scene application. Its separate Wasm
+binary loads only when this view is mounted. The combined backend owns one
+store/stage and attaches the Exedra provider to it; the generic Stage client is
+owned by Layerstack and accepts an injected transport. No handles cross the
+geometry-only and scene Wasm memories. Both Rust and TypeScript use the exact
+same checked Layerstack revision, including clean CI checkout.
+
+The view shows a shared tagged native prototype at actual stage instance paths.
+Source parameter edits, one-instance placement, undo, override-layer mute and
+quality changes exercise native transactions and explicit geometry sync. Work
+counts distinguish source lowering, geometry, polygon encoding/validation and
+publication. Discovery remains visible: first stronger opinions or declarations
+can scan the composed namespace despite reusing geometry. Numeric transfer counts
+exclude metadata. Stage, sync and packing
+timings measure Wasm calls including ABI work; client elapsed additionally
+includes asynchronous transport overhead. They are observations, not controlled
+benchmarks. Native accuracy is source-local; GPU occurrence matrices use f32.
+
+Picking maps the actual composed polygon ordinal and instance path to retained
+native face tags. Stronger geometry overrides disable that native correspondence.
+The renderer deliberately accepts this triangle/normal/native-ID vocabulary;
+unsupported topology is refused. USD inspection/download returns the real
+caller-owned layers; keep the four named sibling files together. Native BRep
+remains runtime data and is not invented as a USD schema.
+
+The app shell can mount into separate viewport/inspector and control slots.
+`setActive(false/true)` pauses rendering while preserving one bounded Stage and
+its edits/undo. `dispose()` releases it on teardown; changing instance count is
+an explicit reset. `/scene.html` is also a standalone integration entry for
+testing this same module.

@@ -7,7 +7,9 @@
     "check:lockfile": "node scripts/check-lockfile.mjs && node --test scripts/check-lockfile.test.mjs",
     "build:sdk": "tsc -p ../../packages/exedra/tsconfig.json",
     "build:wasm": "wasm-pack build ../exedra_authoring_web_bridge --release --target web --out-dir ../../packages/exedra/dist/wasm_pkg --no-typescript",
-    "prepare:sdk": "npm run build:sdk && npm run build:wasm",
+    "build:scene-wasm": "wasm-pack build ../exedra_scene_web_bridge --release --target web --out-dir ../../packages/exedra/dist/scene_wasm",
+    "check:partner": "node scripts/check-layerstack-partner.mjs",
+    "prepare:sdk": "npm run check:partner && npm run build:sdk && npm run build:wasm && npm run build:scene-wasm",
     "dev": "vite --host 127.0.0.1 --port 5174 --strictPort",
     "predev": "npm run prepare:sdk",
     "build": "npm run prepare:sdk && tsc --noEmit && vite build",
@@ -18,6 +20,7 @@
   },
   "dependencies": {
     "@exedra/authoring": "file:../../packages/exedra",
+    "@layerstack/client": "file:../../.local/partners/layerstack/packages/client",
     "three": "^0.179.1"
   },
   "devDependencies": {
