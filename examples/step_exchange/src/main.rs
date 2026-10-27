@@ -13,6 +13,7 @@ use exedra_step::{LengthUnit, StepDocument, StepOptions, export_body};
 use std::{error::Error, path::PathBuf};
 
 mod periodic;
+mod supports;
 
 const POLICY: ProfilePolicy = ProfilePolicy::new(1e-9);
 fn rectangle(x: f64, y: f64) -> Loop {
@@ -231,6 +232,25 @@ fn main() -> Result<(), Box<dyn Error>> {
         .last_mut()
         .expect("periodic fixture was just saved")["product_name"] =
         serde_json::json!(unicode_name);
+    let torus = periodic::torus();
+    let document = export_body(
+        &torus,
+        Placement3::IDENTITY,
+        &StepOptions {
+            name: "double-periodic-torus",
+            ..StepOptions::default()
+        },
+    )?;
+    save(
+        &output,
+        &mut expected,
+        "double-periodic-torus",
+        &document,
+        80.0 * std::f64::consts::PI.powi(2),
+        80.0 * std::f64::consts::PI.powi(2),
+        [[-12.0, -12.0, -2.0], [12.0, 12.0, 2.0]],
+    )?;
+    supports::export_cases(&output, &mut expected)?;
     std::fs::write(
         output.join("expected.json"),
         serde_json::to_vec_pretty(&expected)?,

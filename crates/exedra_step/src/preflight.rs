@@ -9,9 +9,25 @@ use exedra_analytic::{
 };
 use exedra_math::{Placement3, norm};
 
+// Headroom for atan rounding, STEP decimal conversion and a reader's trig
+// evaluation. It bounds angle error in radians, not a tessellation deviation.
+const ANGLE_ERROR: f64 = 16.0 * f64::EPSILON;
+// The independent OCCT reader silently clamps smaller positive angles to this
+// floor. Refuse that interoperability loss rather than changing the geometry.
+const MIN_CONE_ANGLE: f64 = 1e-12;
+
 pub(super) enum SurfaceSupport {
     Plane,
-    Cylinder { radius: f64 },
+    Cylinder {
+        radius: f64,
+    },
+    Cone {
+        radius: f64,
+    },
+    Torus {
+        major_radius: f64,
+        minor_radius: f64,
+    },
 }
 
 pub(super) fn surface_support(
@@ -21,13 +37,25 @@ pub(super) fn surface_support(
     match surface {
         Surface::Plane(_) => Ok(SurfaceSupport::Plane),
         Surface::Cylinder(c) => Ok(SurfaceSupport::Cylinder { radius: c.radius() }),
-        Surface::Cone(_) => Err(StepError::UnsupportedSurface {
-            face,
-            family: "cone",
-        }),
-        Surface::Torus(_) => Err(StepError::UnsupportedSurface {
-            face,
-            family: "torus",
+        Surface::Cone(c) if c.slope() == 0.0 => Ok(SurfaceSupport::Cylinder { radius: c.radius() }),
+        Surface::Cone(c) => {
+            let angle = c.semi_angle();
+            if angle.abs() < MIN_CONE_ANGLE
+                || angle.abs() >= core::f64::consts::FRAC_PI_2
+                || c.slope().abs() * ANGLE_ERROR >= 0.25
+            {
+                return Err(StepError::ConeAngle {
+                    face,
+                    slope: c.slope(),
+                    semi_angle: angle,
+                    angle_range: [MIN_CONE_ANGLE, core::f64::consts::FRAC_PI_2],
+                });
+            }
+            Ok(SurfaceSupport::Cone { radius: c.radius() })
+        }
+        Surface::Torus(t) => Ok(SurfaceSupport::Torus {
+            major_radius: t.major_radius(),
+            minor_radius: t.minor_radius(),
         }),
         Surface::Ruled(_) => Err(StepError::UnsupportedSurface {
             face,
@@ -43,6 +71,7 @@ pub(super) struct Prepared {
     pub counts: StepCounts,
     pub gap: f64,
     pub allowance: f64,
+    pub parameter_allowance: f64,
 }
 
 pub(super) fn prepare<F, E>(
@@ -111,6 +140,7 @@ pub(super) fn prepare<F, E>(
     let mut parent: Vec<_> = (0..body.faces().len()).collect();
     let mut coedges = 0_u32;
     let mut scale = 0.0_f64;
+    let mut parameter_allowance = 0.0_f64;
     let magnitude = |p: [f64; 3]| p.into_iter().map(f64::abs).fold(0.0, f64::max);
     for (i, face) in body.faces().iter().enumerate() {
         let id = FaceId(u32::try_from(i).expect("input budget"));
@@ -121,6 +151,77 @@ pub(super) fn prepare<F, E>(
                     return Err(StepError::CylinderDomain { face: id });
                 }
                 radius
+            }
+            SurfaceSupport::Cone { radius } => {
+                if face.domain.u.span() > core::f64::consts::TAU * (1.0 + 64.0 * f64::EPSILON) {
+                    return Err(StepError::PeriodicSurfaceDomain {
+                        face: id,
+                        parameter: "u",
+                        range: face.domain.u.bounds(),
+                    });
+                }
+                let Surface::Cone(cone) = &face.surface else {
+                    unreachable!()
+                };
+                let heights = face.domain.v.bounds();
+                let mut height = heights.into_iter().map(f64::abs).fold(0.0, f64::max);
+                let frame = cone.frame();
+                for &loop_id in &face.loops {
+                    for coedge in &body.loops()[loop_id.index()].coedges {
+                        let edge = &body.edges()[coedge.edge.index()];
+                        let bounds = edge
+                            .curve
+                            .conservative_bounds(edge.range)
+                            .map_err(|_| StepError::Numeric)?;
+                        let mut curve_height = 0.0;
+                        for (axis, row) in frame.rows.into_iter().enumerate() {
+                            let extent = (bounds[0][axis] - row[3])
+                                .abs()
+                                .next_up()
+                                .max((bounds[1][axis] - row[3]).abs().next_up());
+                            // Checked frames can be nearly rigid. The Gram
+                            // inverse differs from transpose by <16*FRAME_TOLERANCE
+                            // per coefficient; outward arithmetic encloses the
+                            // true axial coordinate of the entire bounded curve.
+                            let coefficient = (row[2].abs() + 16.0 * FRAME_TOLERANCE).next_up();
+                            curve_height =
+                                (curve_height + (extent * coefficient).next_up()).next_up();
+                        }
+                        if !curve_height.is_finite() {
+                            return Err(StepError::Numeric);
+                        }
+                        height = height.max(curve_height);
+                    }
+                }
+                let slope = cone.slope().abs();
+                // tan(a+d)-tan(a) <= d*(1+|s|)^2/(1-|s|*d),
+                // using |tan(d)| <= 2*d here. Fourfold headroom covers
+                // arithmetic rounding and bounds radial error at equal height.
+                let error = height
+                    * (1.0 + slope)
+                    * (ANGLE_ERROR * (1.0 + slope) / (1.0 - 2.0 * slope * ANGLE_ERROR))
+                    * 4.0;
+                parameter_allowance = parameter_allowance.max(error);
+                let outer = heights
+                    .into_iter()
+                    .filter_map(|h| cone.radius_at(h))
+                    .fold(radius, f64::max);
+                outer + height
+            }
+            SurfaceSupport::Torus {
+                major_radius,
+                minor_radius,
+            } => {
+                for (parameter, range) in [("u", face.domain.u), ("v", face.domain.v)] {
+                    if range.span() > core::f64::consts::TAU * (1.0 + 64.0 * f64::EPSILON) {
+                        return Err(StepError::PeriodicSurfaceDomain {
+                            face: id,
+                            parameter,
+                            range: range.bounds(),
+                        });
+                    }
+                }
+                major_radius + minor_radius
             }
         };
         scale = scale.max(magnitude(face.surface.frame().rows.map(|r| r[3])) + radius);
@@ -214,7 +315,7 @@ pub(super) fn prepare<F, E>(
     // This headroom covers that correction plus placed coordinate arithmetic;
     // no curve fitting or mesh approximation is introduced.
     let allowance = 32.0 * FRAME_TOLERANCE * scale + 128.0 * f64::EPSILON * world;
-    let required = validation.max_gap + allowance;
+    let required = validation.max_gap + allowance + parameter_allowance;
     if !required.is_finite() {
         return Err(StepError::Numeric);
     }
@@ -243,6 +344,7 @@ pub(super) fn prepare<F, E>(
         counts,
         gap: validation.max_gap,
         allowance,
+        parameter_allowance,
     })
 }
 
@@ -304,4 +406,39 @@ fn timestamp(s: &str) -> bool {
             let digits = tail.strip_suffix(b"Z").unwrap_or(tail);
             digits.len() > 1 && digits[1..].iter().all(u8::is_ascii_digit)
         })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    #[test]
+    fn unrepresentable_or_unconditioned_cone_angles_are_precise_refusals() {
+        for slope in [
+            f64::MAX,
+            -f64::MAX,
+            1e14,
+            -1e14,
+            f64::MIN_POSITIVE,
+            -f64::MIN_POSITIVE,
+            f64::from_bits(1),
+            1e-13,
+            -1e-13,
+            1e-14,
+            -1e-14,
+        ] {
+            let surface = Surface::cone(Placement3::IDENTITY, 1.0, slope).unwrap();
+            assert!(
+                matches!(surface_support(&surface,FaceId(3)),Err(StepError::ConeAngle{face:FaceId(3),slope:s,..}) if s==slope)
+            );
+        }
+        for slope in [1e-12, -1e-12, 1.0, -1.0] {
+            assert!(matches!(
+                surface_support(
+                    &Surface::cone(Placement3::IDENTITY, 1.0, slope).unwrap(),
+                    FaceId(3)
+                ),
+                Ok(SurfaceSupport::Cone { .. })
+            ));
+        }
+    }
 }

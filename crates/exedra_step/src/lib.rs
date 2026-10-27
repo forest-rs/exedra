@@ -6,7 +6,8 @@
 //! The exporter owns serialization, explicit exchange units and bounded output.
 //! The analytic head owns geometry and incidence; callers own scene hierarchy,
 //! feature metadata and occurrence placement. This first family exports one
-//! connected closed shell of planes/cylinders bounded by lines/circles/ellipses.
+//! connected closed shell of planes, cylinders, cones and regular ring tori,
+//! bounded by lines, circles and ellipses.
 //!
 //! Input incidence and conservative support agreement are checked. Those checks
 //! do not certify global solid validity, trim nesting or shell containment.
@@ -56,7 +57,8 @@ pub struct StepOptions<'a> {
     pub timestamp: &'a str,
     /// Meaning of source coordinates and every reported length.
     pub units: LengthUnit,
-    /// Maximum conservative native support gap plus export frame/coordinate allowance.
+    /// Maximum conservative native support gap plus export frame/coordinate
+    /// and support-parameter conversion allowances.
     /// Also emitted as the representation's declared length uncertainty.
     pub tolerance: f64,
     /// Largest entity count and maximum input-table work budget.
@@ -151,7 +153,10 @@ pub struct StepReport {
     pub max_native_support_gap: f64,
     /// Allowance for normalized STEP frame directions and placed f64 coordinates.
     pub frame_roundoff_bound: f64,
-    /// Sum of input support agreement and export frame/coordinate allowance.
+    /// Length allowance for converting native support parameters to STEP parameters.
+    /// Zero for surfaces whose defining parameters are serialized unchanged.
+    pub parameter_roundoff_bound: f64,
+    /// Sum of input support agreement, frame/coordinate and support-parameter allowances.
     pub max_deviation: f64,
     /// Output work counts.
     pub counts: StepCounts,
@@ -213,6 +218,29 @@ pub enum StepError {
         /// Refused native face.
         face: FaceId,
     },
+    /// A cone falls outside the current exact-interchange angle policy.
+    /// Small representable angles are refused to avoid an observed reader clamp;
+    /// extreme slopes are refused when angle conversion is poorly conditioned.
+    ConeAngle {
+        /// Refused native face.
+        face: FaceId,
+        /// Native signed radial change per unit axial height.
+        slope: f64,
+        /// Native signed semi-angle in radians.
+        semi_angle: f64,
+        /// Allowed absolute angle interval, lower inclusive and upper exclusive.
+        /// The slope must additionally satisfy the conversion conditioning check.
+        angle_range: [f64; 2],
+    },
+    /// A periodic supporting surface spans more than one period.
+    PeriodicSurfaceDomain {
+        /// Refused native face.
+        face: FaceId,
+        /// Periodic native parameter, `u` or `v`.
+        parameter: &'static str,
+        /// Increasing native parameter bounds.
+        range: [f64; 2],
+    },
     /// Finite coordinates, directions or their export allowance are unrepresentable.
     Numeric,
     /// Requested uncertainty cannot cover native agreement and export arithmetic.
@@ -261,6 +289,24 @@ impl core::fmt::Display for StepError {
                 f,
                 "STEP cylindrical face {face:?} spans more than one angular period"
             ),
+            Self::ConeAngle {
+                face,
+                slope,
+                semi_angle,
+                angle_range,
+            } => write!(
+                f,
+                "STEP face {face:?} cone slope {slope}, semi-angle {semi_angle} is outside current exact-interchange policy: absolute angle in [{}, {}) radians and safely conditioned slope required",
+                angle_range[0], angle_range[1]
+            ),
+            Self::PeriodicSurfaceDomain {
+                face,
+                parameter,
+                range,
+            } => write!(
+                f,
+                "STEP face {face:?} periodic parameter {parameter} spans more than one period: {range:?}"
+            ),
             Self::Numeric => write!(f, "STEP geometry or arithmetic is not representable"),
             Self::Accuracy {
                 required,
@@ -291,9 +337,13 @@ impl core::error::Error for StepError {
 /// This checks supported native geometry families only. A successful result
 /// does not validate incidence, trims, placement, requested tolerance, timestamp
 /// or output budgets; [`export_body`] checks those independently. The same
-/// surface-family policy is used by the exporter's full preflight.
+/// geometry policy is used by the exporter's full preflight. Zero-slope cones
+/// have exact cylindrical support; extreme slopes can be refused if their
+/// semi-angle is unrepresentable or poorly conditioned.
 /// # Errors
-/// Returns [`StepError::UnsupportedSurface`] with the native face and family.
+/// Returns [`StepError::UnsupportedSurface`] with the native face and family,
+/// or [`StepError::ConeAngle`] with a slope outside the current exact-interchange
+/// policy, including the observed reader's small-angle clamp range.
 pub fn check_geometry_support<F, E>(body: &Body<F, E>) -> Result<(), StepError> {
     for (index, face) in body.faces().iter().enumerate() {
         preflight::surface_support(
@@ -308,8 +358,8 @@ pub fn check_geometry_support<F, E>(body: &Body<F, E>) -> Result<(), StepError> 
 ///
 /// Applies the complete rigid occurrence placement in f64. Output units state
 /// the physical meaning of one source coordinate; no implicit conversion occurs.
-/// The exporter preserves shared native topology and serializes planes/cylinders
-/// and line/circle curves directly. It does not read a display mesh, approximate
+/// The exporter preserves shared native topology and serializes supported
+/// elementary surfaces and line/circle/ellipse curves directly. It does not read a display mesh, approximate
 /// unsupported supports, heal input, or establish global solid validity.
 ///
 /// ```

@@ -96,6 +96,55 @@ pub(super) fn cylinder() -> Body {
     .unwrap()
 }
 
+/// One toroidal face with both closed seam curves shared twice in its loop.
+pub(super) fn torus() -> Body {
+    let angular = ParameterRange::new(0.0, std::f64::consts::TAU).unwrap();
+    let meridian = Placement3::from_axes(
+        [1.0, 0.0, 0.0],
+        [0.0, 0.0, 1.0],
+        [0.0, -1.0, 0.0],
+        [10.0, 0.0, 0.0],
+    );
+    let edges = [
+        Curve::circle(Placement3::IDENTITY, 12.0).unwrap(),
+        Curve::circle(meridian, 2.0).unwrap(),
+    ]
+    .map(|curve| Edge {
+        curve,
+        range: angular,
+        start: VertexId(0),
+        end: VertexId(0),
+        role: (),
+    })
+    .to_vec();
+    Body::try_from_parts(
+        BodyParts {
+            vertices: vec![[12.0, 0.0, 0.0]],
+            edges,
+            loops: vec![BoundaryLoop {
+                coedges: [(0, false), (1, false), (0, true), (1, true)]
+                    .map(|(edge, reversed)| Coedge {
+                        edge: EdgeId(edge),
+                        reversed,
+                    })
+                    .to_vec(),
+            }],
+            faces: vec![Face {
+                surface: Surface::torus(Placement3::IDENTITY, 10.0, 2.0).unwrap(),
+                domain: ParameterDomain {
+                    u: angular,
+                    v: angular,
+                },
+                sense: Sense::Forward,
+                loops: vec![LoopId(0)],
+                role: (),
+            }],
+        },
+        &ValidationPolicy { max_gap: 1e-12 },
+    )
+    .unwrap()
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

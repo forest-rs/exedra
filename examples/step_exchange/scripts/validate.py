@@ -9,6 +9,10 @@ import pathlib
 import sys
 
 try:
+    from OCP.BRepAdaptor import BRepAdaptor_Surface
+    from OCP.GeomAbs import GeomAbs_Plane, GeomAbs_Cylinder, GeomAbs_Cone, GeomAbs_Torus
+    from OCP.TopoDS import TopoDS
+    from OCP.Precision import Precision
     from OCP.BRepClass3d import BRepClass3d_SolidClassifier
     from OCP.gp import gp_Pnt
     from OCP.BRepBndLib import BRepBndLib
@@ -80,16 +84,34 @@ def validate(folder, fixture):
     scale = fixture["metres_per_unit"] * 1000.0
     volume = GProp_GProps()
     BRepGProp.VolumeProperties_s(shape, volume)
-    close(volume.Mass(), fixture["native_volume"] * scale**3)
+    expected_volume = fixture["native_volume"] * scale**3
+    close(volume.Mass(), expected_volume, absolute=max(1e-18, abs(expected_volume)*1e-12))
     area = GProp_GProps()
     BRepGProp.SurfaceProperties_s(shape, area)
-    close(area.Mass(), fixture["native_area"] * scale**2)
+    expected_area = fixture["native_area"] * scale**2
+    close(area.Mass(), expected_area, absolute=max(1e-16, abs(expected_area)*1e-12))
     box = Bnd_Box()
     BRepBndLib.AddOptimal_s(shape, box, False, False)
     actual_bounds = [[p.X(), p.Y(), p.Z()] for p in [box.CornerMin(), box.CornerMax()]]
+    # AddOptimal uses OCCT's own confusion floor for extrema. Allow its
+    # outward box padding plus comparison rounding, separately from geometry.
+    confusion = Precision.Confusion() if hasattr(Precision, "Confusion") else Precision.Confusion_s()
+    bounds_comparison_tolerance = 2.0 * confusion
     for actual, expected in zip(actual_bounds, fixture["bounds"]):
         for value, source in zip(actual, expected):
-            close(value, source * scale)
+            close(value, source * scale, absolute=bounds_comparison_tolerance)
+    surface_counts = {}
+    surfaces = TopExp_Explorer(shape, TopAbs_FACE)
+    cast_face = getattr(TopoDS, "Face_s", None) or TopoDS.Face
+    while surfaces.More():
+        support = BRepAdaptor_Surface(cast_face(surfaces.Current()))
+        name = {GeomAbs_Plane:"plane", GeomAbs_Cylinder:"cylinder", GeomAbs_Cone:"cone", GeomAbs_Torus:"torus"}.get(support.GetType(),"other")
+        surface_counts[name] = surface_counts.get(name, 0) + 1
+        if name == "cone":
+            assert 0.0 < support.Cone().SemiAngle() < math.pi/2, "canonical cone angle survives transfer"
+        surfaces.Next()
+    if "surface_counts" in fixture:
+        assert surface_counts == fixture["surface_counts"], (surface_counts,fixture["surface_counts"])
     witnesses = []
     for witness in fixture.get("witnesses", []):
         point = [v * scale for v in witness["point"]]
@@ -101,7 +123,7 @@ def validate(folder, fixture):
     return {"file": fixture["file"], "valid": True, "solids": 1, "shells": 1,
             "faces": fixture["faces"], "edges": fixture["edges"], "vertices": fixture["vertices"],
             "volume_mm3": volume.Mass(), "area_mm2": area.Mass(), "bounds_mm": actual_bounds,
-            "product_name": product_name, "model_checks": model_checks, "transfer_checks": transfer_checks, "material_witnesses": witnesses}
+            "product_name": product_name, "surface_counts":surface_counts, "bounds_comparison_tolerance_mm":bounds_comparison_tolerance, "model_checks": model_checks, "transfer_checks": transfer_checks, "material_witnesses": witnesses}
 
 
 folder = pathlib.Path(sys.argv[1] if len(sys.argv) > 1 else "step-fixtures")

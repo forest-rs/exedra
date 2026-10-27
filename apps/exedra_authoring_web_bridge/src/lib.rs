@@ -45,6 +45,10 @@ struct ErrorContext {
     face: Option<u32>,
     #[serde(rename = "geometryFamily", skip_serializing_if = "Option::is_none")]
     geometry_family: Option<&'static str>,
+    #[serde(rename = "semiAngle", skip_serializing_if = "Option::is_none")]
+    semi_angle: Option<f64>,
+    #[serde(rename = "semiAngleAbsRange", skip_serializing_if = "Option::is_none")]
+    semi_angle_abs_range: Option<[f64; 2]>,
     #[serde(
         skip_serializing_if = "Option::is_none",
         serialize_with = "serialize_family"
@@ -92,13 +96,33 @@ impl Error {
     fn step(operation: &'static str, error: exedra_step::StepError) -> Self {
         let code = match &error {
             exedra_step::StepError::UnsupportedSurface { .. } => "exchange.unsupportedSurface",
-            exedra_step::StepError::Numeric => "exchange.numericLimit",
+            exedra_step::StepError::Numeric | exedra_step::StepError::ConeAngle { .. } => {
+                "exchange.numericLimit"
+            }
             _ => "exchange.step",
         };
         let mut diagnostic = Self::new(code, operation, error.to_string());
-        if let exedra_step::StepError::UnsupportedSurface { face, family } = &error {
-            diagnostic.context_mut().face = Some(face.0);
-            diagnostic.context_mut().geometry_family = Some(family);
+        match &error {
+            exedra_step::StepError::UnsupportedSurface { face, family } => {
+                diagnostic.context_mut().face = Some(face.0);
+                diagnostic.context_mut().geometry_family = Some(family);
+            }
+            exedra_step::StepError::ConeAngle {
+                face,
+                semi_angle,
+                angle_range,
+                ..
+            } => {
+                diagnostic.context_mut().face = Some(face.0);
+                diagnostic.context_mut().geometry_family = Some("cone");
+                diagnostic.context_mut().semi_angle = Some(*semi_angle);
+                diagnostic.context_mut().semi_angle_abs_range = Some(*angle_range);
+            }
+            exedra_step::StepError::PeriodicSurfaceDomain { face, .. }
+            | exedra_step::StepError::CylinderDomain { face } => {
+                diagnostic.context_mut().face = Some(face.0);
+            }
+            _ => {}
         }
         diagnostic
     }
@@ -429,7 +453,7 @@ impl Session {
         .map_err(|error| Error::step("part.exportStep", error))?;
         let report = serde_json::json!({"schema":file.report.schema,"units":doc.units,"declaredUncertainty":file.report.declared_uncertainty,
         "maxDeviation":file.report.max_deviation,"maxNativeSupportGap":file.report.max_native_support_gap,
-        "frameRoundoffBound":file.report.frame_roundoff_bound,
+        "frameRoundoffBound":file.report.frame_roundoff_bound,"parameterRoundoffBound":file.report.parameter_roundoff_bound,
         "entities":file.report.counts.entities,"faces":file.report.counts.faces,"edges":file.report.counts.edges,
         "correspondence":{
             "vertices":file.report.correspondence.vertices.iter().map(|id|id.map(|v|v.0)).collect::<Vec<_>>(),
@@ -865,6 +889,30 @@ mod tests {
             let mut session = Session::new();
             let metadata = session.build(request).unwrap();
             assert_eq!(value(&metadata)["parts"][0]["chartKind"], kind);
+            let support = &value(&metadata)["parts"][0]["stepSupport"]["status"];
+            assert_eq!(
+                support,
+                if kind == "loft" {
+                    "unsupported"
+                } else {
+                    "supported"
+                }
+            );
+            if kind != "loft" {
+                let file = session
+                    .step(
+                        1,
+                        0,
+                        ExchangeOptions {
+                            name: None,
+                            timestamp: "2026-10-28T00:00:00Z".into(),
+                            tolerance: None,
+                        },
+                    )
+                    .unwrap();
+                assert!(file.text.contains("TOROIDAL_SURFACE"));
+                assert_eq!(value(&file.report)["parameterRoundoffBound"], 0.0);
+            }
             let chart_value = match kind {
                 "revolve" => {
                     serde_json::json!({"kind":kind,"referenceRadius":20,"wall":transform,"caps":transform})
