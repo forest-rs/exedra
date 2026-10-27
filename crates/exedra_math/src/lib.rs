@@ -63,6 +63,7 @@ mod geometry;
 pub mod keyed;
 pub mod path;
 mod quat;
+pub mod surface;
 mod trig;
 pub use frame::FrameError;
 pub use geometry::{Placement3, Plane3, intersect_plane_edge};
