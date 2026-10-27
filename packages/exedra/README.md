@@ -2,8 +2,8 @@
 
 Describe reusable profiles and native construction in TypeScript; Rust validates,
 constructs, measures and realizes the geometry. This first slice supports native
-extrusions, through cutouts, blind pockets and planar native-face attachments.
-Other native constructor families are not yet exposed by this package.
+extrusions, through cutouts, blind pockets, planar native-face attachments and
+line/arc profile revolutions. Other constructors are not exposed by this SDK slice.
 
 ```ts
 import { createSession, extrude, profiles } from "@exedra/authoring";
@@ -22,7 +22,9 @@ const session = await createSession({ units: "mm" });
 const document = session.build({ panel, pin });
 try {
   const native = document.parts.panel;
-  console.log(native.measurements.volume, native.floor("recess").workplane());
+  const volume = native.measurements.volume;
+  if (volume.status === "available") console.log(volume.value);
+  console.log(native.floor("recess").workplane());
   const display = native.realize({ tolerance: 0.12 });
   const face = display.pickTriangle(0);
   native.requireSelection(face);
@@ -44,8 +46,12 @@ not depend on render triangles.
 `ExedraError`, inspect `diagnostic.code`, `operation`, `message` and optional
 node/profile index. Earlier documents remain usable. A missing or ambiguous
 named floor, curved workplane, invalid pocket or exceeded work budget produces a
-typed refusal rather than a fabricated result. Supported native measurements
-are positive finite numbers; a numeric limit refuses installation.
+typed refusal rather than a fabricated result. Native measurements have explicit
+`available` values or `unavailable` / `numericLimit` diagnoses. Unavailable
+integrals do not prevent a valid source from being installed. Available values
+are positive and finite; numeric failures are never labelled as unsupported.
+Bounds are finite conservative native support enclosures, labelled by
+`boundsKind`; they can include space outside trims and are not minimum extents.
 
 Lengths, tolerances, bounds and attachment offsets use explicit document units
 (`mm` or `m`); areas and volumes use their square and cube. Geometry is not
@@ -72,3 +78,24 @@ Build and try the [interactive browser sample](../../apps/exedra_authoring_demo/
 The SDK has no runtime JavaScript dependencies; its generated Wasm package is
 built by that app's `prepare:sdk` command. The transport interfaces support hosts
 with a different loading arrangement without changing the authoring surface.
+
+Revolutions use profile X as positive radius and Y as height, about local +Y:
+
+```ts
+import { placement, revolve } from "@exedra/authoring";
+const section = profiles.roundedRectangle({ width: 12, height: 24, radius: 2 })
+  .translated([28, 12]).tagged("ring");
+const ring = revolve(section, {
+  angle: 2 * Math.PI,
+  placement: placement({ rotationXYZ: [Math.PI / 2, 0, 0] }),
+});
+```
+
+`placement` snapshots fixed-axis X/Y/Z rotation angles in radians, then
+translation; Rust constructs and validates the rigid frame. `profiles.polygon`
+accepts an authored closed line outline without repeating its first vertex.
+Winding, self-crossings and work budgets are checked in Rust. Full and partial
+revolutions retain cylinders, cones and regular toroidal walls. Unsupported STEP
+surfaces produce an `exchange.unsupportedSurface` diagnostic; the source stays
+usable for display and native queries. The current exporter supports plane and
+cylinder faces, not cone, torus or ruled faces.

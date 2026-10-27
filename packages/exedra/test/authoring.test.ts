@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
-import { AuthoringSession, AuthoringWorkplane, Solid, ExedraError, extrude, profiles, type NativeTransport } from "../src/index.ts";
+import { AuthoringSession, AuthoringWorkplane, Solid, ExedraError, extrude, revolve, placement, profiles, type NativeTransport } from "../src/index.ts";
 
 function host() {
   let next = 0, released = 0, freed = 0, transfers = 0;
@@ -9,7 +9,7 @@ function host() {
     build_document(text) {
       const graph = JSON.parse(text); requests.push(graph);
       if (graph.nodes.some((n: any) => n.depth === 99)) throw JSON.stringify({code:"pocket.invalid",operation:"solid.pocket",message:"Depth exceeds panel thickness",node:1});
-      return JSON.stringify({id:++next,units:graph.units,parts:graph.roots.map((r: any,index: number) => ({name:r.name,index,fingerprint:"f123456789abcdef123456789abcdef0",measurements:{volume:10,surfaceArea:20,bounds:[[0,0,0],[2,3,4]],faces:2,edges:3,vertices:4},faces:[{id:0,role:"floor",surface:"plane",feature:"recess"},{id:1,role:"wall",surface:"cylinder",feature:"vents"}]}))});
+      return JSON.stringify({id:++next,units:graph.units,parts:graph.roots.map((r: any,index: number) => ({family:"extrusion",name:r.name,index,fingerprint:"f123456789abcdef123456789abcdef0",measurements:{volume:{status:"available",value:10},surfaceArea:{status:"available",value:20},boundsKind:"conservativeNativeSupport",bounds:[[0,0,0],[2,3,4]],faces:2,edges:3,vertices:4},faces:[{id:0,role:"floor",surface:"plane",feature:"recess",features:["recess"]},{id:1,role:"wall",surface:"cylinder",feature:"vents",features:["vents"]}]}))});
     },
     release_document() { released++; },
     stats_json() { return JSON.stringify({documents:next-released,nativeParts:next-released,cacheEntries:0}); },
@@ -93,5 +93,17 @@ test("native measurement bounds are immutable nested query values", () => {
   const doc = session.build(sample()), bounds = doc.parts.panel.measurements.bounds;
   assert.throws(() => { (bounds[0] as number[])[0]=123; },TypeError);
   assert.deepEqual(bounds,[[0,0,0],[2,3,4]]);
+  session.dispose();
+});
+
+test("polygon and revolution placements snapshot caller-owned authoring inputs", () => {
+  const h=host(), session=new AuthoringSession(h.native,{units:"mm"});
+  const vertices: [number,number][]=[[12,0],[19,0],[19,30],[12,30]];
+  const translation:[number,number,number]=[2,3,4],rotation:[number,number,number]=[Math.PI/2,0,0];
+  const collar=revolve(profiles.polygon(vertices).tagged("collar"),{angle:Math.PI,placement:placement({translation,rotationXYZ:rotation})});
+  session.build({collar}).dispose();vertices[0][0]=99;translation[0]=100;rotation[0]=0;
+  session.build({collar}).dispose();
+  assert.deepEqual(h.requests[0],h.requests[1]);
+  assert.equal(h.requests[0].nodes[0].kind,"revolve");
   session.dispose();
 });
