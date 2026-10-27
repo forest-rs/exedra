@@ -1969,14 +1969,25 @@ impl Mesh {
         {
             return Err(BuildError::InvalidWeldTolerance);
         }
-        let (canonical_positions, remap) = weld_positions(positions, params.weld_tolerance);
+        let welded = params
+            .weld_tolerance
+            .map(|tol| weld_positions(positions, Some(tol)));
+        let canonical_positions = welded.as_ref().map_or(positions, |(p, _)| p.as_slice());
+        let remap_index = |index: u32, triangle: usize| {
+            if index as usize >= positions.len() {
+                return Err(BuildError::IndexOutOfBounds { triangle, index });
+            }
+            Ok(welded
+                .as_ref()
+                .map_or(index, |(_, remap)| remap[index as usize]))
+        };
 
         let mut mesh = Self::new();
         mesh.vertices.reserve_slots(canonical_positions.len());
         mesh.faces.reserve_slots(indices.len());
         mesh.half_edges.reserve_slots(indices.len() * 3);
         let mut vertex_ids = Vec::with_capacity(canonical_positions.len());
-        for position in &canonical_positions {
+        for position in canonical_positions {
             vertex_ids.push(mesh.add_vertex(*position));
         }
 
@@ -1986,9 +1997,9 @@ impl Mesh {
         let mut endpoints: Vec<(u32, u32)> = Vec::with_capacity(indices.len() * 3);
 
         for (triangle, tri) in indices.iter().enumerate() {
-            let i0 = remap_index(tri[0], &remap, triangle)?;
-            let i1 = remap_index(tri[1], &remap, triangle)?;
-            let i2 = remap_index(tri[2], &remap, triangle)?;
+            let i0 = remap_index(tri[0], triangle)?;
+            let i1 = remap_index(tri[1], triangle)?;
+            let i2 = remap_index(tri[2], triangle)?;
             if i0 == i1 || i1 == i2 || i2 == i0 {
                 return Err(BuildError::DegenerateTriangle { triangle });
             }
@@ -2772,13 +2783,6 @@ fn near_collinear_triangle([a, b, c]: [[f64; 2]; 3]) -> bool {
         .max(length_squared(bc));
     let area2 = (ab[0] * ac[1] - ab[1] * ac[0]).abs();
     area2 <= f64::from(f32::EPSILON) * longest
-}
-
-fn remap_index(index: u32, remap: &[u32], triangle: usize) -> Result<u32, BuildError> {
-    remap
-        .get(index as usize)
-        .copied()
-        .ok_or(BuildError::IndexOutOfBounds { triangle, index })
 }
 
 /// Welds positions within `tolerance` to the earliest earlier canonical
