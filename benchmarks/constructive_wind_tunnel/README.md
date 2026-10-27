@@ -359,3 +359,30 @@ external macOS stack-logging workflow, with pauses before/after three edits and
 after release; exclude synthetic `flush_stack_log` stacks from that analysis.
 The benchmark is host-only so existing Wasm geometry CI does not pull a browser
 bridge into its dependency path.
+
+The retained baseline/optimized summary is in `authoring-bridge-results.json`.
+Four interleaved release rounds on arm64 with Rust 1.99.0 (404 edits per quality)
+measured these median complete native bridge edit times:
+
+| Quality | General triangle triangulation | Stack-based existing triangles |
+| --- | ---: | ---: |
+| Coarse 0.45 mm | 916 µs | 602 µs |
+| Medium 0.12 mm | 1,149 µs | 719 µs |
+| Fine 0.035 mm | 1,938 µs | 1,177 µs |
+
+Medium realization and output staging fell from 993 to 565 µs; native build
+stayed approximately 142 µs. Triangle counts, render bytes and source semantics
+stay unchanged. The matched three-edit allocation window fell from 65,554 to
+17,074 allocations and from 6,215,331 to 3,597,411 allocated bytes. Live tracked
+source/cache allocations after the edits were unchanged at 529,739 bytes in 386
+blocks, returning to zero after final release. This is allocation traffic and
+tracked live heap, not RSS or total residency (warmup allocations are excluded).
+
+CPU samples identified general polygon validation/ear clipping inside display
+extraction of already-triangular native geometry. The final sample removes that
+work; real native cap triangulation remains. The kernel's triangle path preserves
+projection arithmetic, exact orientation checks, fallback diagnosis and historical
+corner rotation, while using stack records. Native ARM64 release assembly already
+uses packed two-double arithmetic in Newell projection without a SIMD crate.
+These measurements establish the structural optimization, not a browser speedup
+or a claim that the Wasm bundle uses SIMD.

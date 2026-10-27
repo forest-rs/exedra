@@ -1806,6 +1806,17 @@ impl Mesh {
                 false
             }
             FaceTriangulation::Robust => {
+                let mut walk = self.face_loop(face);
+                if let (Some(a), Some(b), Some(c), None) =
+                    (walk.next(), walk.next(), walk.next(), walk.next())
+                {
+                    if let Some(triangle) = self.triangulate_triangle_robust([a, b, c]) {
+                        out.push(triangle);
+                        return false;
+                    }
+                    out.push([a, b, c]);
+                    return true;
+                }
                 if let Some(triangles) = self.triangulate_face_robust(face) {
                     out.extend_from_slice(&triangles);
                     false
@@ -1831,6 +1842,39 @@ impl Mesh {
         }
     }
 
+    // A triangle has no interior diagonals or nonadjacent boundary pairs.
+    // Keep the general path's projection, winding, exact orientation and emitted
+    // corner rotation, without allocating a polygon validation/ear-clipping graph.
+    fn triangulate_triangle_robust(&self, corners: [CornerId; 3]) -> Option<[CornerId; 3]> {
+        let mut points = [[0.0; 3]; 3];
+        for (point, corner) in points.iter_mut().zip(corners) {
+            *point = self
+                .vertex_position(self.to_vertex(corner)?)?
+                .map(f64::from);
+        }
+        let (u, v) = dominant_projection(&points)?;
+        let projected = points.map(|p| [p[u], p[v]]);
+        PolygonInput {
+            outer: &projected,
+            holes: &[],
+        }
+        .validate()
+        .ok()?;
+        let mut twice_area = 0.0;
+        for i in 0..3 {
+            let a = projected[i];
+            let b = projected[(i + 1) % 3];
+            twice_area += (a[0] - b[0]) * (a[1] + b[1]);
+        }
+        if twice_area <= 0.0
+            || exedra_triangulate::predicates::orient2d(projected[2], projected[0], projected[1])
+                != exedra_triangulate::predicates::Orientation::Ccw
+        {
+            return None;
+        }
+        Some([corners[2], corners[0], corners[1]])
+    }
+
     /// Robust triangulation of one face via plane projection; `None` when
     /// the face is degenerate or its projection is not a simple polygon.
     fn triangulate_face_robust(&self, face: FaceId) -> Option<Vec<[CornerId; 3]>> {
@@ -1847,37 +1891,7 @@ impl Mesh {
             points.push([f64::from(p[0]), f64::from(p[1]), f64::from(p[2])]);
         }
 
-        // Newell normal: component k is twice the signed area of the
-        // polygon projected along axis k.
-        let mut normal = [0.0_f64; 3];
-        for i in 0..points.len() {
-            let a = points[i];
-            let b = points[(i + 1) % points.len()];
-            normal[0] += (a[1] - b[1]) * (a[2] + b[2]);
-            normal[1] += (a[2] - b[2]) * (a[0] + b[0]);
-            normal[2] += (a[0] - b[0]) * (a[1] + b[1]);
-        }
-        // Dominant axis: largest |component|, ties resolved by the lowest
-        // axis index (deterministic, trig-free).
-        let mut axis = 0;
-        for k in 1..3 {
-            if normal[k].abs() > normal[axis].abs() {
-                axis = k;
-            }
-        }
-        if normal[axis] == 0.0 || !normal[axis].is_finite() {
-            return None;
-        }
-        // Project onto the plane axes in cyclic order; a negative dominant
-        // component means the cyclic projection winds clockwise, so swap
-        // the axes to hand the triangulator a counter-clockwise polygon.
-        // The mirrored output triangles then wind consistently with the
-        // face loop either way.
-        let (u, v) = if normal[axis] > 0.0 {
-            ((axis + 1) % 3, (axis + 2) % 3)
-        } else {
-            ((axis + 2) % 3, (axis + 1) % 3)
-        };
+        let (u, v) = dominant_projection(&points)?;
         let projected: Vec<[f64; 2]> = points.iter().map(|p| [p[u], p[v]]).collect();
         let input = PolygonInput {
             outer: &projected,
@@ -2769,6 +2783,41 @@ impl Iterator for FaceLoopIter<'_> {
         self.steps += 1;
         Some(current)
     }
+}
+
+// Fixed-order Newell projection shared by triangles and general polygons.
+fn dominant_projection(points: &[[f64; 3]]) -> Option<(usize, usize)> {
+    // Newell normal: component k is twice the signed area of the
+    // polygon projected along axis k.
+    let mut normal = [0.0_f64; 3];
+    for i in 0..points.len() {
+        let a = points[i];
+        let b = points[(i + 1) % points.len()];
+        normal[0] += (a[1] - b[1]) * (a[2] + b[2]);
+        normal[1] += (a[2] - b[2]) * (a[0] + b[0]);
+        normal[2] += (a[0] - b[0]) * (a[1] + b[1]);
+    }
+    // Dominant axis: largest |component|, ties resolved by the lowest
+    // axis index (deterministic, trig-free).
+    let mut axis = 0;
+    for k in 1..3 {
+        if normal[k].abs() > normal[axis].abs() {
+            axis = k;
+        }
+    }
+    if normal[axis] == 0.0 || !normal[axis].is_finite() {
+        return None;
+    }
+    // Project onto the plane axes in cyclic order; a negative dominant
+    // component means the cyclic projection winds clockwise, so swap
+    // the axes to hand the triangulator a counter-clockwise polygon.
+    // The mirrored output triangles then wind consistently with the
+    // face loop either way.
+    Some(if normal[axis] > 0.0 {
+        ((axis + 1) % 3, (axis + 2) % 3)
+    } else {
+        ((axis + 2) % 3, (axis + 1) % 3)
+    })
 }
 
 /// Scale-independent trigger for legalizing a stored-coordinate boundary ear.
@@ -4406,6 +4455,65 @@ mod tests {
             mesh.triangulate_face_fan(face),
             "Fan strategy must stay byte-identical to the historical fan"
         );
+    }
+
+    #[test]
+    fn triangle_enumeration_matches_general_robust_path_and_fallbacks() {
+        let mut fixtures = vec![
+            [[0.0, 0.0], [1.0, 0.0], [0.0, 1.0]],
+            [[0.0, 0.0], [0.0, 1.0], [1.0, 0.0]],
+            [[0.0, 0.0], [1.0, 0.0], [2.0, 0.0]],
+            [[0.0, 0.0], [0.0, 0.0], [1.0, 1.0]],
+            [
+                [1_048_576.0, 1_048_576.0],
+                [1_048_576.0_f32.next_up(), 1_048_576.0],
+                [1_048_576.0, 1_048_576.0_f32.next_up()],
+            ],
+            [[0.0, 0.0], [f32::INFINITY, 0.0], [0.0, 1.0]],
+            [[f32::NAN, 0.0], [1.0, 0.0], [0.0, 1.0]],
+        ];
+        for scale in [f32::from_bits(1), 1e-30, 1.0, 1e30] {
+            fixtures.push([[0.0, 0.0], [scale, 0.0], [0.0, scale]]);
+        }
+        let mut seed = 17_u32;
+        for _ in 0..128 {
+            fixtures.push(core::array::from_fn(|_| {
+                core::array::from_fn(|_| {
+                    seed = seed.wrapping_mul(1_664_525).wrapping_add(1_013_904_223);
+                    f32::from_bits(seed)
+                })
+            }));
+        }
+        for points in fixtures {
+            for plane in 0..4 {
+                let mut builder = MeshBuilder::new();
+                for [x, y] in points {
+                    builder.push_vertex(match plane {
+                        0 => [x, y, 0.0],
+                        1 => [0.0, x, y],
+                        2 => [y, 0.0, x],
+                        _ => [x, y, x + y],
+                    });
+                }
+                builder.add_face(&[0, 1, 2]).unwrap();
+                let built = builder.build().unwrap();
+                let mesh = built.mesh;
+                let face = built.face_ids[0];
+                let reference = mesh.triangulate_face_robust(face);
+                let expected_fallback = reference.is_none();
+                let expected = reference.unwrap_or_else(|| mesh.triangulate_face_fan(face));
+                let (actual, fallback) =
+                    mesh.face_triangles_counted(face, FaceTriangulation::Robust);
+                assert_eq!(
+                    actual, expected,
+                    "same corners/order for plane {plane}, {points:?}"
+                );
+                assert_eq!(
+                    fallback, expected_fallback,
+                    "same refusal for plane {plane}, {points:?}"
+                );
+            }
+        }
     }
 
     #[test]

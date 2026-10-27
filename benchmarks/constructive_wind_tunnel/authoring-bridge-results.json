@@ -1,0 +1,290 @@
+{
+  "baseline_core": "f8a0b47",
+  "optimized_core": "stack-based existing-triangle enumeration in this change",
+  "target": "arm64",
+  "rustc": "rustc 1.99.0 (b940084d7 2026-09-28)",
+  "method": "4 alternating before/after rounds, 101 edits per quality per round, 3 warmups; one panel miss and one pin hit per edit; request prepared and output buffer release outside timed window; native host metadata/report parsing included; excludes JS graph, Wasm JS copies, scheduling, scene and GPU",
+  "results": [
+    {
+      "tolerance": 0.45,
+      "before": {
+        "samples": 404,
+        "timings_ns": {
+          "build_decode_lower_metadata_ns": {
+            "median": 141792.0,
+            "p10": 138500,
+            "p90": 151875
+          },
+          "native_host_metadata_parse_ns": {
+            "median": 9417.0,
+            "p10": 9166,
+            "p90": 10625
+          },
+          "native_take_buffers_report_parse_ns": {
+            "median": 1375.0,
+            "p10": 1291,
+            "p90": 1708
+          },
+          "realize_stage_buffers_ns": {
+            "median": 761750.0,
+            "p10": 741625,
+            "p90": 878417
+          },
+          "release_previous_ns": {
+            "median": 375.0,
+            "p10": 292,
+            "p90": 625
+          },
+          "total_ns": {
+            "median": 916062.5,
+            "p10": 893125,
+            "p90": 1045791
+          }
+        },
+        "triangles": 328,
+        "output_buffer_bytes": 12928
+      },
+      "after": {
+        "samples": 404,
+        "timings_ns": {
+          "build_decode_lower_metadata_ns": {
+            "median": 143041.5,
+            "p10": 139083,
+            "p90": 155833
+          },
+          "native_host_metadata_parse_ns": {
+            "median": 10042.0,
+            "p10": 9333,
+            "p90": 11166
+          },
+          "native_take_buffers_report_parse_ns": {
+            "median": 1417.0,
+            "p10": 1333,
+            "p90": 1708
+          },
+          "realize_stage_buffers_ns": {
+            "median": 445771.0,
+            "p10": 435541,
+            "p90": 517625
+          },
+          "release_previous_ns": {
+            "median": 375.0,
+            "p10": 333,
+            "p90": 667
+          },
+          "total_ns": {
+            "median": 601729.0,
+            "p10": 588000,
+            "p90": 687542
+          }
+        },
+        "triangles": 328,
+        "output_buffer_bytes": 12928
+      }
+    },
+    {
+      "tolerance": 0.12,
+      "before": {
+        "samples": 404,
+        "timings_ns": {
+          "build_decode_lower_metadata_ns": {
+            "median": 142520.5,
+            "p10": 139500,
+            "p90": 151250
+          },
+          "native_host_metadata_parse_ns": {
+            "median": 9417.0,
+            "p10": 9167,
+            "p90": 9959
+          },
+          "native_take_buffers_report_parse_ns": {
+            "median": 1457.0,
+            "p10": 1333,
+            "p90": 1793
+          },
+          "realize_stage_buffers_ns": {
+            "median": 993478.5,
+            "p10": 974751,
+            "p90": 1089418
+          },
+          "release_previous_ns": {
+            "median": 375.0,
+            "p10": 292,
+            "p90": 625
+          },
+          "total_ns": {
+            "median": 1149479.0,
+            "p10": 1128583,
+            "p90": 1251583
+          }
+        },
+        "triangles": 448,
+        "output_buffer_bytes": 17728
+      },
+      "after": {
+        "samples": 404,
+        "timings_ns": {
+          "build_decode_lower_metadata_ns": {
+            "median": 141042.0,
+            "p10": 137000,
+            "p90": 149083
+          },
+          "native_host_metadata_parse_ns": {
+            "median": 9542.0,
+            "p10": 9250,
+            "p90": 9959
+          },
+          "native_take_buffers_report_parse_ns": {
+            "median": 1416.0,
+            "p10": 1333,
+            "p90": 1625
+          },
+          "realize_stage_buffers_ns": {
+            "median": 565395.5,
+            "p10": 552417,
+            "p90": 649375
+          },
+          "release_previous_ns": {
+            "median": 334.0,
+            "p10": 292,
+            "p90": 541
+          },
+          "total_ns": {
+            "median": 719062.0,
+            "p10": 703291,
+            "p90": 806250
+          }
+        },
+        "triangles": 448,
+        "output_buffer_bytes": 17728
+      }
+    },
+    {
+      "tolerance": 0.035,
+      "before": {
+        "samples": 404,
+        "timings_ns": {
+          "build_decode_lower_metadata_ns": {
+            "median": 145583.0,
+            "p10": 141541,
+            "p90": 158750
+          },
+          "native_host_metadata_parse_ns": {
+            "median": 9583.0,
+            "p10": 9250,
+            "p90": 10209
+          },
+          "native_take_buffers_report_parse_ns": {
+            "median": 1583.0,
+            "p10": 1375,
+            "p90": 2083
+          },
+          "realize_stage_buffers_ns": {
+            "median": 1777062.5,
+            "p10": 1719876,
+            "p90": 1941708
+          },
+          "release_previous_ns": {
+            "median": 500.0,
+            "p10": 375,
+            "p90": 875
+          },
+          "total_ns": {
+            "median": 1937708.5,
+            "p10": 1877166,
+            "p90": 2112541
+          }
+        },
+        "triangles": 768,
+        "output_buffer_bytes": 30528
+      },
+      "after": {
+        "samples": 404,
+        "timings_ns": {
+          "build_decode_lower_metadata_ns": {
+            "median": 142791.5,
+            "p10": 139709,
+            "p90": 150417
+          },
+          "native_host_metadata_parse_ns": {
+            "median": 9583.5,
+            "p10": 9333,
+            "p90": 9959
+          },
+          "native_take_buffers_report_parse_ns": {
+            "median": 1459.0,
+            "p10": 1375,
+            "p90": 1750
+          },
+          "realize_stage_buffers_ns": {
+            "median": 1021063.0,
+            "p10": 990000,
+            "p90": 1156292
+          },
+          "release_previous_ns": {
+            "median": 417.0,
+            "p10": 333,
+            "p90": 667
+          },
+          "total_ns": {
+            "median": 1177062.5,
+            "p10": 1145542,
+            "p90": 1317334
+          }
+        },
+        "triangles": 768,
+        "output_buffer_bytes": 30528
+      }
+    }
+  ],
+  "allocation": {
+    "before": {
+      "checkpoints": [
+        {
+          "current_blocks": 386,
+          "current_bytes": 529739,
+          "peak_blocks": 1129,
+          "peak_bytes": 602682,
+          "phase": "retained",
+          "total_blocks": 65554,
+          "total_bytes": 6215331
+        },
+        {
+          "current_blocks": 0,
+          "current_bytes": 0,
+          "peak_blocks": 1129,
+          "peak_bytes": 602682,
+          "phase": "released",
+          "total_blocks": 65554,
+          "total_bytes": 6215331
+        }
+      ],
+      "scope": "three bridge edits including Rust host metadata/report parsing, output staging and destruction; requests and warmup excluded; not Wasm JS copies"
+    },
+    "after": {
+      "checkpoints": [
+        {
+          "current_blocks": 386,
+          "current_bytes": 529739,
+          "peak_blocks": 1120,
+          "peak_bytes": 602054,
+          "phase": "retained",
+          "total_blocks": 17074,
+          "total_bytes": 3597411
+        },
+        {
+          "current_blocks": 0,
+          "current_bytes": 0,
+          "peak_blocks": 1120,
+          "peak_bytes": 602054,
+          "phase": "released",
+          "total_blocks": 17074,
+          "total_bytes": 3597411
+        }
+      ],
+      "scope": "three bridge edits including Rust host metadata/report parsing, output staging and destruction; requests and warmup excluded; not Wasm JS copies"
+    }
+  },
+  "samples": "macOS sample before: generic triangulation under extraction; after: no generic triangulation under triangle extraction; genuine native cap triangulation remains",
+  "native_codegen": "ARM64 release dominant_projection contains fsub.2d/fadd.2d/fmul.2d in short and long loops; no fearless_simd dependency; no new Wasm SIMD target flags"
+}
