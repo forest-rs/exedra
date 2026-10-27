@@ -27,6 +27,7 @@ env:
     -p exedra_measurements
     -p exedra_primitives
     -p exedra_profile
+    -p exedra_scene
     -p exedra_step
     -p exedra_testkit
     -p exedra_triangulate
@@ -46,6 +47,7 @@ env:
     -p exedra_measurements
     -p exedra_primitives
     -p exedra_profile
+    -p exedra_scene
     -p exedra_step
     -p exedra_testkit
     -p exedra_triangulate
@@ -236,6 +238,19 @@ jobs:
             echo "Geometry compilation must be independent of assembly structure."
             exit 1
           fi
+
+      - name: enforce optional native scene boundary
+        shell: bash
+        run: |
+          for package in exedra exedra_compile exedra_analytic exedra_mesh exedra_constructive; do
+            cargo tree -p "$package" --locked --edges normal --prefix none > geometry-dependencies.txt
+            if grep -E '^(layerstack|layerstack_schemas|exedra_scene) ' geometry-dependencies.txt; then
+              echo "Default geometry and compiler builds must remain independent of USD composition."
+              exit 1
+            fi
+          done
+          cargo check -p exedra --locked --no-default-features --features std,scene
+          cargo check -p exedra --locked --no-default-features --features libm,scene --target x86_64-unknown-none
 
       - name: enforce standalone export and interchange dependencies
         shell: bash

@@ -32,6 +32,15 @@ pub enum SceneErrorKind {
     Parameter(&'static str),
     /// This authored primitive kind has no scene schema in the current vocabulary.
     UnsupportedPrimitive,
+    /// Several inherited generator schemas match without an exact type definition.
+    AmbiguousGenerators,
+    /// Host geometry lowering failed, with a stable consumer-selected category.
+    Generator {
+        /// Machine-readable category defined by the host generator.
+        code: &'static str,
+        /// Geometry/parameter diagnosis supplied by that generator.
+        message: String,
+    },
     /// The ordinary recipe builder rejected the composed parameters.
     Recipe(RecipeError),
     /// The shared geometry compiler failed, retaining input and evaluation context.
@@ -43,6 +52,10 @@ pub enum SceneErrorKind {
         /// Number of emitted bodies; split multi-body generators into distinct source prims.
         found: usize,
     },
+    /// Retained native-to-polygon correspondence is incomplete or out of order.
+    NativeCorrespondence,
+    /// Exact native support bounds could not be represented for publication.
+    Bounds(exedra_analytic::bounds::BoundsError),
     /// The supplied stage/store do not use this binding's original interners.
     ForeignStore,
     /// The publication layer is missing or its target cannot map an output.
@@ -90,12 +103,20 @@ impl fmt::Display for SceneError {
             SceneErrorKind::InvalidTime => f.write_str("nonfinite sample time"),
             SceneErrorKind::Parameter(name) => write!(f, "unreadable parameter {name}"),
             SceneErrorKind::UnsupportedPrimitive => f.write_str("unsupported scene primitive kind"),
+            SceneErrorKind::AmbiguousGenerators => f.write_str(
+                "multiple inherited scene generators match; register the exact schema type",
+            ),
+            SceneErrorKind::Generator { code, message } => write!(f, "{code}: {message}"),
             SceneErrorKind::Recipe(error) => error.fmt(f),
             SceneErrorKind::Compile(error) => error.fmt(f),
             SceneErrorKind::Refused(_) => f.write_str("constructive evaluation refused geometry"),
             SceneErrorKind::BodyCount { found } => {
                 write!(f, "one scene source needs one body, found {found}")
             }
+            SceneErrorKind::NativeCorrespondence => {
+                f.write_str("native polygon correspondence is incomplete")
+            }
+            SceneErrorKind::Bounds(error) => error.fmt(f),
             SceneErrorKind::ForeignStore => f.write_str("scene binding belongs to another store"),
             SceneErrorKind::PublicationTarget => f.write_str("invalid publication edit target"),
             SceneErrorKind::Input(error) => error.fmt(f),

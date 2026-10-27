@@ -39,15 +39,49 @@ The shared compiler hashes installed intent once and reuses geometry by content
 and policy. It can also serve standalone callers, Assembly or other stages.
 Transforms and materials remain separate from part-local geometry.
 
-Successful snapshots retain recipes, topology, source maps, reports, extraction
-buffers and ordinary geometry queries. Native and standalone callers can share
-the same immutable compiled geometry, without native handles in the compiler.
+Successful snapshots retain immutable geometry inputs, topology, source maps,
+applicable native/constructive evidence, extraction buffers and ordinary queries.
+Native and standalone callers can share the same immutable compiled geometry,
+without native handles in the compiler.
 
 Run the complete author/edit/compile/publish/undo example:
 
 ```sh
 cargo run -p native_scene
 ```
+
+## Host generators and native sources
+
+`SceneEvaluator::register_generator(schema, revision, evaluator)` accepts the
+existing Layerstack `ProceduralEvaluator` contract with `Output = PreparedSource`
+and `Error = SceneErrorKind`. Register the host's typed schema, derived from
+`GenerativeProcedural`, in the caller's native registry. Read values through
+`ProceduralInputs`; consumed values and missing inputs use Layerstack's retained
+composition evidence. The evaluator returns geometry and performs no publication
+side effects. Recipe, native and baked inputs use the same shared compiler.
+
+Each registration creates a distinct immutable definition. Replacement resets
+tracked source bindings even if the caller repeats a revision label. It retains
+published-property manifests and last-good output; a failed replacement leaves
+those opinions intact and can be corrected or retired. Revision fields are host
+inspection labels, not hashes of arbitrary captured state. Re-register when
+captured configuration, external resources or code change. `generators()`
+inventories installed definitions; source snapshots record definition metadata
+and can compare shared definition identity without retaining callback captures.
+Exact type matches precede inherited matches; ambiguous inherited definitions
+are refused. Built-in schemas keep their original meaning, including authored
+cylinder segments.
+
+This atomic batch does not order generators that consume generated meshes.
+Reading a reserved generated-output subtree is refused. Layerstack's procedural
+graph owns inter-producer ordering/resource workflows where those are required;
+this adapter does not introduce another dependency or invalidation engine.
+
+The [native scene example](../../examples/native_scene/) authors a tagged native
+panel and repeated native instances, edits parameters/placement/appearance,
+queries exact source measurements, picks generated polygons, and exports native
+USD layers plus structured work evidence. Its consumer tests compare incremental
+results against clean regeneration and retain old snapshots after eviction.
 
 ## Publication and ownership
 
@@ -59,15 +93,22 @@ exist. Multiple evaluators may share a layer when their output sites are distinc
 Publication uses `ValidatedMesh::prepare` to create or update conventional
 polygon `Mesh` children named `__exedra_geometry`. Exedra owns the published
 property manifest: points, polygon counts and indices, extent, subdivision mode,
-face-varying `primvars:normals`, uniform `primvars:exedra:region` and complete
+face-varying `primvars:normals`, uniform `primvars:exedra:region`, native source
+face IDs in uniform `primvars:exedra:nativeFace` when present, and complete
 `primvars:st` UVs when available. Conversion transfers owned numeric buffers into
 shared native storage and validates each immutable encoding once. Subdivision is
-explicitly disabled. The boundable recipe also owns a derived `extent` at the
+explicitly disabled. The boundable source also owns a derived `extent` at the
 publication target; native bounds and instancing use it without a procedural
-extent plugin. Its extent describes this recipe's geometry and prunes descendant
-bounds according to native USD semantics. Carried attributes and tangents remain
-available in the compiler's extraction buffers; this publisher does not author
-them yet.
+extent plugin. For native sources this encloses conservative analytic support
+and emitted points, rounded outwards into the USD float extent; recipes and baked meshes use
+the emitted geometry. The Mesh child always keeps its actual f32 bounds. Parent
+extents prune descendant bounds according to native USD semantics. The native ID
+array and `published_native_face` address the retained producer output in
+published polygon order, not regrouped render triangle order. Stronger
+partners may independently replace composed geometry/provenance. Source-native
+queries do not claim to describe those overrides. Carried attributes and tangents
+remain available in the compiler's extraction buffers; this publisher does not
+author them yet.
 
 Preparation inspects the actual authored site on every sync. It repairs missing
 or replaced owned values without reevaluating unchanged construction or scanning
@@ -113,7 +154,7 @@ resolved inputs skip recipe lowering. Cached native snapshots skip polygon
 validation and extent derivation. Publication still inspects owned properties,
 including samples and metadata, to detect output replacement.
 
-`SyncStats` separates discovery, recipe lowering, input resolution/reuse,
+`SyncStats` separates discovery, source lowering, input resolution/reuse,
 compilation/reuse, encoding/validation, publication-property checks, mesh updates,
 retirement, point writes and source-bound writes. It includes input evidence
 refreshed after publication changes ancestor composition records. Reports retain

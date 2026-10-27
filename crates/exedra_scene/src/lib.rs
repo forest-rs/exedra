@@ -25,15 +25,23 @@
 extern crate alloc;
 
 mod error;
+mod generator;
 mod geometry;
 mod primitive;
 mod runtime;
 
 pub use error::{SceneError, SceneErrorKind};
+pub use generator::{GeneratorIdentity, GeneratorRegistration, GeneratorRegistrationError};
 pub use primitive::{
     BOX_SCHEMA, CYLINDER_SCHEMA, HEIGHT, RADIUS, SEGMENTS, SIZE, define_primitive, register_schemas,
 };
 pub use runtime::{GENERATED_CHILD, SceneEvaluator, SceneSnapshot, SourceGeometry, SyncStats};
+
+/// Uniform native face IDs, one per published polygon, for retained native inputs.
+/// IDs are local to `SourceGeometry::native` and its source installation.
+/// Partners replacing generated topology must maintain their own correspondence;
+/// this manifest describes the producer's retained output, not arbitrary overrides.
+pub const NATIVE_FACE: &str = "primvars:exedra:nativeFace";
 
 /// Scene-independent compiler, geometry inputs and retained query snapshots.
 pub use exedra_compile as compile;

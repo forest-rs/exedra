@@ -11,6 +11,8 @@ use schemas::{XformCache, usd_geom, value};
 const GENERATED: LayerId = LayerId(1);
 const BASE: LayerId = LayerId(2);
 const LOCAL: LayerId = LayerId(3);
+const CUSTOM_SCHEMA: &str = "ExamplePanel";
+const CUSTOM_SYSTEM: &str = "example:panel";
 
 struct Fixture {
     store: InMemoryStore,
@@ -34,6 +36,20 @@ impl Fixture {
         )
         .unwrap();
         register_schemas(&mut registry, &mut store.tokens);
+        let system = store.tokens.intern(CUSTOM_SYSTEM);
+        registry.register(
+            SchemaDefinition::typed(store.tokens.intern(CUSTOM_SCHEMA))
+                .with_parent(store.tokens.intern("GenerativeProcedural"))
+                .with_override(
+                    PropertyDefinition::attribute(store.tokens.intern("proceduralSystem"))
+                        .with_type(PropertyType::parse("token").unwrap())
+                        .with_fallback(Value::Token(system)),
+                )
+                .with_property(
+                    PropertyDefinition::attribute(store.tokens.intern(SIZE))
+                        .with_type(PropertyType::parse("double3").unwrap()),
+                ),
+        );
         let registry = registry.build(&store.tokens);
         assert!(
             registry.issues().is_empty(),
@@ -235,7 +251,7 @@ fn identical_sources_share_geometry_and_unchanged_sync_does_not_write() {
     assert_eq!(unchanged.stats.geometry_reused, 2);
     assert_eq!(unchanged.stats.meshes_written, 0);
     assert_eq!(unchanged.stats.discovered_prims, 0);
-    assert_eq!(unchanged.stats.recipe_evaluations, 0);
+    assert_eq!(unchanged.stats.source_evaluations, 0);
     assert_eq!(unchanged.stats.input_resolutions, 0);
     assert_eq!(unchanged.stats.polygon_validations, 0);
     assert!(unchanged.stats.input_reused > 0);
@@ -787,7 +803,7 @@ fn store_affinity_is_checked_and_output_edits_are_repaired() {
     edit.clear_default(EditTarget::for_layer(GENERATED).property(points));
     fixture.live.apply(&mut fixture.store, &edit).unwrap();
     let repaired = fixture.sync(&mut evaluator);
-    assert_eq!(repaired.stats.recipe_evaluations, 0);
+    assert_eq!(repaired.stats.source_evaluations, 0);
     assert_eq!(repaired.stats.polygon_validations, 0);
     assert_eq!(repaired.stats.meshes_written, 1);
     assert_eq!(
@@ -1089,7 +1105,7 @@ fn masked_inputs_reuse_lowering_and_history_loss_refreshes_only_membership() {
     fixture.live.apply(&mut fixture.store, &masked).unwrap();
     let second = fixture.sync(&mut evaluator);
     assert_eq!(second.stats.discovered_prims, 0);
-    assert_eq!(second.stats.recipe_evaluations, 0);
+    assert_eq!(second.stats.source_evaluations, 0);
     assert_eq!(second.stats.meshes_written, 0);
     fixture.live.set_change_history_budget(ChangeHistoryBudget {
         max_batches: 0,
@@ -1104,7 +1120,7 @@ fn masked_inputs_reuse_lowering_and_history_loss_refreshes_only_membership() {
     fixture.live.apply(&mut fixture.store, &unrelated).unwrap();
     let recovered = fixture.sync(&mut evaluator);
     assert!(recovered.stats.discovered_prims > 0);
-    assert_eq!(recovered.stats.recipe_evaluations, 0);
+    assert_eq!(recovered.stats.source_evaluations, 0);
     assert_eq!(recovered.stats.polygon_validations, 0);
     assert_eq!(recovered.stats.meshes_written, 0);
     assert!(recovered.sources[0].shares_geometry(&first.sources[0]));
@@ -1166,7 +1182,7 @@ fn incompatible_publication_is_atomic_across_sources_and_can_be_retried() {
     );
     fixture.live.apply(&mut fixture.store, &remove).unwrap();
     let retried = fixture.sync(&mut evaluator);
-    assert_eq!(retried.stats.recipe_evaluations, 0);
+    assert_eq!(retried.stats.source_evaluations, 0);
     assert_eq!(retried.stats.meshes_written, 2);
     assert!(
         fixture
@@ -1193,7 +1209,7 @@ fn a_replacement_stage_in_the_same_store_refreshes_retained_queries() {
     fixture.live = LiveStage::compose(&mut fixture.store, LOCAL, options);
     let replaced = fixture.sync(&mut evaluator);
     assert!(replaced.stats.discovered_prims > 0);
-    assert_eq!(replaced.stats.recipe_evaluations, 0);
+    assert_eq!(replaced.stats.source_evaluations, 0);
     assert_eq!(replaced.stats.meshes_written, 0);
     assert!(replaced.sources[0].shares_geometry(&first.sources[0]));
 }
@@ -1350,7 +1366,7 @@ fn mapped_publication_retires_samples_in_authored_layer_time() {
         assert_eq!(spec.time_samples.get().unwrap()[0].0, 2.0);
     }
     let repaired = fixture.sync(&mut evaluator);
-    assert_eq!(repaired.stats.recipe_evaluations, 0);
+    assert_eq!(repaired.stats.source_evaluations, 0);
     assert_eq!(repaired.stats.polygon_validations, 0);
     assert_eq!(repaired.stats.meshes_written, 1);
     assert_eq!(repaired.stats.source_bounds_written, 1);
@@ -1436,7 +1452,7 @@ fn obsolete_uvs_are_retired_without_removing_partner_properties() {
             &policy,
         )
         .unwrap();
-    assert_eq!(changed.stats.recipe_evaluations, 0);
+    assert_eq!(changed.stats.source_evaluations, 0);
     assert!(
         fixture
             .store
@@ -1504,4 +1520,264 @@ fn initial_publication_refuses_occupied_geometry_in_its_target() {
         generation
     );
     assert_eq!(fixture.generated_points(output), vec![[7.0; 3]]);
+}
+
+#[derive(Clone, Copy, Debug)]
+struct CustomGenerator {
+    factor: f64,
+    fail: bool,
+    read_output: Option<PathId>,
+}
+impl schemas::procedural::ProceduralEvaluator for CustomGenerator {
+    type Output = exedra_compile::PreparedSource;
+    type Error = SceneErrorKind;
+    fn system(&self) -> &str {
+        CUSTOM_SYSTEM
+    }
+    fn evaluate(
+        &self,
+        inputs: &mut schemas::procedural::ProceduralInputs<'_>,
+    ) -> Result<Self::Output, Self::Error> {
+        if self.fail {
+            return Err(SceneErrorKind::Generator {
+                code: "example.refused",
+                message: "replacement refused".into(),
+            });
+        }
+        if let Some(output) = self.read_output {
+            let _ = inputs
+                .attribute(output, "points")
+                .map_err(SceneErrorKind::Input)?;
+        }
+        let size = inputs
+            .attribute(inputs.recipe(), SIZE)
+            .map_err(SceneErrorKind::Input)?
+            .ok_or(SceneErrorKind::Parameter(SIZE))?;
+        let size = value::read_double3(&size, inputs.tokens())
+            .ok_or(SceneErrorKind::Parameter(SIZE))?
+            .map(|v| v * self.factor);
+        primitive::recipe(PrimitiveSpec::Box { size })
+            .map(|recipe| {
+                exedra_compile::PreparedSource::new(exedra_compile::PartSource::Recipe(recipe))
+            })
+            .map_err(SceneErrorKind::Recipe)
+    }
+}
+fn custom_source(fixture: &mut Fixture) -> PathId {
+    let source = fixture.store.path("/World/Panel");
+    let target = EditTarget::for_layer(BASE);
+    let mut author = Transaction::new();
+    author.create_prim(
+        target.prim(source),
+        Specifier::Def,
+        Some(fixture.store.tokens.intern(CUSTOM_SCHEMA)),
+    );
+    author.create_property(
+        target.property(PropertyPath::new(source, fixture.store.tokens.intern(SIZE))),
+        PropertySpec::typed_attribute(PropertyType::parse("double3").unwrap())
+            .with_default(Value::Vec3d([2.0; 3])),
+    );
+    fixture.live.apply(&mut fixture.store, &author).unwrap();
+    source
+}
+#[test]
+fn same_revision_generator_replacement_invalidates_inputs_and_keeps_publication_ownership() {
+    let mut fixture = Fixture::new();
+    let source = custom_source(&mut fixture);
+    let mut evaluator = SceneEvaluator::new(
+        &fixture.store,
+        fixture.root,
+        EditTarget::for_layer(GENERATED),
+    );
+    let first = evaluator
+        .register_generator(
+            CUSTOM_SCHEMA,
+            7,
+            CustomGenerator {
+                factor: 1.0,
+                fail: false,
+                read_output: None,
+            },
+        )
+        .unwrap();
+    assert!(!first.replaced);
+    let initial = fixture.sync(&mut evaluator);
+    assert_eq!(initial.sources[0].generator.revision, 7);
+    assert_eq!(fixture.sync(&mut evaluator).stats.source_evaluations, 0);
+    let note = PropertyPath::new(
+        initial.sources[0].output,
+        fixture.store.tokens.intern("partner:note"),
+    );
+    let mut partner = Transaction::new();
+    partner.create_property(
+        EditTarget::for_layer(GENERATED).property(note),
+        PropertySpec::typed_attribute(PropertyType::parse("string").unwrap())
+            .with_default(Value::string("keep")),
+    );
+    fixture.live.apply(&mut fixture.store, &partner).unwrap();
+    let replacement = evaluator
+        .register_generator(
+            CUSTOM_SCHEMA,
+            7,
+            CustomGenerator {
+                factor: 2.0,
+                fail: false,
+                read_output: None,
+            },
+        )
+        .unwrap();
+    assert_eq!(
+        replacement,
+        GeneratorRegistration {
+            replaced: true,
+            invalidated_sources: 1
+        }
+    );
+    let changed = fixture.sync(&mut evaluator);
+    assert_eq!(changed.stats.source_evaluations, 1);
+    assert!(!initial.sources[0].shares_generator_definition(&changed.sources[0]));
+    assert!(!initial.sources[0].shares_geometry(&changed.sources[0]));
+    assert_eq!(
+        fixture
+            .generated_points(changed.sources[0].output)
+            .iter()
+            .map(|p| p[0])
+            .fold(0.0_f32, f32::max),
+        4.0
+    );
+    evaluator
+        .register_generator(
+            CUSTOM_SCHEMA,
+            7,
+            CustomGenerator {
+                factor: 0.0,
+                fail: true,
+                read_output: None,
+            },
+        )
+        .unwrap();
+    let generation = fixture.store.layer(GENERATED).unwrap().generation();
+    let points = fixture.generated_points(changed.sources[0].output);
+    let failure = evaluator
+        .sync(
+            &mut fixture.live,
+            &mut fixture.store,
+            &mut fixture.compiler,
+            Time::Default,
+            &CompilePolicy::default(),
+        )
+        .unwrap_err();
+    assert_eq!(failure.path, "/World/Panel");
+    assert!(matches!(
+        failure.kind,
+        SceneErrorKind::Generator {
+            code: "example.refused",
+            ..
+        }
+    ));
+    assert_eq!(
+        fixture.store.layer(GENERATED).unwrap().generation(),
+        generation
+    );
+    assert_eq!(fixture.generated_points(changed.sources[0].output), points);
+    evaluator
+        .register_generator(
+            CUSTOM_SCHEMA,
+            7,
+            CustomGenerator {
+                factor: 3.0,
+                fail: false,
+                read_output: None,
+            },
+        )
+        .unwrap();
+    let recovered = fixture.sync(&mut evaluator);
+    assert_eq!(recovered.stats.meshes_written, 1);
+    assert_eq!(
+        fixture
+            .generated_points(recovered.sources[0].output)
+            .iter()
+            .map(|p| p[0])
+            .fold(0.0_f32, f32::max),
+        6.0
+    );
+    assert_eq!(
+        fixture
+            .live
+            .stage()
+            .view(&fixture.store)
+            .attribute(note)
+            .unwrap()
+            .get(Time::Default)
+            .unwrap()
+            .value,
+        Value::string("keep")
+    );
+    let mut remove = Transaction::new();
+    remove.remove_spec(EditTarget::for_layer(BASE).prim(source));
+    fixture.live.apply(&mut fixture.store, &remove).unwrap();
+    let retired = fixture.sync(&mut evaluator);
+    assert_eq!(retired.stats.meshes_removed, 1);
+    assert!(
+        fixture
+            .live
+            .stage()
+            .view(&fixture.store)
+            .attribute(note)
+            .is_some()
+    );
+    assert!(
+        fixture
+            .store
+            .layer(GENERATED)
+            .unwrap()
+            .prim(initial.sources[0].output)
+            .unwrap()
+            .property(fixture.store.tokens.lookup("points").unwrap())
+            .is_none()
+    );
+}
+#[test]
+fn custom_generators_cannot_consume_published_output_inside_the_atomic_batch() {
+    let mut fixture = Fixture::new();
+    custom_source(&mut fixture);
+    let mut evaluator = SceneEvaluator::new(
+        &fixture.store,
+        fixture.root,
+        EditTarget::for_layer(GENERATED),
+    );
+    evaluator
+        .register_generator(
+            CUSTOM_SCHEMA,
+            1,
+            CustomGenerator {
+                factor: 1.0,
+                fail: false,
+                read_output: None,
+            },
+        )
+        .unwrap();
+    let first = fixture.sync(&mut evaluator);
+    evaluator
+        .register_generator(
+            CUSTOM_SCHEMA,
+            2,
+            CustomGenerator {
+                factor: 1.0,
+                fail: false,
+                read_output: Some(first.sources[0].output),
+            },
+        )
+        .unwrap();
+    let failure = evaluator
+        .sync(
+            &mut fixture.live,
+            &mut fixture.store,
+            &mut fixture.compiler,
+            Time::Default,
+            &CompilePolicy::default(),
+        )
+        .unwrap_err();
+    assert!(matches!(failure.kind, SceneErrorKind::GeneratedInput));
+    assert!(!fixture.generated_points(first.sources[0].output).is_empty());
 }

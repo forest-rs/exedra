@@ -144,6 +144,7 @@ joto_format = "0.1.0"
 joto_parse = "0.2.0"
 layerstack = { default-features = false, git = "https://github.com/forest-rs/layerstack", rev = "08d51a9af3770eff3fc0bf7f82a05d78c2ab91d6" }
 layerstack_schemas = { default-features = false, features = ["usd-geom", "usd-proc", "usd-shade"], git = "https://github.com/forest-rs/layerstack", rev = "08d51a9af3770eff3fc0bf7f82a05d78c2ab91d6" }
+layerstack_usda = { default-features = false, git = "https://github.com/forest-rs/layerstack", rev = "08d51a9af3770eff3fc0bf7f82a05d78c2ab91d6" }
 # Pinned exactly: kurbo flattening output feeds content hashes and goldens in
 # the constructive domain; version bumps must be deliberate (EVAL_SCHEMA_VERSION).
 kurbo = { default-features = false, features = ["libm"], version = "=0.13.1" }
