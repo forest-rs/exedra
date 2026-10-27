@@ -139,3 +139,24 @@ exact native measures, face/triangle counts and geometric deviation. Native
 sweeping now accepts line/arc profiles; arcs requiring nonregular toroidal walls
 and pieces touching a bend axis are source-indexed refusals. Spheres and poles
 remain outside this example's supported surface families.
+
+## Circle-to-rectangle lofts
+
+```sh
+cargo run --release -p analytic_extrusion --example loft_correspondence -- /tmp/lofts.glb
+blender --background --python examples/analytic_extrusion/render_boundary.py -- /tmp/lofts.glb /tmp/lofts.png
+```
+
+Three mesh lofts show a ruled circle-to-rectangle transition, a smooth transition
+through a displaced rounded rectangle, and a hollow transition with matched
+inner boundaries. Explicit landmarks align the circle quarters with corners.
+Correspondence preparation retains exact curves and tags; tessellation happens
+afterward. The orange caps expose the sections and an embedded 20 mm grid shows
+the reference-section construction chart stretching across each transition.
+
+Twisted walls refine longitudinally under a 0.05 mm side-surface policy rather
+than emitting one tall quad. Added rows stay smooth; authored ruled section
+joins remain sharp. The sample requires deep validity, closure and an emitted
+side-surface bound within policy, including f32 displacement. Profile chord
+error is controlled separately at 0.05 mm. Console output reports preparation
+work, mesh counts, sampling intervals and the side-surface bound.

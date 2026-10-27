@@ -140,6 +140,20 @@ allocation counts. The final path removes per-segment cut-list allocations,
 per-pair contact vectors and copies of output ring arrays; graph indexes,
 validation buffers, output profiles and correspondence still allocate.
 
+## Loft correspondence preparation
+
+```sh
+cargo run --release -p constructive_wind_tunnel --bin loft_correspondence
+```
+
+The binary prepares a circle, rounded rectangle and rectangle with default
+seams. It measures 101 fresh preparations after warmup, keeping the result alive
+until timing stops; input construction and output destruction are excluded.
+JSON includes every sample, input/output segment counts and normalized-knot
+adjustment. Meshing is a separate operation. On the development Apple Silicon
+host, preparation took a median 0.056 ms for 14 input and 30 output segments
+across three sections. This is a local observation, not a portable guarantee.
+
 ## License
 
 Apache-2.0 OR MIT
