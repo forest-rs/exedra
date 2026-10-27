@@ -99,3 +99,18 @@ revolutions retain cylinders, cones and regular toroidal walls. Unsupported STEP
 surfaces produce an `exchange.unsupportedSurface` diagnostic; the source stays
 usable for display and native queries. The current exporter supports plane and
 cylinder faces, not cone, torus or ruled faces.
+
+Each `document.buildTiming`, `display.timing`, exported `StepFile.timing` and
+queried workplane `timing` reports host-observed elapsed milliseconds. Refused
+operations expose the same evidence through `ExedraError.timing` while preserving
+the original diagnostic. `kernelMs` measures the Wasm method boundary (including
+its binding work); `sdkPrepareMs` covers graph lowering/JSON requests;
+`transferMs` covers taking typed arrays or STEP text; `metadataMs` covers reading
+and decoding metadata; `cleanupMs` covers releasing temporary Wasm handles.
+`totalMs` spans the observed SDK operation, including result wrapping. These are
+synchronous host CPU/elapsed measurements, not GPU time or presented-frame latency.
+
+`session.lastOperation` retains only one immutable timing value, with its
+operation, outcome and document/part scope. Reading timings or `stats()` does not
+record additional operations. Held timing values remain plain immutable evidence
+after later edits or disposal; they do not retain another native model owner.
