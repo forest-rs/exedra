@@ -13,7 +13,7 @@ use crate::geometry::{Curve, ParameterDomain, ParameterRange, Surface};
 use alloc::{vec, vec::Vec};
 use exedra_math::path::{CurvePathSource, PathClosure, PathJoin, PathSegment3};
 use exedra_math::{Placement3, add, cross, dot, scale, sub};
-use exedra_profile::{Curve as ProfileCurve, LoopRef, Profile, SegmentRef};
+use exedra_profile::{Arc, LoopRef, Profile, SegmentRef};
 
 #[derive(Clone, Debug, PartialEq)]
 pub(super) struct Section {
@@ -64,6 +64,7 @@ pub(super) struct Span {
 }
 struct Vertex {
     point: [f64; 2],
+    arc: Option<Arc>,
     source: SegmentRef,
     tag: Option<exedra_profile::SegTag>,
     next: usize,
@@ -167,11 +168,9 @@ pub(super) fn construct(
                 loop_ref,
                 segment: i,
             };
-            if !matches!(segment.curve, ProfileCurve::Line) {
-                return Err(SweepError::CurvedProfile { segment: source });
-            }
             vertices.push(Vertex {
                 point: from,
+                arc: ring.arc(i),
                 source,
                 tag: segment.tag,
                 next: begin + (i + 1) % n,
@@ -290,17 +289,32 @@ pub(super) fn construct(
     }
     let vid = |station: usize, j: usize| VertexId(crate::usize_to_u32(station * n + j));
     let mut sections = Vec::with_capacity((count + 1) * n);
-    for station in 0..=count {
+    for (station, section) in core::iter::once(&spans[0].start)
+        .chain(spans.iter().map(|s| &s.end))
+        .enumerate()
+    {
         for (j, v) in vertices.iter().enumerate() {
             let a = vid(station, j);
             let b = vid(station, v.next);
             let origin = parts.vertices[a.index()];
             let direction = sub(parts.vertices[b.index()], origin);
+            let (curve, range) = if let Some(arc) = v.arc {
+                (
+                    crate::profile_geometry::circle(arc, section.frame(path.section_origin))
+                        .map_err(SweepError::Geometry)?,
+                    ParameterRange::new(0.0, arc.sweep.abs()).map_err(SweepError::Geometry)?,
+                )
+            } else {
+                (
+                    Curve::line(origin, direction).map_err(SweepError::Geometry)?,
+                    ParameterRange::UNIT,
+                )
+            };
             sections.push(push_edge(
                 &mut parts,
                 Edge {
-                    curve: Curve::line(origin, direction).map_err(SweepError::Geometry)?,
-                    range: ParameterRange::UNIT,
+                    curve,
+                    range,
                     start: a,
                     end: b,
                     role: EdgeRole::Section {
@@ -313,7 +327,10 @@ pub(super) fn construct(
     }
     let mut area = 2.0 * profile.area();
     let mut volume = 0.0;
-    let (section_area, moment) = moments(&vertices, path.section_origin);
+    let section_area = profile.area();
+    let moment = profile
+        .first_moments(path.section_origin)
+        .ok_or(SweepError::NumericLimit)?;
     let mut rails = Vec::with_capacity(n);
     let mut coordinates = Vec::with_capacity(n);
     for (i, span) in spans.iter().enumerate() {
@@ -343,7 +360,7 @@ pub(super) fn construct(
                     if !radius.is_finite() || radius <= 0.0 {
                         return Err(SweepError::AxisContact {
                             path_segment: i,
-                            vertex: v.source,
+                            segment: v.source,
                             radius,
                         });
                     }
@@ -394,39 +411,137 @@ pub(super) fn construct(
             let b = parts.vertices[vid(i, v.next).index()];
             let direction = sub(b, a);
             let length = norm(direction);
-            let (surface, domain, sense) = match span.motion {
-                Motion::Line => {
-                    let x = scale(direction, 1.0 / length);
-                    let t = span.start.tangent;
-                    (
-                        Surface::plane(Placement3::from_axes(x, t, cross(x, t), a))
-                            .map_err(SweepError::Geometry)?,
-                        ParameterDomain {
-                            u: ParameterRange::new(0.0, length).map_err(SweepError::Geometry)?,
-                            v: ParameterRange::new(0.0, span.length)
-                                .map_err(SweepError::Geometry)?,
-                        },
-                        Sense::Forward,
-                    )
-                }
-                Motion::Arc {
+            let arc = v.arc.map(|source| {
+                if let Motion::Arc {
                     center,
                     axis,
                     radial,
-                    angle,
                     ..
-                } => {
-                    let (surface, domain, sense) =
-                        crate::revolve::wall(coordinates[v.next], coordinates[j], angle)
-                            .map_err(SweepError::Geometry)?;
-                    let place = Placement3::from_axes(radial, axis, cross(radial, axis), center);
-                    (place_surface(surface, place)?, domain, sense)
+                } = span.motion
+                {
+                    let delta = sub(span.start.point(source.center, path.section_origin), center);
+                    let center = [dot(delta, radial), dot(delta, axis)];
+                    Arc {
+                        from: coordinates[j],
+                        to: coordinates[v.next],
+                        center,
+                        radius: source.radius,
+                        start_angle: libm::atan2(
+                            coordinates[j][1] - center[1],
+                            coordinates[j][0] - center[0],
+                        ),
+                        sweep: -source.sweep,
+                    }
+                } else {
+                    source
+                }
+            });
+            let (surface, domain, sense) = if let Some(arc) = arc {
+                let last = arc.start_angle + arc.sweep;
+                let angle =
+                    ParameterRange::new(arc.start_angle.min(last), arc.start_angle.max(last))
+                        .map_err(SweepError::Geometry)?;
+                let sense = if v.arc.expect("source arc").sweep > 0.0 {
+                    Sense::Forward
+                } else {
+                    Sense::Reverse
+                };
+                match span.motion {
+                    Motion::Line => (
+                        Surface::cylinder(
+                            span.start.frame(path.section_origin)
+                                * Placement3::translate(arc.center[0], arc.center[1], 0.0),
+                            arc.radius,
+                        )
+                        .map_err(SweepError::Geometry)?,
+                        ParameterDomain {
+                            u: angle,
+                            v: ParameterRange::new(0.0, span.length)
+                                .map_err(SweepError::Geometry)?,
+                        },
+                        sense,
+                    ),
+                    Motion::Arc {
+                        center,
+                        axis,
+                        radial,
+                        angle: sweep,
+                        ..
+                    } => {
+                        let minimum = arc.bounds()[0][0];
+                        if minimum <= 0.0 {
+                            return Err(SweepError::AxisContact {
+                                path_segment: i,
+                                segment: v.source,
+                                radius: minimum,
+                            });
+                        }
+                        if arc.center[0] <= arc.radius {
+                            return Err(SweepError::NonRegularArc {
+                                path_segment: i,
+                                segment: v.source,
+                                major_radius: arc.center[0],
+                                minor_radius: arc.radius,
+                            });
+                        }
+                        let frame = Placement3::from_axes(
+                            radial,
+                            cross(axis, radial),
+                            axis,
+                            add(center, scale(axis, arc.center[1])),
+                        );
+                        (
+                            Surface::torus(frame, arc.center[0], arc.radius)
+                                .map_err(SweepError::Geometry)?,
+                            ParameterDomain {
+                                u: ParameterRange::new(0.0, sweep).map_err(SweepError::Geometry)?,
+                                v: angle,
+                            },
+                            sense,
+                        )
+                    }
+                }
+            } else {
+                match span.motion {
+                    Motion::Line => {
+                        let x = scale(direction, 1.0 / length);
+                        let t = span.start.tangent;
+                        (
+                            Surface::plane(Placement3::from_axes(x, t, cross(x, t), a))
+                                .map_err(SweepError::Geometry)?,
+                            ParameterDomain {
+                                u: ParameterRange::new(0.0, length)
+                                    .map_err(SweepError::Geometry)?,
+                                v: ParameterRange::new(0.0, span.length)
+                                    .map_err(SweepError::Geometry)?,
+                            },
+                            Sense::Forward,
+                        )
+                    }
+                    Motion::Arc {
+                        center,
+                        axis,
+                        radial,
+                        angle,
+                        ..
+                    } => {
+                        let (surface, domain, sense) =
+                            crate::revolve::wall(coordinates[v.next], coordinates[j], angle)
+                                .map_err(SweepError::Geometry)?;
+                        let place =
+                            Placement3::from_axes(radial, axis, cross(radial, axis), center);
+                        (place_surface(surface, place)?, domain, sense)
+                    }
                 }
             };
             area += match span.motion {
-                Motion::Line => length * span.length,
+                Motion::Line => v.arc.map_or(length, |a| a.length()) * span.length,
                 Motion::Arc { angle, .. } => {
-                    angle * 0.5 * (coordinates[j][0] + coordinates[v.next][0]) * length
+                    angle
+                        * arc.map_or_else(
+                            || 0.5 * (coordinates[j][0] + coordinates[v.next][0]) * length,
+                            crate::profile_geometry::radial_integral,
+                        )
                 }
             };
             let boundary = push_loop(
@@ -542,25 +657,9 @@ fn place_surface(surface: Surface, frame: Placement3) -> Result<Surface, SweepEr
         Surface::Plane(_) => Surface::plane(placement),
         Surface::Cylinder(c) => Surface::cylinder(placement, c.radius()),
         Surface::Cone(c) => Surface::cone(placement, c.radius(), c.slope()),
+        Surface::Torus(t) => Surface::torus(placement, t.major_radius(), t.minor_radius()),
     }
     .map_err(SweepError::Geometry)
-}
-fn moments(vertices: &[Vertex], datum: [f64; 2]) -> (f64, [f64; 2]) {
-    let mut a = 0.0;
-    let mut m = [0.0; 2];
-    for v in vertices {
-        let p = [v.point[0] - datum[0], v.point[1] - datum[1]];
-        let q = [
-            vertices[v.next].point[0] - datum[0],
-            vertices[v.next].point[1] - datum[1],
-        ];
-        let c = p[0] * q[1] - q[0] * p[1];
-        a += c;
-        for k in 0..2 {
-            m[k] += (p[k] + q[k]) * c;
-        }
-    }
-    (a * 0.5, m.map(|v| v / 6.0))
 }
 fn push_edge(parts: &mut BodyParts<FaceRole, EdgeRole>, edge: Edge<EdgeRole>) -> EdgeId {
     let id = EdgeId(crate::usize_to_u32(parts.edges.len()));

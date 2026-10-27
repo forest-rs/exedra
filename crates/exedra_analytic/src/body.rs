@@ -605,6 +605,17 @@ fn support_gap(curve: &Curve, range: ParameterRange, surface: &Surface) -> f64 {
             };
             let (a, b) = (coordinates(frame, a.point), coordinates(frame, b.point));
             match surface {
+                Surface::Torus(t) => {
+                    // Distance to a closed set is 1-Lipschitz. Each point of
+                    // this segment is at most half its length from an endpoint;
+                    // endpoint-only checks would miss a chord cutting the tube.
+                    let gap = |p: [f64; 3]| {
+                        (libm::hypot(libm::hypot(p[0], p[1]) - t.major_radius(), p[2])
+                            - t.minor_radius())
+                        .abs()
+                    };
+                    gap(a).max(gap(b)) + 0.5 * length(sub(b, a))
+                }
                 Surface::Plane(_) => a[2].abs().max(b[2].abs()),
                 Surface::Cylinder(cylinder) => {
                     let dx = b[0] - a[0];
@@ -654,6 +665,29 @@ fn support_gap(curve: &Curve, range: ParameterRange, surface: &Surface) -> f64 {
             let normal = frame.rows.map(|r| r[2]);
             let tilt = libm::hypot(dot(axis(0), normal), dot(axis(1), normal));
             match surface {
+                Surface::Torus(t) => {
+                    // Bound the entire circle against either an orbit or a
+                    // meridian circle, independently of its parameter trim.
+                    // The factor two bounds rotation into the reference plane.
+                    let rho = libm::hypot(center[0], center[1]);
+                    let r = circle.radius();
+                    let orbit = rho
+                        + (libm::hypot(r - t.major_radius(), center[2]) - t.minor_radius()).abs()
+                        + 2.0 * r * tilt;
+                    let meridian = if rho == 0.0 {
+                        f64::INFINITY
+                    } else {
+                        let radial = frame
+                            .rows
+                            .map(|row| (row[0] * center[0] + row[1] * center[1]) / rho);
+                        let cn = axis(2);
+                        let plane_tilt = libm::hypot(dot(cn, radial), dot(cn, normal));
+                        libm::hypot(rho - t.major_radius(), center[2])
+                            + (r - t.minor_radius()).abs()
+                            + 2.0 * r * plane_tilt
+                    };
+                    orbit.min(meridian)
+                }
                 Surface::Plane(_) => center[2].abs() + circle.radius() * tilt,
                 Surface::Cylinder(cylinder) => {
                     libm::hypot(center[0], center[1])
@@ -678,6 +712,46 @@ pub(crate) mod tests {
     use super::*;
     use alloc::vec;
     const POLICY: ValidationPolicy = ValidationPolicy { max_gap: 1e-12 };
+
+    #[test]
+    fn torus_support_bounds_whole_curves_including_chords_and_oblique_circles() {
+        let surface = Surface::torus(Placement3::IDENTITY, 10.0, 2.0).unwrap();
+        let meridian = Placement3::from_axes(
+            [1.0, 0.0, 0.0],
+            [0.0, 0.0, 1.0],
+            [0.0, -1.0, 0.0],
+            [10.0, 0.0, 0.0],
+        );
+        for frame in [
+            Placement3::IDENTITY,
+            meridian,
+            Placement3::rotate_y_then_translate(0.13, 10.0, 0.0, 0.2),
+        ] {
+            let curve = Curve::circle(
+                frame,
+                if frame == Placement3::IDENTITY {
+                    12.0
+                } else {
+                    2.0
+                },
+            )
+            .unwrap();
+            let bound = support_gap(&curve, ParameterRange::UNIT, &surface);
+            for i in 0..128 {
+                let p = curve
+                    .evaluate(f64::from(i) * core::f64::consts::TAU / 128.0)
+                    .unwrap()
+                    .point;
+                let gap = (libm::hypot(libm::hypot(p[0], p[1]) - 10.0, p[2]) - 2.0).abs();
+                assert!(gap <= bound + 1e-12, "whole-circle bound {gap} <= {bound}");
+            }
+        }
+        let chord = Curve::line([12.0, 0.0, 0.0], [-24.0, 0.0, 0.0]).unwrap();
+        assert!(
+            support_gap(&chord, ParameterRange::UNIT, &surface) > 7.0,
+            "surface endpoints do not validate the chord interior"
+        );
+    }
 
     pub(crate) fn cylinder_parts() -> BodyParts {
         let circle = |z| Curve::circle(Placement3::translate(0.0, 0.0, z), 2.0).unwrap();

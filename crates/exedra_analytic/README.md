@@ -3,11 +3,13 @@
 Narrow analytic geometry head for Exedra. It retains exact boundary geometry
 until an explicit conversion into `exedra_mesh::Mesh`.
 
-`geometry` provides checked f64 lines, circles, planes, cylinders and regular
-cones, with first and second derivatives in their native parameter units.
+`geometry` provides checked f64 lines, circles, planes, cylinders, regular
+cones and ring tori, with first and second derivatives in their native parameter units.
 Rotational angles are radians; axial height and plane coordinates are model
 lengths. A cone uses `radius + slope * height` and excludes its apex and the
 nonpositive-radius nappe.
+Both torus parameters are radians; its major radius must exceed its positive
+minor radius. Horns, spindles and spherical poles are excluded.
 Supporting geometry is untrimmed. Surface parameters, boundary trims and mesh
 texture coordinates are separate concepts.
 
@@ -22,8 +24,8 @@ or regular-solid validity. `is_closed` checks oriented edge incidence.
 
 The extrusion, revolution and sweep constructors and planar shell builder own this shared
 model and expose it through `body()`. A cloned body can outlive its construction
-record. `Body::realize` handles planar trims and four-edge cylindrical/conical
-strips, including full periodic walls. Coaxial planar annuli and sectors use
+record. `Body::realize` handles planar trims, four-edge cylindrical/conical
+strips and toroidal parameter rectangles, including periodic seams. Coaxial planar annuli and sectors use
 the same paired strips to preserve their angular coordinate net. Native edges
 are sampled once into flat shared chains; paired circular edges have synchronized
 counts. Other curved trims
@@ -37,14 +39,25 @@ slack. Storage and sampling
 budgets are explicit. `realize_with_regions` maps metadata to mesh regions once
 per native face while retaining individual native correspondence.
 
-`revolve::Revolution` revolves a checked line profile whose XY coordinates are
+Toroidal grids synchronize both pairs of opposite boundary chains. Refinement
+uses both principal curvatures and a mixed term, rather than accepting the
+boundary chord tolerance as a surface guarantee. Interior samples retain native
+face parameters; authoritative boundary vertices and seam edges remain shared.
+Whole-curve coefficient comparisons check boundary alignment independently of
+caller gap slack. Surface error, alignment, parameter arithmetic and emitted
+precision contribute to the realization report. Sampling and storage refusals
+precede allocation of the output grid; two reusable rows drive triangle emission.
+
+`revolve::Revolution` revolves a checked line/arc profile whose XY coordinates are
 radius and height. Every radius must be strictly positive. Rotation is about
 local +Y: a positive angle moves +X toward -Z, matching constructive revolution.
 Sweeps in `(0, TAU]` produce closed native boundaries: full turns share a seam;
 partial turns include planar end caps. Profile holes, segment tags, rigid
-placement, exact volume and surface area are retained. Axis contact and curved
-profile segments are named refusals; spherical/toroidal walls and poles are not
-implemented.
+placement, exact volume and surface area are retained. Arcs generate regular
+toroidal walls; their whole swept radius is checked, including interior extrema.
+Axis contact and arcs requiring a nonregular torus are named refusals.
+`Revolution::from_profile` accepts authored profiles with separate conversion and
+construction errors. Spherical walls and poles are not implemented.
 
 `Revolution::realize_with_uvs` supplies each triangle's construction coordinates
 to a caller mapper. Walls use `(angle, distance along the profile loop)`; caps
@@ -55,15 +68,15 @@ distinct texture coordinates on either side of the seam. The existing constructi
 scale or material policy. Mapping errors name the native face, and non-finite
 UVs are refused before any UV mutation.
 
-`sweep::Sweep` transports a checked polygonal section along a smooth open path
+`sweep::Sweep` transports a checked line/arc section along a smooth open path
 of lines and circular arcs. It accepts the same borrowed curve path authored by
 constructive `PathCursor3`; shared mathematical descriptors live in
 `exedra_math::path`, without coupling either geometry head to the other.
 Section boundaries and rails are shared native edges. Planar, cylindrical and
-conical walls retain path-span and profile-segment identity, feature tags,
+conical/toroidal walls retain path-span and profile-segment identity, feature tags,
 exact enclosed volume and surface area, independently of sampling density.
 The section datum and initial direction are explicit. Sharp corners, closed
-paths, cubic spans, curved profile segments and local bend-axis contact are
+paths, cubic spans, nonregular toroidal walls and local bend-axis contact are
 typed refusals. Distant self-intersection remains the caller's responsibility.
 
 `Sweep::realize_with_uvs` supplies `(profile_distance, centerline_distance)` on

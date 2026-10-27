@@ -276,6 +276,33 @@ impl Cone {
     }
 }
 
+/// A regular ring torus about a rigid frame's Z axis, with both angles in radians.
+/// Major radius is strictly larger than the positive minor radius, so the whole
+/// supporting surface is regular. Horns, spindles and poles are excluded.
+#[derive(Clone, Debug, PartialEq)]
+pub struct Torus {
+    frame: Placement3,
+    major_radius: f64,
+    minor_radius: f64,
+}
+impl Torus {
+    /// The rigid frame, with the major circle in local XY.
+    #[must_use]
+    pub const fn frame(&self) -> Placement3 {
+        self.frame
+    }
+    /// Radius from the axis to the center of the generating circle.
+    #[must_use]
+    pub const fn major_radius(&self) -> f64 {
+        self.major_radius
+    }
+    /// Radius of the generating circle.
+    #[must_use]
+    pub const fn minor_radius(&self) -> f64 {
+        self.minor_radius
+    }
+}
+
 /// Untrimmed supporting geometry. A face separately owns its trim and sense.
 #[derive(Clone, Debug, PartialEq)]
 pub enum Surface {
@@ -285,6 +312,8 @@ pub enum Surface {
     Cylinder(Cylinder),
     /// A cone periodic in U, restricted to its regular positive-radius nappe.
     Cone(Cone),
+    /// A regular ring torus, periodic in both U and V with period `TAU`.
+    Torus(Torus),
 }
 
 /// Surface position, first and second partials, and geometric unit normal.
@@ -347,6 +376,35 @@ impl Surface {
         }))
     }
 
+    /// Creates a regular ring torus: `major_radius > minor_radius > 0`.
+    ///
+    /// `P(u,v) = ((R+r*cos(v))*cos(u), (R+r*cos(v))*sin(u), r*sin(v))`
+    /// in the supplied frame. The outward normal follows `du × dv`.
+    ///
+    /// # Errors
+    /// Returns a frame/radius violation or [`GeometryError::TorusRadii`] for
+    /// a nonregular torus or an overflowing outer radius.
+    pub fn torus(
+        frame: Placement3,
+        major_radius: f64,
+        minor_radius: f64,
+    ) -> Result<Self, GeometryError> {
+        rigid(frame)?;
+        check_radius(major_radius)?;
+        check_radius(minor_radius)?;
+        if major_radius <= minor_radius || !(major_radius + minor_radius).is_finite() {
+            return Err(GeometryError::TorusRadii {
+                major_radius,
+                minor_radius,
+            });
+        }
+        Ok(Self::Torus(Torus {
+            frame,
+            major_radius,
+            minor_radius,
+        }))
+    }
+
     /// The supporting geometry's rigid frame.
     #[must_use]
     pub const fn frame(&self) -> Placement3 {
@@ -354,6 +412,7 @@ impl Surface {
             Self::Plane(p) => p.frame,
             Self::Cylinder(c) => c.frame,
             Self::Cone(c) => c.frame,
+            Self::Torus(t) => t.frame,
         }
     }
 
@@ -363,6 +422,7 @@ impl Surface {
         match self {
             Self::Plane(_) => [None, None],
             Self::Cylinder(_) | Self::Cone(_) => [Some(core::f64::consts::TAU), None],
+            Self::Torus(_) => [Some(core::f64::consts::TAU); 2],
         }
     }
 
@@ -389,6 +449,17 @@ impl Surface {
         }
         match self {
             Self::Plane(_) => Some([local[0], local[1]]),
+            Self::Torus(t) => {
+                let radial = libm::hypot(local[0], local[1]);
+                let offset = radial - t.major_radius;
+                if radial == 0.0 || !radial.is_finite() || (offset == 0.0 && local[2] == 0.0) {
+                    return None;
+                }
+                Some([
+                    libm::atan2(local[1], local[0]),
+                    libm::atan2(local[2], offset),
+                ])
+            }
             Self::Cylinder(_) | Self::Cone(_) => {
                 let radial = libm::hypot(local[0], local[1]);
                 if radial == 0.0 || !radial.is_finite() {
@@ -416,11 +487,12 @@ impl Surface {
             return None;
         }
         let frame = self.frame();
-        let (point, du, dv, duu, duv, normal) = match self {
+        let (point, du, dv, duu, duv, dvv, normal) = match self {
             Self::Plane(_) => (
                 [uv[0], uv[1], 0.0],
                 [1.0, 0.0, 0.0],
                 [0.0, 1.0, 0.0],
+                [0.0; 3],
                 [0.0; 3],
                 [0.0; 3],
                 [0.0, 0.0, 1.0],
@@ -429,7 +501,7 @@ impl Surface {
                 let (radius, slope) = match self {
                     Self::Cylinder(c) => (c.radius, 0.0),
                     Self::Cone(c) => (c.radius_at(uv[1])?, c.slope),
-                    Self::Plane(_) => unreachable!(),
+                    Self::Plane(_) | Self::Torus(_) => unreachable!(),
                 };
                 let (sin, cos) = (libm::sin(uv[0]), libm::cos(uv[0]));
                 let norm = libm::hypot(1.0, slope);
@@ -439,7 +511,23 @@ impl Surface {
                     [slope * cos, slope * sin, 1.0],
                     [-radius * cos, -radius * sin, 0.0],
                     [-slope * sin, slope * cos, 0.0],
+                    [0.0; 3],
                     [cos / norm, sin / norm, -slope / norm],
+                )
+            }
+            Self::Torus(t) => {
+                let (su, cu) = (libm::sin(uv[0]), libm::cos(uv[0]));
+                let (sv, cv) = (libm::sin(uv[1]), libm::cos(uv[1]));
+                let r = t.minor_radius;
+                let radial = t.major_radius + r * cv;
+                (
+                    [radial * cu, radial * su, r * sv],
+                    [-radial * su, radial * cu, 0.0],
+                    [-r * sv * cu, -r * sv * su, r * cv],
+                    [-radial * cu, -radial * su, 0.0],
+                    [r * sv * su, -r * sv * cu, 0.0],
+                    [-r * cv * cu, -r * cv * su, -r * sv],
+                    [cv * cu, cv * su, sv],
                 )
             }
         };
@@ -449,7 +537,7 @@ impl Surface {
             dv: vector(frame, dv),
             duu: vector(frame, duu),
             duv: vector(frame, duv),
-            dvv: [0.0; 3],
+            dvv: vector(frame, dvv),
             normal: vector(frame, normal),
         };
         [
@@ -479,6 +567,13 @@ pub enum GeometryError {
         /// The supplied radius.
         radius: f64,
     },
+    /// A regular torus needs `major_radius > minor_radius` and a finite sum.
+    TorusRadii {
+        /// Supplied major radius.
+        major_radius: f64,
+        /// Supplied minor radius.
+        minor_radius: f64,
+    },
     /// A finite increasing interval with finite span was required.
     Range {
         /// Supplied lower bound.
@@ -496,6 +591,13 @@ impl core::fmt::Display for GeometryError {
             Self::NonFinite => write!(f, "geometry coordinates must be finite"),
             Self::ZeroDirection => write!(f, "line direction must be nonzero"),
             Self::Radius { radius } => write!(f, "radius {radius} must be positive and finite"),
+            Self::TorusRadii {
+                major_radius,
+                minor_radius,
+            } => write!(
+                f,
+                "torus radii {major_radius}, {minor_radius} require a regular ring and finite outer radius"
+            ),
             Self::Range { min, max } => write!(
                 f,
                 "parameter bounds [{min}, {max}] need a finite positive span"
@@ -691,5 +793,65 @@ mod tests {
         assert_eq!(range.at(1.0), Some(3.0));
         assert_eq!(range.at(0.5), Some(0.5));
         assert_eq!(range.at(f64::NAN), None);
+    }
+
+    #[test]
+    fn torus_has_two_periodic_angles_and_checked_first_and_second_partials() {
+        let frame = Placement3::rotate_y_then_translate(0.6, 2.0, -3.0, 4.0);
+        let surface = Surface::torus(frame, 10.0, 2.0).unwrap();
+        assert_eq!(surface.periods(), [Some(core::f64::consts::TAU); 2]);
+        for uv in [[0.7, 1.2], [-2.0, -2.5], [0.0, core::f64::consts::PI]] {
+            let e = surface.evaluate(uv).unwrap();
+            let h = 1e-5;
+            for axis in 0..2 {
+                let mut a = uv;
+                a[axis] -= h;
+                let mut b = uv;
+                b[axis] += h;
+                let (a, b) = (surface.evaluate(a).unwrap(), surface.evaluate(b).unwrap());
+                close(
+                    core::array::from_fn(|i| (b.point[i] - a.point[i]) / (2.0 * h)),
+                    if axis == 0 { e.du } else { e.dv },
+                    1e-8,
+                );
+                close(
+                    core::array::from_fn(|i| (b.du[i] - a.du[i]) / (2.0 * h)),
+                    if axis == 0 { e.duu } else { e.duv },
+                    1e-8,
+                );
+                close(
+                    core::array::from_fn(|i| (b.dv[i] - a.dv[i]) / (2.0 * h)),
+                    if axis == 0 { e.duv } else { e.dvv },
+                    1e-8,
+                );
+            }
+            let found = surface.parameters(e.point).unwrap();
+            close(surface.evaluate(found).unwrap().point, e.point, 1e-12);
+            let off = exedra_math::add(e.point, exedra_math::scale(e.normal, 0.25));
+            close(
+                surface
+                    .evaluate(surface.parameters(off).unwrap())
+                    .unwrap()
+                    .point,
+                e.point,
+                1e-12,
+            );
+            close(
+                surface
+                    .evaluate([
+                        uv[0] + core::f64::consts::TAU,
+                        uv[1] - core::f64::consts::TAU,
+                    ])
+                    .unwrap()
+                    .point,
+                e.point,
+                1e-12,
+            );
+        }
+        let surface = Surface::torus(Placement3::IDENTITY, 10.0, 2.0).unwrap();
+        assert!(surface.parameters([0.0, 0.0, 1.0]).is_none());
+        assert!(surface.parameters([10.0, 0.0, 0.0]).is_none());
+        assert!(Surface::torus(Placement3::IDENTITY, 2.0, 2.0).is_err());
+        assert!(Surface::torus(Placement3::IDENTITY, 1.0, 2.0).is_err());
     }
 }

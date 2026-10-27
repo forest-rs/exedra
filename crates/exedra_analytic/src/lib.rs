@@ -24,6 +24,7 @@ pub mod body;
 pub mod extrusion;
 pub mod geometry;
 mod planar;
+mod profile_geometry;
 pub mod realize;
 pub mod revolve;
 pub mod sweep;

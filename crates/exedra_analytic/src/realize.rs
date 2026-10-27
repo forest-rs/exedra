@@ -1,12 +1,13 @@
 // Copyright 2026 the Exedra Authors
 // SPDX-License-Identifier: Apache-2.0 OR MIT
 
-//! Construction-independent realization of planar and rotational strip faces.
+//! Construction-independent realization of planar, rotational strip and toroidal faces.
 //!
 //! Shared edges are sampled once. Planar trims are checked in emitted coordinates;
 //! cylindrical and conical faces use paired boundary strips, so a generic planar
 //! triangulation cannot introduce long chords across a curved face. Other
-//! curved trims are explicit refusals. Tighten sampling when an emitted
+//! toroidal rectangles use two-dimensional grids with shared boundary chains.
+//! Other curved trims are explicit refusals. Tighten sampling when an emitted
 //! arrangement is refused; this path does not heal or refine trim contacts.
 
 use crate::body::{Body, BodyError, Coedge, EdgeId, Face, FaceId, ValidationPolicy, VertexId};
@@ -16,6 +17,9 @@ use exedra_math::{Placement3, narrow};
 use exedra_mesh::{BuildParams, Mesh};
 use exedra_profile::{CircularEdgeConstraints, CircularSamplingError, circular_edge_count};
 use exedra_triangulate::{PolygonInput, TriError, TriParams, triangulate_preserving_boundary};
+
+mod grid;
+use grid::GridPatch;
 
 /// Explicit accuracy and storage bounds for one body realization.
 ///
@@ -63,6 +67,13 @@ pub enum VertexSource {
         /// Fraction in `(0,1)`.
         parameter: f64,
     },
+    /// An interior sample on a native face, in supporting-surface parameters.
+    Face {
+        /// Sampled native face.
+        face: FaceId,
+        /// Exact parameters before placement and f32 emission.
+        uv: [f64; 2],
+    },
 }
 
 /// Native edge correspondence stored in two flat allocations.
@@ -101,13 +112,16 @@ pub struct RealizationReport {
     /// Largest circular chord sagitta from actual sampled parameter intervals,
     /// before narrowing.
     pub max_curve_deviation: f64,
+    /// Largest bound for a doubly curved grid, including whole-curve boundary
+    /// alignment and parameter arithmetic, before narrowing.
+    pub max_surface_deviation: f64,
     /// Largest emitted vertex displacement, including placement and narrowing.
     pub max_vertex_displacement: f64,
     /// Largest emitted paired-sample residual from the ideal rotational ruling.
     /// Cylinder rulings translate; conical rulings also scale the reference radius.
     /// Includes parameter-grid mismatch and authoritative endpoint offsets.
     pub max_ruling_displacement: f64,
-    /// Conservative geometric deviation bound: curve error, emitted and ruling
+    /// Conservative geometric deviation bound: maximum curve/surface error, emitted and ruling
     /// displacement, and two native gaps (endpoint-to-curve and curve-to-support).
     pub max_deviation: f64,
     /// Segment counts indexed by native edge; zero for detached edges.
@@ -147,7 +161,7 @@ pub enum RealizationError {
     Boundary(BodyError),
     /// No faces were supplied.
     EmptyBoundary,
-    /// A curved surface trim is not one supported four-edge strip.
+    /// A curved trim is not a supported rotational strip or toroidal rectangle.
     UnsupportedSurfaceTrim {
         /// Offending native face.
         face: FaceId,
@@ -158,6 +172,15 @@ pub enum RealizationError {
         edge: EdgeId,
         /// Sampling diagnosis.
         error: CircularSamplingError,
+    },
+    /// A doubly curved patch needs more intervals than the edge budget permits.
+    SurfaceSampling {
+        /// Offending native face.
+        face: FaceId,
+        /// Current U/V interval counts; these still exceed the error budget.
+        intervals: [u32; 2],
+        /// Maximum intervals in either direction.
+        maximum: u32,
     },
     /// An explicit storage budget is exceeded.
     Budget {
@@ -220,12 +243,18 @@ struct Incidence {
     count: usize,
 }
 #[derive(Copy, Clone)]
-struct Patch {
+struct Strip {
     a: Coedge,
     b: Coedge,
     translation: [f64; 3],
     center: [f64; 3],
     radius_scale: f64,
+}
+#[derive(Copy, Clone)]
+enum Patch {
+    Planar,
+    Strip(Strip),
+    Grid(GridPatch),
 }
 
 struct Chains {
@@ -328,7 +357,7 @@ impl<F, E> Body<F, E> {
             return Err(RealizationError::EmptyBoundary);
         }
         let mut incidence = alloc::vec![Incidence::default();self.edges().len()];
-        let mut patches = alloc::vec![None; self.faces().len()];
+        let mut patches = Vec::with_capacity(self.faces().len());
         let mut groups = Groups::new(self.edges().len());
         for (i, face) in self.faces().iter().enumerate() {
             let id = FaceId(crate::usize_to_u32(i));
@@ -345,17 +374,22 @@ impl<F, E> Body<F, E> {
                     item.count += 1;
                 }
             }
-            let patch = if matches!(face.surface, Surface::Plane(_)) {
+            let patch = if matches!(face.surface, Surface::Torus(_)) {
+                Patch::Grid(GridPatch::prepare(self, id)?)
+            } else if matches!(face.surface, Surface::Plane(_)) {
                 // Coaxial annuli/sectors retain angular rulings, which are
                 // also the construction chart's nondegenerate coordinate net.
-                self.rotational_patch(id, policy.geometry_gap).ok()
+                self.rotational_patch(id, policy.geometry_gap)
+                    .map_or(Patch::Planar, Patch::Strip)
             } else {
-                Some(self.rotational_patch(id, policy.geometry_gap)?)
+                Patch::Strip(self.rotational_patch(id, policy.geometry_gap)?)
             };
-            if let Some(patch) = patch {
-                groups.join(patch.a.edge.index(), patch.b.edge.index());
-                patches[i] = Some(patch);
+            match patch {
+                Patch::Strip(p) => groups.join(p.a.edge.index(), p.b.edge.index()),
+                Patch::Grid(p) => p.join(&mut groups),
+                Patch::Planar => {}
             }
+            patches.push(patch);
         }
         let mut counts = Vec::with_capacity(self.edges().len());
         for (i, edge) in self.edges().iter().enumerate() {
@@ -382,6 +416,7 @@ impl<F, E> Body<F, E> {
             counts.push(n);
         }
         groups.synchronize(&mut counts);
+        grid::refine(self, &patches, &mut counts, &mut groups, policy)?;
         let mut active_vertices = alloc::vec![false;self.vertices().len()];
         let mut samples = 0_usize;
         let mut interior = 0_usize;
@@ -411,7 +446,19 @@ impl<F, E> Body<F, E> {
             .iter()
             .filter(|v| **v)
             .count()
-            .saturating_add(interior);
+            .saturating_add(interior)
+            .saturating_add(
+                patches
+                    .iter()
+                    .filter_map(|p| {
+                        if let Patch::Grid(p) = p {
+                            Some(p.interior_count(&counts))
+                        } else {
+                            None
+                        }
+                    })
+                    .fold(0_usize, usize::saturating_add),
+            );
         for (storage, required, maximum) in [
             ("boundary samples", samples, policy.max_boundary_samples),
             ("vertices", vertex_count, policy.max_vertices),
@@ -424,6 +471,35 @@ impl<F, E> Body<F, E> {
                 });
             }
         }
+        // Counts and trims already determine output cardinality. Reserve the
+        // three parallel arrays once instead of repeatedly growing each while
+        // emitting strips. A planar polygon contributes N + 2H - 2 triangles.
+        let triangle_count = self
+            .faces()
+            .iter()
+            .enumerate()
+            .map(|(i, face)| match patches[i] {
+                Patch::Planar => face
+                    .loops
+                    .iter()
+                    .flat_map(|id| &self.boundary_loop(*id).expect("validated loop").coedges)
+                    .map(|coedge| counts[coedge.edge.index()] as usize)
+                    .fold(0_usize, usize::saturating_add)
+                    .saturating_add(face.loops.len().saturating_sub(1).saturating_mul(2))
+                    .saturating_sub(2),
+                Patch::Strip(patch) => (counts[patch.a.edge.index()] as usize).saturating_mul(2),
+                Patch::Grid(patch) => patch.triangle_count(&counts),
+            })
+            .try_fold(0_usize, |total, count| {
+                total
+                    .checked_add(count)
+                    .filter(|&n| n <= u32::MAX as usize)
+                    .ok_or(RealizationError::Budget {
+                        storage: "triangles",
+                        required: total.saturating_add(count),
+                        maximum: u32::MAX,
+                    })
+            })?;
         let mut emitted = Vec::with_capacity(vertex_count);
         let mut sources = Vec::with_capacity(vertex_count);
         let mut vertex_map = alloc::vec![None;self.vertices().len()];
@@ -570,47 +646,33 @@ impl<F, E> Body<F, E> {
             }
         }
         sharp_offsets.push(next);
-        // Counts and trims already determine output cardinality. Reserve the
-        // three parallel arrays once instead of repeatedly growing each while
-        // emitting strips. A planar polygon contributes N + 2H - 2 triangles.
-        let triangle_count = self
-            .faces()
-            .iter()
-            .enumerate()
-            .map(|(i, face)| {
-                patches[i].map_or_else(
-                    || {
-                        face.loops
-                            .iter()
-                            .flat_map(|id| {
-                                &self.boundary_loop(*id).expect("validated loop").coedges
-                            })
-                            .map(|coedge| counts[coedge.edge.index()] as usize)
-                            .fold(0_usize, usize::saturating_add)
-                            .saturating_add(face.loops.len().saturating_sub(1).saturating_mul(2))
-                            .saturating_sub(2)
-                    },
-                    |patch| (counts[patch.a.edge.index()] as usize).saturating_mul(2),
-                )
-            })
-            .try_fold(0_usize, |total, count| {
-                total
-                    .checked_add(count)
-                    .filter(|&n| n <= u32::MAX as usize)
-                    .ok_or(RealizationError::Budget {
-                        storage: "triangles",
-                        required: total.saturating_add(count),
-                        maximum: u32::MAX,
-                    })
-            })?;
         let mut triangles = Vec::with_capacity(triangle_count);
         let mut regions = Vec::with_capacity(triangle_count);
         let mut native_faces = Vec::with_capacity(triangle_count);
         let mut ruling_displacement = 0.0_f64;
+        let mut surface_deviation = 0.0_f64;
+        let mut grid_scratch = grid::GridScratch::default();
         for (i, face) in self.faces().iter().enumerate() {
             let id = FaceId(crate::usize_to_u32(i));
             let face_region = region(id, face);
-            if patches[i].is_none() {
+            if let Patch::Grid(patch) = patches[i] {
+                surface_deviation = surface_deviation.max(patch.deviation(face, &counts));
+                patch.emit(
+                    self,
+                    id,
+                    placement,
+                    &counts,
+                    &chains,
+                    &mut grid_scratch,
+                    &mut emitted,
+                    &mut sources,
+                    &mut displacement,
+                    face_region,
+                    &mut triangles,
+                    &mut regions,
+                    &mut native_faces,
+                )?;
+            } else if matches!(patches[i], Patch::Planar) {
                 let frame = placement * self.planar_frame(id, [0.0; 2]).expect("planar support");
                 let mut rings = Vec::with_capacity(face.loops.len());
                 let mut indices = Vec::new();
@@ -650,7 +712,9 @@ impl<F, E> Body<F, E> {
                     )?;
                 }
             } else {
-                let patch = patches[i].expect("prepared patch");
+                let Patch::Strip(patch) = patches[i] else {
+                    unreachable!()
+                };
                 let (a, b) = (chains.get(patch.a.edge), chains.get(patch.b.edge));
                 let a_at = |j: usize| a[if patch.a.reversed { a.len() - 1 - j } else { j }];
                 let b_at = |j: usize| b[if patch.b.reversed { j } else { b.len() - 1 - j }];
@@ -810,9 +874,10 @@ impl<F, E> Body<F, E> {
                 tolerance: policy.tolerance,
                 geometry_gap: validation.max_gap,
                 max_curve_deviation: curve_deviation,
+                max_surface_deviation: surface_deviation,
                 max_vertex_displacement: displacement,
                 max_ruling_displacement: ruling_displacement,
-                max_deviation: curve_deviation
+                max_deviation: curve_deviation.max(surface_deviation)
                     + displacement
                     + ruling_displacement
                     + 2.0 * validation.max_gap,
@@ -821,7 +886,7 @@ impl<F, E> Body<F, E> {
         })
     }
 
-    fn rotational_patch(&self, id: FaceId, gap: f64) -> Result<Patch, RealizationError> {
+    fn rotational_patch(&self, id: FaceId, gap: f64) -> Result<Strip, RealizationError> {
         let face = self.face(id).expect("known face");
         let refuse = || RealizationError::UnsupportedSurfaceTrim { face: id };
         let (mut a, mut b) = if matches!(face.surface, Surface::Plane(_)) && face.loops.len() == 2 {
@@ -974,7 +1039,7 @@ impl<F, E> Body<F, E> {
                 return Err(refuse());
             }
         }
-        Ok(Patch {
+        Ok(Strip {
             a,
             b,
             translation,
@@ -1227,6 +1292,9 @@ mod tests {
                 .unwrap();
             for &(vertex, source) in &realized.mesh_vertices {
                 let native = match source {
+                    VertexSource::Face { face, uv } => {
+                        body.evaluate_support(face, uv).unwrap().point
+                    }
                     VertexSource::Vertex(id) => body.vertices()[id.index()],
                     VertexSource::Edge { edge, parameter } => {
                         let curve = &body.edges()[edge.index()];
@@ -1407,6 +1475,7 @@ mod tests {
         assert_eq!(realized.mesh_faces.len(), realized.mesh.faces().count());
         for (_, source) in &realized.mesh_vertices {
             assert!(match source {
+                VertexSource::Face { face, uv } => body.evaluate_support(*face, *uv).is_some(),
                 VertexSource::Vertex(id) => body.vertices().get(id.index()).is_some(),
                 VertexSource::Edge { edge, parameter } =>
                     body.edge_point(*edge, *parameter).is_some(),
