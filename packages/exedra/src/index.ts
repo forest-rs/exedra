@@ -409,7 +409,7 @@ function graph(parts: Record<string, Solid>, units: LengthUnit, separation: numb
     const id = nodes.length; nodes.push(wire); nodeIds.set(solid, id); visiting.delete(solid); return id;
   };
   const roots = Object.entries(parts).map(([key, solid]) => ({ name: name(key), node: visit(solid) }));
-  return { units, separation, profiles: profileSpecs, paths:pathSpecs, nodes, roots };
+  return { units, separation, profiles: profileSpecs, ...(pathSpecs.length?{paths:pathSpecs}:{}), nodes, roots };
 }
 /** Logical owners and payloads; document/cache payloads overlap and exclude render buffers and allocator overhead. */
 export interface OwnershipStats {

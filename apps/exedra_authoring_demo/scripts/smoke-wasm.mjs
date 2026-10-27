@@ -28,7 +28,7 @@ for(const sample of galleryCases) {
     original=session.build(sample.make());
     const held=new Map();
     for(const part of Object.values(original.parts)) {
-      assert.equal(part.measurements.volume.status,"available");assert.equal(part.measurements.surfaceArea.status,"available");
+      assert.equal(part.measurements.volume.status,sample.measures??"available");assert.equal(part.measurements.surfaceArea.status,sample.measures??"available");
       assert.equal(part.stepSupport.status,sample.step);
       const first=part.realize(policy),repeat=part.realize(policy);within(first);within(repeat);equalDisplay(first,repeat);
       assert.equal(repeat.report.cacheHits,1);
@@ -46,7 +46,7 @@ for(const sample of galleryCases) {
         for(const entity of file.report.correspondence.faces)if(entity!==null)assert.match(file.text,new RegExp(`#${entity}=ADVANCED_FACE\\(`));
         assert.equal(file.timing.outcome,"success");
       } else {
-        assert.throws(()=>part.exportStep({timestamp}),error=>error instanceof ExedraError&&error.diagnostic.code==="exchange.unsupportedSurface"&&error.timing.outcome==="refused");
+        assert.throws(()=>part.exportStep({timestamp}),error=>error instanceof ExedraError&&error.diagnostic.code==="exchange.unsupportedSurface"&&error.diagnostic.face===part.stepSupport.diagnostic.face&&error.diagnostic.geometryFamily===part.stepSupport.diagnostic.geometryFamily&&error.timing.outcome==="refused");
       }
     }
     fresh.dispose();fresh=undefined;

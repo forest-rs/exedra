@@ -1,9 +1,12 @@
 # Geometry gallery
 
 Editable TypeScript samples: a pocketed plate, collar, rounded ring, solid and
-hollow toroidal seals, a flanged sleeve and a turned fitting. Controls rebuild actual
+hollow toroidal seals, a flanged sleeve, a turned fitting, solid/hollow swept rails,
+a four-section loft and selected outer fillets/inner chamfers. Controls rebuild actual
 Rust/Wasm geometry. Slider input coalesces to one latest-value build before the
-next frame is drawn, without a trailing debounce or reduced interaction quality. Coarse/fine display controls reuse the installed native
+next frame is drawn, without a trailing debounce or reduced interaction quality.
+Rendering is requested for edits, display changes, picking, resize and camera
+interaction; damping continues until the camera settles. Coarse/fine display controls reuse the installed native
 source, with source-aware surface picking and exact native measures.
 
 From this directory, with Node.js 22.18+ (or 24+), Rust's
@@ -47,8 +50,16 @@ the display mesh. The report includes native support/frame tolerance evidence
 and native-face to STEP-entity correspondence. Invalid drafts disable download
 until a valid rebuild succeeds.
 
-The current SDK exposes native extrusions, planar attachments, through cutouts,
-blind pockets and line/arc profile revolutions. It does not expose every Rust
-modeling operation. Bounds are conservative native support enclosures and can
+The SDK exposes native extrusions, planar attachments, through cutouts, blind
+pockets, line/arc profile revolutions, smooth sweeps, corresponding-section ruled
+lofts and named profile axial-edge finishes. It does not imply arbitrary 3D edge
+fillets or automatic section correspondence. Bounds are conservative native support enclosures and can
 include space outside trims. Area/volume availability is explicit in the SDK;
 unsupported or numerically refused values are never replaced with display estimates.
+
+Timing rows report host-observed Wasm calls, including refused calls. The SDK
+separates graph preparation, kernel-call boundaries, buffer transfer, metadata
+decoding and cleanup; these are not GPU or presentation timings. After building,
+`npm run bench:wasm` performs four warmups and seventeen actual parameter edits
+per sample, reporting p50/p95 times, buffer bytes, work/cache counts and released
+logical native ownership. It excludes view creation and GPU work.
