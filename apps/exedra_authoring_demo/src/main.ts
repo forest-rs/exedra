@@ -5,7 +5,7 @@ import "./style.css";
 import * as THREE from "three";
 import { OrbitControls } from "three/examples/jsm/controls/OrbitControls.js";
 import { createSession, ExedraError, type AuthoringSession, type NativeDocument, type NativePart, type Realization, type FaceSelection, type NativeMeasurement } from "@exedra/authoring";
-import { authorPanel, authorCollar, authorRoundedTurn, authorFlangedSleeve, authorTurnedFitting, authorRail, authorVariableLoft, authorFinishedPlate, authorAngledBore, constructionChart, type PanelParameters, type CollarParameters } from "./sample.js";
+import { authorPanel, authorCollar, authorRoundedTurn, authorFlangedSleeve, authorTurnedFitting, authorRail, authorVariableLoft, authorFinishedPlate, authorAngledBore, constructionChart, type PanelParameters, type CollarParameters, type FlangeParameters } from "./sample.js";
 import sampleSource from "./sample.ts?raw";
 import { mountViews } from "./views.js";
 
@@ -47,6 +47,8 @@ app.innerHTML = `
     <div class="control"><label class="label" for="sleeveOuter">Sleeve outer radius <span class="value" id="sleeveOuter-value"></span></label><input id="sleeveOuter" type="range" min="2" max="70" step="0.5" value="18"></div>
     <div class="control"><label class="label" for="flangeOuter">Flange outer radius <span class="value" id="flangeOuter-value"></span></label><input id="flangeOuter" type="range" min="2" max="80" step="0.5" value="22"></div>
     <div class="control"><label class="label" for="shoulderHeight">Shoulder height <span class="value" id="shoulderHeight-value"></span></label><input id="shoulderHeight" type="range" min="0.5" max="30" step="0.25" value="8.75"></div>
+    <label class="label" for="shoulderFinish">Shoulder finish</label><select id="shoulderFinish" class="quality"><option value="fillet">Fillet</option><option value="chamfer">Chamfer</option></select>
+    <div class="control"><label class="label" for="shoulderSize"><span id="shoulderSize-label">Fillet radius</span> <span class="value" id="shoulderSize-value"></span></label><input id="shoulderSize" type="range" min="0" max="12" step="0.25" value="2"><p class="hint">Zero leaves a sharp shoulder. Larger treatments must leave room on both adjacent edges.</p></div>
     <div class="control"><label class="label" for="sleeveHeight">Total height <span class="value" id="sleeveHeight-value"></span></label><input id="sleeveHeight" type="range" min="1" max="80" step="0.5" value="35"></div>
     <div class="control"><label class="label" for="flangeAngle">Turn angle <span class="value" id="flangeAngle-value"></span></label><input id="flangeAngle" type="range" min="30" max="360" step="5" value="270"></div>
   </div>
@@ -100,8 +102,8 @@ const operationNames=["railRadius","bendRadius","turnAngle","loftHeight","loftTw
 const value=(key:string)=>Number(element<HTMLInputElement>(key).value);
 const boreNames=["boreWidth","boreHeight","boreThickness","boreRadius","boreAngle","boreSeparation"] as const;
 const boreParameters=(delta=0)=>({width:value("boreWidth"),height:value("boreHeight"),thickness:value("boreThickness"),radius:value("boreRadius")+delta,angle:value("boreAngle"),separation:value("boreSeparation")});
-const flangeNames=["flangeBore","sleeveOuter","flangeOuter","shoulderHeight","sleeveHeight","flangeAngle"] as const;
-const flangeParameters=(delta=0)=>({boreRadius:value("flangeBore")+delta,sleeveOuterRadius:value("sleeveOuter"),flangeOuterRadius:value("flangeOuter"),shoulderHeight:value("shoulderHeight"),height:value("sleeveHeight"),angle:value("flangeAngle")});
+const flangeNames=["flangeBore","sleeveOuter","flangeOuter","shoulderHeight","shoulderSize","sleeveHeight","flangeAngle"] as const;
+const flangeParameters=(delta=0):FlangeParameters=>({boreRadius:value("flangeBore")+delta,sleeveOuterRadius:value("sleeveOuter"),flangeOuterRadius:value("flangeOuter"),shoulderHeight:value("shoulderHeight"),height:value("sleeveHeight"),angle:value("flangeAngle"),shoulder:element<HTMLSelectElement>("shoulderFinish").value==="fillet"?{kind:"fillet",radius:value("shoulderSize")}:{kind:"chamfer",distance:value("shoulderSize")}});
 const authorCurrent = (delta=0) => {
   const sample=element<HTMLSelectElement>("sample").value;
   const p={...collarParameters(),radius:collarParameters().radius+delta};
@@ -382,6 +384,7 @@ for (const key of [...controlsNames,...collarNames,...operationNames,...flangeNa
   const label = () => { element(`${key}-value`).textContent = `${input.value} ${["angle","turnAngle","loftTwist","flangeAngle","boreAngle"].includes(key) ? "°" : "mm"}`; };
   label(); input.addEventListener("input", () => { label(); scheduleBuild(); });
 }
+element<HTMLSelectElement>("shoulderFinish").onchange=()=>{element("shoulderSize-label").textContent=element<HTMLSelectElement>("shoulderFinish").value==="fillet"?"Fillet radius":"Chamfer distance";scheduleBuild();};
 element<HTMLSelectElement>("sample").onchange = () => {
   const sample=element<HTMLSelectElement>("sample").value, panel=sample === "panel", torus=sample === "torus" || sample === "hollowTorus";
   const rail=sample === "rail" || sample === "hollowRail", loft=sample === "loft", finish=sample === "fillet" || sample === "chamfer";
