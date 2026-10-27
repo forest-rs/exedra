@@ -76,6 +76,19 @@ fn corner_colors_split_shared_vertices() {
     )]));
     // Vertices 0 and 2 each appear red and blue.
     assert_eq!(stats.render_vertex_count, 7);
+    let extraction = params(vec![ExtractAttribute::new(attr::CORNER_COLOR, [0.0; 4])]);
+    assert_eq!(
+        mesh.to_trimesh_bounded(&extraction, 7).unwrap(),
+        (tri.clone(), stats)
+    );
+    assert_eq!(
+        mesh.to_trimesh_bounded(&extraction, 5).unwrap_err(),
+        crate::RenderVertexLimit {
+            maximum: 5,
+            required_at_least: 6,
+            stage: crate::RenderVertexStage::Corners,
+        }
+    );
     assert_eq!(stats.attribute_split_count, 2);
     assert_eq!(stats.uv_split_count, 0);
     assert_eq!(stats.normal_split_count, 0);

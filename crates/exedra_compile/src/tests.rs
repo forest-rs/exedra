@@ -277,3 +277,49 @@ fn public_extraction_settings_match_compiled_concave_mesh_buffers() {
     assert_eq!(actual.uvs, expected.uvs);
     assert_eq!(actual.indices, expected.indices);
 }
+
+#[test]
+fn render_vertex_limit_covers_recipe_and_baked_sources_per_body() {
+    let recipe = panel(2.0);
+    let baked = PartSource::Baked(
+        exedra_mesh::Mesh::from_indexed_triangles(
+            &[[0.0, 0.0, 0.0], [1.0, 0.0, 0.0], [0.0, 1.0, 0.0]],
+            &[[0, 1, 2]],
+            &exedra_mesh::BuildParams::default(),
+        )
+        .unwrap(),
+    );
+    for source in [&recipe, &baked] {
+        let inputs = [PartInput::new("one", source), PartInput::new("two", source)];
+        let mut compiler = PartCompiler::new();
+        let uncapped = compiler
+            .compile_parts(&inputs, &CompilePolicy::default())
+            .unwrap();
+        let count = u32::try_from(
+            uncapped.part(PartId(0)).unwrap().bodies[0]
+                .tri
+                .positions
+                .len(),
+        )
+        .unwrap();
+        let mut policy = CompilePolicy {
+            max_render_vertices: Some(count),
+            ..Default::default()
+        };
+        let output = compiler.compile_parts(&inputs, &policy).unwrap();
+        for part in [PartId(0), PartId(1)] {
+            assert_eq!(
+                output.part(part).unwrap().bodies[0].tri,
+                uncapped.part(part).unwrap().bodies[0].tri
+            );
+        }
+        // The sum exceeds the per-body limit; both bodies still succeed.
+        assert!(2 * count > count);
+        let entries = compiler.cached_entries();
+        policy.max_render_vertices = Some(count - 1);
+        assert!(matches!(compiler.compile_parts(&inputs, &policy),
+            Err(CompileError::RenderVertices { part: PartId(0), part_key, body: 0, error })
+            if part_key == "one" && error.maximum == count - 1 && error.required_at_least == u64::from(count)));
+        assert_eq!(compiler.cached_entries(), entries);
+    }
+}

@@ -153,6 +153,30 @@ fn mirror_seam_splits_shared_render_vertices() {
     assert_frame(&tri);
     assert_eq!(stats.tangent_split_count, 2);
     assert_eq!(stats.render_vertex_count, 8);
+    for maximum in [6, 7] {
+        let error = mesh
+            .to_trimesh_bounded(&with_tangents(TangentUv::Primary), maximum)
+            .unwrap_err();
+        assert_eq!(
+            error,
+            crate::RenderVertexLimit {
+                maximum,
+                required_at_least: u64::from(maximum) + 1,
+                stage: crate::RenderVertexStage::Tangents,
+            }
+        );
+    }
+    for maximum in [8, 9, u32::MAX] {
+        assert_eq!(
+            mesh.to_trimesh_bounded(&with_tangents(TangentUv::Primary), maximum)
+                .unwrap(),
+            (tri.clone(), stats)
+        );
+    }
+    assert_eq!(
+        mesh.to_trimesh(&with_tangents(TangentUv::Primary)),
+        (tri.clone(), stats)
+    );
     // Every triangle of the left quad is right-handed, of the right quad left.
     for (t, triangle) in tri.indices.chunks(3).enumerate() {
         let expected = if t < 2 {

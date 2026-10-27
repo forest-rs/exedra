@@ -281,6 +281,16 @@ impl AttributeBuffer {
         }
     }
 
+    pub(super) fn reserve_vertex(&mut self, maximum: usize) {
+        match self {
+            Self::F32(v) => super::reserve_vertices(v, 1, maximum),
+            Self::Vec2(v) => super::reserve_vertices(v, 1, maximum),
+            Self::Vec3(v) => super::reserve_vertices(v, 1, maximum),
+            Self::Vec4(v) => super::reserve_vertices(v, 1, maximum),
+            Self::U32(v) => super::reserve_vertices(v, 1, maximum),
+        }
+    }
+
     /// Appends one value decoded from its component bit patterns.
     fn push_bits(&mut self, bits: &[u32]) {
         let f = |i: usize| f32::from_bits(bits[i]);

@@ -246,6 +246,7 @@ impl Session {
             ));
         }
         let policy = CompilePolicy {
+            max_render_vertices: Some(options.max_vertices),
             native_chart: options.chart.map(Into::into),
             native: exedra_analytic::realize::RealizationPolicy {
                 tolerance: options.tolerance,
@@ -262,6 +263,9 @@ impl Session {
             .map_err(|error| {
                 let message = error.to_string();
                 match &error {
+                    exedra_compile::CompileError::RenderVertices { .. } => {
+                        Error::new("budget.renderVertices", "part.realize", message)
+                    }
                     exedra_compile::CompileError::NativeChart { error, .. } => {
                         chart::diagnostic(error, message)
                     }

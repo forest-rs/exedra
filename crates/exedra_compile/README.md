@@ -38,6 +38,16 @@ triangulation; the kernel's default is a fan. The returned settings also expose
 normal selection, UV fallback, carried attributes and tangents. Stored-UV quality
 surveys do not synthesize missing-coordinate fallbacks.
 
+`CompilePolicy::max_render_vertices` optionally caps delivered vertices **per
+compiled body**, after normal, UV, attribute and tangent splits. Native
+`max_vertices` separately limits working topology; it cannot bound split render
+buffers. `CompileError::RenderVertices` identifies the input key, body, stage,
+maximum and proven required-count lower bound. Refusal stops at the first excess
+unique vertex; it does not compute the full uncapped count or cache a partial
+part. The limit joins the policy key. `None` retains uncapped extraction.
+This is not an aggregate assembly or total-memory bound: triangulation,
+normal/tangent derivation, deduplication scratch and indices use other storage.
+
 Existing Assembly compilation is an adapter over this service. Standalone
 callers can use these records and snapshots directly without creating an
 `Assembly`. The crate is `no_std` with `alloc` and requires

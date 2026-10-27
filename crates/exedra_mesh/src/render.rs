@@ -31,6 +31,53 @@ use crate::{
     dominant_box_plane, project_box_position,
 };
 
+/// Stage that first requires another unique render vertex.
+#[derive(Copy, Clone, Debug, Eq, PartialEq)]
+pub enum RenderVertexStage {
+    /// Position, normal, UV or carried-attribute discontinuity.
+    Corners,
+    /// Tangent direction or handedness discontinuity.
+    Tangents,
+}
+
+/// An extraction stopped before inserting a vertex beyond the caller's limit.
+/// No partial mesh is returned and the source is unchanged.
+#[derive(Copy, Clone, Debug, Eq, PartialEq)]
+pub struct RenderVertexLimit {
+    /// Maximum delivered vertices for this mesh, including all splits.
+    pub maximum: u32,
+    /// Proven lower bound, not the final vertex count of an uncapped extraction.
+    pub required_at_least: u64,
+    /// Extraction stage that encountered the limit.
+    pub stage: RenderVertexStage,
+}
+
+impl core::fmt::Display for RenderVertexLimit {
+    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+        write!(
+            f,
+            "render vertices require at least {}, limit {} ({:?})",
+            self.required_at_least, self.maximum, self.stage
+        )
+    }
+}
+
+impl core::error::Error for RenderVertexLimit {}
+
+/// Grow a vertex buffer geometrically without requesting capacity above its
+/// record limit. Indices, deduplication tables and derivation scratch are not
+/// vertex output buffers and are not governed by this limit.
+fn reserve_vertices<T>(values: &mut Vec<T>, additional: usize, maximum_len: usize) {
+    if values.capacity() - values.len() < additional {
+        let growth = values
+            .capacity()
+            .max(additional)
+            .max(4)
+            .min(maximum_len - values.len());
+        values.reserve_exact(growth);
+    }
+}
+
 /// Triangle mesh suitable for GPU upload.
 ///
 /// Produced by [`Mesh::to_trimesh`]. The buffers are parallel by
@@ -345,6 +392,26 @@ impl Mesh {
         (mesh, stats)
     }
 
+    /// Extracts with a maximum number of delivered vertices, including UV,
+    /// normal, carried-attribute and tangent splits. Refuses before inserting
+    /// the first vertex above `maximum`; existing vertices may still be reused
+    /// at the limit. Successful output and counters equal [`Self::to_trimesh`].
+    ///
+    /// This is a per-mesh vertex limit, not a total-memory or work limit.
+    /// Normal/tangent derivation, triangulation, index buffers and deduplication
+    /// scratch can require additional storage. No extraction cache is populated.
+    pub fn to_trimesh_bounded(
+        &self,
+        params: &ExtractParams,
+        maximum: u32,
+    ) -> Result<(TriMesh, ExtractStats), RenderVertexLimit> {
+        let (mesh, mut stats) = self.extract_full_impl::<true>(params, maximum)?;
+        if params.mode == ExtractMode::Incremental {
+            stats.incremental_fallbacks = 1;
+        }
+        Ok((mesh, stats))
+    }
+
     /// Extracts through a caller-owned reuse cache.
     ///
     /// When `cache` holds output for this mesh's current
@@ -387,6 +454,15 @@ impl Mesh {
 
     /// Unconditional full extraction (shared by both entry points).
     fn extract_full(&self, params: &ExtractParams) -> (TriMesh, ExtractStats) {
+        self.extract_full_impl::<false>(params, 0)
+            .expect("uncapped extraction cannot exceed a caller limit")
+    }
+
+    fn extract_full_impl<const BOUNDED: bool>(
+        &self,
+        params: &ExtractParams,
+        maximum: u32,
+    ) -> Result<(TriMesh, ExtractStats), RenderVertexLimit> {
         let corner_uvs = self.attrs().sparse(attr::CORNER_UV);
         let normal_overrides = self.attrs().sparse(attr::CORNER_NORMAL_OVERRIDE);
         // Authored meshes need no geometric normals unless a live face corner
@@ -420,7 +496,8 @@ impl Mesh {
             uvs: params.uvs,
             attributes: &attributes,
         };
-        let mut out = Emission {
+        let mut out = Emission::<BOUNDED> {
+            maximum,
             mesh: TriMesh {
                 attributes: attributes
                     .iter()
@@ -444,7 +521,7 @@ impl Mesh {
         };
 
         for face in self.faces() {
-            emit_face(self, face, params.face_triangulation, &inputs, &mut out);
+            emit_face(self, face, params.face_triangulation, &inputs, &mut out)?;
         }
 
         let Emission {
@@ -453,10 +530,10 @@ impl Mesh {
             ..
         } = out;
         if let Some(uv_set) = params.tangents {
-            mesh = tangents::apply(mesh, uv_set, &mut stats);
+            mesh = tangents::apply::<BOUNDED>(mesh, uv_set, &mut stats, maximum)?;
         }
         stats.render_vertex_count = mesh.positions.len() as u64;
-        (mesh, stats)
+        Ok((mesh, stats))
     }
 }
 
@@ -476,7 +553,8 @@ const NO_RENDER_VERTEX: u32 = u32::MAX;
 
 /// Growing output of one extraction.
 #[derive(Debug, Default)]
-struct Emission {
+struct Emission<const BOUNDED: bool> {
+    maximum: u32,
     mesh: TriMesh,
     stats: ExtractStats,
     /// First render vertex emitted for each `(vertex, uv, normal)` key.
@@ -494,7 +572,7 @@ struct Emission {
     scratch_fallbacks: Vec<bool>,
 }
 
-impl Emission {
+impl<const BOUNDED: bool> Emission<BOUNDED> {
     fn carried(&self, index: u32) -> &[u32] {
         let start = index as usize * self.stride;
         &self.carried_bits[start..start + self.stride]
@@ -543,13 +621,13 @@ impl FaceUvFallback {
     }
 }
 
-fn emit_face(
+fn emit_face<const BOUNDED: bool>(
     source: &Mesh,
     face: FaceId,
     strategy: FaceTriangulation,
     inputs: &CornerInputs<'_>,
-    out: &mut Emission,
-) {
+    out: &mut Emission<BOUNDED>,
+) -> Result<(), RenderVertexLimit> {
     let (triangles, fell_back) = source.face_triangles_counted(face, strategy);
     if fell_back {
         out.stats.robust_fallback_count = out.stats.robust_fallback_count.saturating_add(1);
@@ -561,21 +639,22 @@ fn emit_face(
     }
     for triangle in triangles {
         for corner in triangle {
-            let index = resolve_render_vertex(source, face, corner, uv_fallback, inputs, out);
+            let index = resolve_render_vertex(source, face, corner, uv_fallback, inputs, out)?;
             out.mesh.indices.push(index);
         }
         out.stats.triangle_count = out.stats.triangle_count.saturating_add(1);
     }
+    Ok(())
 }
 
-fn resolve_render_vertex(
+fn resolve_render_vertex<const BOUNDED: bool>(
     source: &Mesh,
     face: FaceId,
     corner: CornerId,
     uv_fallback: FaceUvFallback,
     inputs: &CornerInputs<'_>,
-    out: &mut Emission,
-) -> u32 {
+    out: &mut Emission<BOUNDED>,
+) -> Result<u32, RenderVertexLimit> {
     let vertex = source
         .to_vertex(corner)
         .expect("face triangulation corner must have destination vertex");
@@ -611,13 +690,37 @@ fn resolve_render_vertex(
     let mut cursor = out.key_to_index.get(&key).copied();
     while let Some(index) = cursor {
         if out.carried(index) == out.scratch.as_slice() {
-            return index;
+            return Ok(index);
         }
         tail = Some(index);
         let next = out.next_same_key[index as usize];
         cursor = (next != NO_RENDER_VERTEX).then_some(next);
     }
 
+    if BOUNDED && out.mesh.positions.len() >= out.maximum as usize {
+        return Err(RenderVertexLimit {
+            maximum: out.maximum,
+            required_at_least: u64::from(out.maximum) + 1,
+            stage: RenderVertexStage::Corners,
+        });
+    }
+    if BOUNDED {
+        let maximum = out.maximum as usize;
+        reserve_vertices(&mut out.mesh.positions, 1, maximum);
+        reserve_vertices(&mut out.mesh.uvs, 1, maximum);
+        reserve_vertices(&mut out.mesh.normals, 1, maximum);
+        reserve_vertices(&mut out.next_same_key, 1, maximum);
+        if out.stride > 0 {
+            reserve_vertices(
+                &mut out.carried_bits,
+                out.stride,
+                maximum.saturating_mul(out.stride),
+            );
+        }
+        for stream in &mut out.mesh.attributes {
+            stream.values.reserve_vertex(maximum);
+        }
+    }
     let index =
         u32::try_from(out.mesh.positions.len()).expect("render vertex index overflowed u32");
     let variants = out.vertex_variants.entry(vertex).or_default();
@@ -666,7 +769,7 @@ fn resolve_render_vertex(
         }
     }
     out.carried_bits.extend_from_slice(&out.scratch);
-    index
+    Ok(index)
 }
 
 fn effective_corner_normal(corner: CornerId, inputs: &CornerInputs<'_>) -> [f32; 3] {
@@ -758,6 +861,22 @@ mod tests {
     }
 
     #[test]
+    fn bounded_empty_and_incremental_extraction_preserve_counters() {
+        let mesh = Mesh::default();
+        for tangents in [None, Some(crate::TangentUv::Primary)] {
+            let params = ExtractParams {
+                mode: crate::ExtractMode::Incremental,
+                tangents,
+                ..ExtractParams::default()
+            };
+            assert_eq!(
+                mesh.to_trimesh_bounded(&params, 0).unwrap(),
+                mesh.to_trimesh(&params)
+            );
+        }
+    }
+
+    #[test]
     fn to_trimesh_triangle_without_uvs_uses_zero_uvs() {
         let mut builder = MeshBuilder::new();
         builder.push_vertex([0.0, 0.0, 0.0]);
@@ -804,6 +923,32 @@ mod tests {
         assert_eq!(mesh.indices.len(), 6);
         assert_eq!(stats.triangle_count, 2);
         assert_eq!(stats.render_vertex_count, 4);
+        for maximum in [4, 5, u32::MAX] {
+            assert_eq!(
+                built
+                    .mesh
+                    .to_trimesh_bounded(&ExtractParams::default(), maximum)
+                    .unwrap(),
+                (mesh.clone(), stats)
+            );
+        }
+        for maximum in [0, 1, 3] {
+            assert_eq!(
+                built
+                    .mesh
+                    .to_trimesh_bounded(&ExtractParams::default(), maximum)
+                    .unwrap_err(),
+                super::RenderVertexLimit {
+                    maximum,
+                    required_at_least: u64::from(maximum) + 1,
+                    stage: super::RenderVertexStage::Corners
+                }
+            );
+        }
+        assert_eq!(
+            built.mesh.to_trimesh(&ExtractParams::default()),
+            (mesh.clone(), stats)
+        );
         assert_eq!(stats.split_count, 0);
         assert_eq!(stats.uv_split_count, 0);
         assert_eq!(stats.normal_split_count, 0);
@@ -861,6 +1006,24 @@ mod tests {
         assert!(stats.uv_split_count >= 1);
         assert!(stats.render_vertex_count > 4);
         assert_eq!(mesh.indices.len(), 6);
+        assert!(matches!(
+            built.mesh.to_trimesh_bounded(&ExtractParams::default(), 4),
+            Err(super::RenderVertexLimit {
+                maximum: 4,
+                required_at_least: 5,
+                stage: super::RenderVertexStage::Corners
+            })
+        ));
+        assert_eq!(
+            built
+                .mesh
+                .to_trimesh_bounded(
+                    &ExtractParams::default(),
+                    u32::try_from(stats.render_vertex_count).unwrap()
+                )
+                .unwrap(),
+            (mesh, stats)
+        );
     }
 
     #[test]
