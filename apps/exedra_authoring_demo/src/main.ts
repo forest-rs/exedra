@@ -41,6 +41,14 @@ app.innerHTML = `
     <div class="control"><label class="label" for="finishHeight">Height <span class="value" id="finishHeight-value"></span></label><input id="finishHeight" type="range" min="8" max="60" step="1" value="30"></div>
     <p class="hint">Selected profile axial edges. Rim and pocket edges are outside this operation.</p>
   </div>
+  <div id="flange-controls" hidden>
+    <div class="control"><label class="label" for="flangeBore">Bore radius <span class="value" id="flangeBore-value"></span></label><input id="flangeBore" type="range" min="1" max="40" step="0.5" value="12"></div>
+    <div class="control"><label class="label" for="sleeveOuter">Sleeve outer radius <span class="value" id="sleeveOuter-value"></span></label><input id="sleeveOuter" type="range" min="2" max="70" step="0.5" value="18"></div>
+    <div class="control"><label class="label" for="flangeOuter">Flange outer radius <span class="value" id="flangeOuter-value"></span></label><input id="flangeOuter" type="range" min="2" max="80" step="0.5" value="22"></div>
+    <div class="control"><label class="label" for="shoulderHeight">Shoulder height <span class="value" id="shoulderHeight-value"></span></label><input id="shoulderHeight" type="range" min="0.5" max="30" step="0.25" value="8.75"></div>
+    <div class="control"><label class="label" for="sleeveHeight">Total height <span class="value" id="sleeveHeight-value"></span></label><input id="sleeveHeight" type="range" min="1" max="80" step="0.5" value="35"></div>
+    <div class="control"><label class="label" for="flangeAngle">Turn angle <span class="value" id="flangeAngle-value"></span></label><input id="flangeAngle" type="range" min="30" max="360" step="5" value="270"></div>
+  </div>
   <h2>Display</h2><label class="label" for="quality">Quality <select id="quality" class="quality"><option value="0.45">Coarse · 0.45 mm</option><option value="0.12" selected>Medium · 0.12 mm</option><option value="0.035">Fine · 0.035 mm</option></select></label>
   <label class="checkline"><input id="wireframe" type="checkbox"> Show mesh triangles</label>
 
@@ -71,6 +79,8 @@ const collarNames = ["radius","wall","collarHeight","angle","rounding","innerRad
 const collarParameters = (): CollarParameters => Object.fromEntries(collarNames.map(key=>[key,Number(element<HTMLInputElement>(key).value)])) as unknown as CollarParameters;
 const operationNames=["railRadius","bendRadius","turnAngle","loftHeight","loftTwist","loftOffset","finishSize","finishHeight"] as const;
 const value=(key:string)=>Number(element<HTMLInputElement>(key).value);
+const flangeNames=["flangeBore","sleeveOuter","flangeOuter","shoulderHeight","sleeveHeight","flangeAngle"] as const;
+const flangeParameters=(delta=0)=>({boreRadius:value("flangeBore")+delta,sleeveOuterRadius:value("sleeveOuter"),flangeOuterRadius:value("flangeOuter"),shoulderHeight:value("shoulderHeight"),height:value("sleeveHeight"),angle:value("flangeAngle")});
 const authorCurrent = (delta=0) => {
   const sample=element<HTMLSelectElement>("sample").value;
   const p={...collarParameters(),radius:collarParameters().radius+delta};
@@ -80,7 +90,7 @@ const authorCurrent = (delta=0) => {
     case "fillet":case "chamfer":return authorFinishedPlate({size:value("finishSize")+delta,height:value("finishHeight"),treatment:sample,inner:sample === "chamfer"});
     case "collar": return authorCollar(p);
     case "roundedRing": case "torus": case "hollowTorus": return authorRoundedTurn(p,sample);
-    case "sleeve": return authorFlangedSleeve(p);
+    case "sleeve": return authorFlangedSleeve(flangeParameters(delta));
     case "fitting": return authorTurnedFitting(p);
     default:return authorPanel({...parameters(),width:parameters().width+delta});
   }
@@ -309,15 +319,16 @@ function rebuild() {
 }
 // One pending frame reads the latest controls; dragging never queues obsolete builds.
 function scheduleBuild() { pendingBuild = true; invalidate(); }
-for (const key of [...controlsNames,...collarNames,...operationNames]) {
+for (const key of [...controlsNames,...collarNames,...operationNames,...flangeNames]) {
   const input = element<HTMLInputElement>(key);
-  const label = () => { element(`${key}-value`).textContent = `${input.value} ${["angle","turnAngle","loftTwist"].includes(key) ? "°" : "mm"}`; };
+  const label = () => { element(`${key}-value`).textContent = `${input.value} ${["angle","turnAngle","loftTwist","flangeAngle"].includes(key) ? "°" : "mm"}`; };
   label(); input.addEventListener("input", () => { label(); scheduleBuild(); });
 }
 element<HTMLSelectElement>("sample").onchange = () => {
   const sample=element<HTMLSelectElement>("sample").value, panel=sample === "panel", torus=sample === "torus" || sample === "hollowTorus";
   const rail=sample === "rail" || sample === "hollowRail", loft=sample === "loft", finish=sample === "fillet" || sample === "chamfer";
-  element("panel-controls").hidden=!panel; element("collar-controls").hidden=panel || rail || loft || finish;
+  element("panel-controls").hidden=!panel; element("collar-controls").hidden=panel || rail || loft || finish || sample === "sleeve";
+  element("flange-controls").hidden=sample!=="sleeve";
   element("rail-controls").hidden=!rail;element("loft-controls").hidden=!loft;element("finish-controls").hidden=!finish;
   for(const [key,initial] of [["railRadius",sample === "hollowRail"?8:6],["bendRadius",40],["turnAngle",135],["loftHeight",120],["loftTwist",14],["loftOffset",18],["finishSize",sample === "chamfer"?3:5],["finishHeight",30]] as const){element<HTMLInputElement>(key).value=String(initial);element(`${key}-value`).textContent=`${initial} ${["turnAngle","loftTwist"].includes(key)?"°":"mm"}`;}
 
@@ -327,7 +338,7 @@ element<HTMLSelectElement>("sample").onchange = () => {
   element("wall-label").textContent=torus ? "Tube radius" : "Wall thickness";
   const defaults=sample === "roundedRing" ? [22,12,24,360] : torus ? [35,7,30,sample === "hollowTorus" ? 270 : 360] : sample === "sleeve" ? [12,10,35,270] : sample === "fitting" ? [7,15,47,270] : [12,7,30,270];
   for (const [i,key] of ["radius","wall","collarHeight","angle"].entries()) {
-    element<HTMLInputElement>(key).value=String(defaults[i]); element(`${key}-value`).textContent=`${defaults[i]} ${["angle","turnAngle","loftTwist"].includes(key) ? "°" : "mm"}`;
+    element<HTMLInputElement>(key).value=String(defaults[i]); element(`${key}-value`).textContent=`${defaults[i]} ${["angle","turnAngle","loftTwist","flangeAngle"].includes(key) ? "°" : "mm"}`;
   }
   for(const [key,value] of [["rounding",2],["innerRadius",4]] as const) {element<HTMLInputElement>(key).value=String(value);element(`${key}-value`).textContent=`${value} mm`;}
   hasCamera=false; scheduleBuild();

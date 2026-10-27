@@ -5,7 +5,7 @@ import assert from "node:assert/strict";
 import { readFile } from "node:fs/promises";
 import { AuthoringSession, ExedraError, extrude, placement, profiles } from "@exedra/authoring";
 import { AuthoringKernel, default as initialize } from "../../../packages/exedra/dist/wasm_pkg/exedra_authoring_web_bridge.js";
-import { authorPanel } from "../src/sample.ts";
+import { authorPanel, authorFlangedSleeve } from "../src/sample.ts";
 import { galleryCases } from "./gallery-cases.mjs";
 
 await initialize({module_or_path:await readFile(new URL("../../../packages/exedra/dist/wasm_pkg/exedra_authoring_web_bridge_bg.wasm",import.meta.url))});
@@ -77,4 +77,21 @@ try {
   assert.equal(session.stats().documents,0);assert.equal(session.stats().cacheEntries,0);
   results.push({sample:"recovery-and-availability",outcomes:["invalid-authoring-refused","accuracy-target-unmet","native-measure-numeric-limit"]});
 } finally {session.dispose();}
+
+// Independent shoulder/radius controls: exact native integrals verify each dimension.
+const flangeBase={boreRadius:12,sleeveOuterRadius:18,flangeOuterRadius:22,shoulderHeight:8.75,height:35,angle:270};
+const flangeVolume=p=>p.angle*Math.PI/360*((p.flangeOuterRadius**2-p.boreRadius**2)*p.shoulderHeight+(p.sleeveOuterRadius**2-p.boreRadius**2)*(p.height-p.shoulderHeight));
+const flangeSession=new AuthoringSession(new AuthoringKernel(),{units:"mm"});
+try {
+ for(const edit of [{},{height:40},{shoulderHeight:10},{sleeveOuterRadius:20},{flangeOuterRadius:25},{boreRadius:13},{angle:180},{sleeveOuterRadius:22}]){
+  const p={...flangeBase,...edit},document=flangeSession.build(authorFlangedSleeve(p));
+  try {const part=document.parts.sleeve;assert.equal(part.measurements.volume.status,"available");assert.ok(Math.abs(part.measurements.volume.value-flangeVolume(p))<1e-8);assert.ok(Math.abs(part.measurements.bounds[1][2]-p.height)<1e-8);assert.ok(Math.abs(part.measurements.bounds[1][0]-Math.max(p.flangeOuterRadius,p.sleeveOuterRadius))<1e-8);}finally{document.dispose();}
+ }
+ const good=flangeSession.build(authorFlangedSleeve(flangeBase));
+ assert.throws(()=>flangeSession.build(authorFlangedSleeve({...flangeBase,boreRadius:20})),error=>error instanceof ExedraError&&error.diagnostic.code==="profile.invalid");
+ assert.throws(()=>authorFlangedSleeve({...flangeBase,shoulderHeight:40}),error=>error instanceof ExedraError&&error.diagnostic.code==="input.flangeHeight");
+ good.parts.sleeve.realize(policy);good.dispose();assert.equal(flangeSession.stats().documents,0);assert.equal(flangeSession.stats().cacheEntries,0);
+ results.push({sample:"independent-flange-dimensions",outcome:"success",independentEdits:8,defaultVolume:flangeVolume(flangeBase)});
+}finally{flangeSession.dispose();}
+
 console.log(JSON.stringify({samples:results},null,2));
