@@ -40,8 +40,8 @@ pub use compile::{
     policy_fingerprint,
 };
 pub use native::{
-    NativeBoundaryStorage, NativeFaceSelection, NativeFamily, NativeGeometryRef, NativeMeasure,
-    NativeMeasureError, NativeRealization, NativeSelectionError, NativeSource,
+    NativeBoundaryStorage, NativeChartError, NativeFaceSelection, NativeFamily, NativeGeometryRef,
+    NativeMeasure, NativeMeasureError, NativeRealization, NativeSelectionError, NativeSource,
 };
 
 /// Index in one explicit compilation input list.
@@ -148,6 +148,8 @@ pub(crate) fn len_u32(n: usize) -> u32 {
     u32::try_from(n).expect("geometry input and extraction counts fit u32")
 }
 
+#[cfg(test)]
+mod native_chart_tests;
 #[cfg(test)]
 mod native_tests;
 #[cfg(test)]
