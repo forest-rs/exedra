@@ -567,6 +567,65 @@ impl Profile {
     pub fn area(&self) -> f64 {
         self.outer.signed_area() + self.holes.iter().map(Loop::signed_area).sum::<f64>()
     }
+
+    /// Area integrals of `(x-origin.x, y-origin.y)`, in cubed model units.
+    ///
+    /// Includes circular segments analytically and subtracts holes. Choosing an
+    /// origin near the profile avoids cancellation for far-translated shapes.
+    /// Returns `None` for a non-finite origin or an overflowing integral.
+    #[must_use]
+    pub fn first_moments(&self, origin: [f64; 2]) -> Option<[f64; 2]> {
+        if origin.iter().any(|v| !v.is_finite()) {
+            return None;
+        }
+        let mut moment = [0.0; 2];
+        for ring in core::iter::once(&self.outer).chain(&self.holes) {
+            for (i, (from, segment)) in ring.iter_with_starts().enumerate() {
+                let a = sub(from, origin);
+                let b = sub(segment.to, origin);
+                let chord = cross(a, b) / 6.0;
+                for k in 0..2 {
+                    moment[k] += (a[k] + b[k]) * chord;
+                }
+                if let Some(arc) = ring.arc(i) {
+                    let area = arc.segment_area();
+                    let h = 0.5 * arc.sweep;
+                    let mid = arc.start_angle + h;
+                    // The circular-segment centroid measured from its chord
+                    // midpoint, multiplied by signed area. The small-angle
+                    // series avoids subtracting nearly equal terms to get O(h⁵).
+                    let radial = if h.abs() < 0.5 {
+                        let h2 = h * h;
+                        let rh = arc.radius * h;
+                        let coefficients = [
+                            2.0 / 15.0,
+                            -11.0 / 315.0,
+                            17.0 / 3780.0,
+                            -461.0 / 1247400.0,
+                            8303.0 / 389188800.0,
+                            -24911.0 / 27243216000.0,
+                            168151.0 / 5557616064000.0,
+                            -1513361.0 / 1900704693888000.0,
+                            7913.0 / 463788509184000.0,
+                        ];
+                        let factor = coefficients.into_iter().rev().fold(0.0, |p, c| c + h2 * p);
+                        rh * rh * rh * h2 * factor
+                    } else {
+                        let s = libm::sin(h);
+                        arc.radius
+                            * arc.radius
+                            * arc.radius
+                            * (s - s * s * s / 3.0 - h * libm::cos(h))
+                    };
+                    let direction = [libm::cos(mid), libm::sin(mid)];
+                    for k in 0..2 {
+                        moment[k] += area * (0.5 * a[k] + 0.5 * b[k]) + radial * direction[k];
+                    }
+                }
+            }
+        }
+        moment.iter().all(|v| v.is_finite()).then_some(moment)
+    }
 }
 
 /// Sine below which adjacent pieces count as tangent at their shared vertex.
@@ -969,5 +1028,41 @@ mod tests {
             let expected = arc.radius * arc.radius * sweep.powi(3) / 12.0;
             assert!((arc.segment_area() - expected).abs() <= 1e-6 * expected.abs());
         }
+    }
+
+    #[test]
+    fn first_moments_include_curved_segments_holes_and_shallow_caps() {
+        let disk = |x: f64, y: f64, r: f64| {
+            Loop::new(alloc::vec![
+                Segment::arc([x - r, y], 1.0),
+                Segment::arc([x + r, y], 1.0)
+            ])
+            .unwrap()
+        };
+        let origin = [1e8, -1e8];
+        let p = Profile::new(
+            disk(origin[0], origin[1], 10.0),
+            alloc::vec![disk(origin[0] + 2.0, origin[1] + 3.0, 1.0).reversed()],
+            &ProfilePolicy::new(1e-8),
+        )
+        .unwrap();
+        let m = p.first_moments(origin).unwrap();
+        assert!((m[0] + 2.0 * PI).abs() < 1e-10);
+        assert!((m[1] + 3.0 * PI).abs() < 1e-10);
+        let h = 1e-4_f64;
+        let x = libm::sin(h);
+        let cap = Loop::new(alloc::vec![
+            Segment::line([x, 0.0]),
+            Segment::arc([-x, 0.0], libm::tan(h * 0.5))
+        ])
+        .unwrap();
+        let p = Profile::new(cap, alloc::vec![], &ProfilePolicy::new(1e-15)).unwrap();
+        let m = p.first_moments([0.0; 2]).unwrap();
+        let expected = 2.0 / 15.0 * h.powi(5);
+        assert!(
+            (m[1] / expected - 1.0).abs() < 1e-8,
+            "shallow cap moment {m:?}"
+        );
+        assert!(p.first_moments([f64::NAN, 0.0]).is_none());
     }
 }
