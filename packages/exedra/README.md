@@ -96,10 +96,34 @@ const ring = revolve(section, {
 translation; Rust constructs and validates the rigid frame. `profiles.polygon`
 accepts an authored closed line outline without repeating its first vertex.
 Winding, self-crossings and work budgets are checked in Rust. Full and partial
-revolutions retain cylinders, cones and regular toroidal walls. Unsupported STEP
+revolutions retain cylinders, cones and regular toroidal walls. Full-turn sections
+with supported axis boundaries also retain spherical walls and pointed cone tips;
+partial turns touching the axis are refused. Unsupported STEP
 surfaces produce an `exchange.unsupportedSurface` diagnostic; the source stays
-usable for display and native queries. The current exporter supports plane and
-cylinder faces, not cone, torus or ruled faces.
+usable for display and native queries. The current exporter supports plane,
+cylinder, cone, torus and sphere faces with supported boundary topology; ruled
+faces remain unsupported.
+
+`sphericalCap` preserves the requested sphere radius and cap height in Rust,
+including shallow domes, hemispheres, taller caps and a full sphere at height
+`2 * radius`:
+
+```ts
+import { sphericalCap, placement } from "@exedra/authoring";
+const dome = sphericalCap({ radius: 25, height: 12,
+  placement: placement({ rotationXYZ: [Math.PI / 2, 0, 0] }),
+});
+```
+
+Its base starts at local Y=0 and its tip is at Y=`height`; the placement above
+makes that direction world +Z. Rust constructs the canonical center-defined
+profile and ordinary native revolution. The installed part still reports
+`family: "revolution"`, supports construction charts, and exports its exact
+spherical wall and planar base independently of the display mesh.
+Native dimension or floating-point height/rim resolution refusals use
+`revolve.cap.*` diagnostics with the original `radius` and `height`; numeric
+resolution refusals also expose `axisOffset` or `rimRadius`. No epsilon ring or
+accidental full sphere is substituted. Earlier documents remain usable.
 
 Each `document.buildTiming`, `display.timing`, exported `StepFile.timing` and
 queried workplane `timing` reports host-observed elapsed milliseconds. Refused

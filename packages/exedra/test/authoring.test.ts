@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
-import { AuthoringSession, AuthoringWorkplane, Solid, ExedraError, extrude, revolve, sweep, loft, paths, placement, profiles, charts, uvTransform, type NativeTransport } from "../src/index.ts";
+import { AuthoringSession, AuthoringWorkplane, Solid, ExedraError, extrude, revolve, sphericalCap, sweep, loft, paths, placement, profiles, charts, uvTransform, type NativeTransport } from "../src/index.ts";
 
 function host() {
   let next = 0, released = 0, freed = 0, transfers = 0;
@@ -239,5 +239,16 @@ test("closed curve profiles snapshot center/direction/feature intent and lower o
  assert.throws(()=>profiles.loop(endless()),code("budget.profileSegments"));
  assert.throws(()=>profiles.loop([{kind:"arc",to:[1,0],center:[Infinity,0],clockwise:false}]),code("input.nonFinite"));
  assert.throws(()=>profiles.loop([{kind:"arc",to:[1,0],center:[0,0],clockwise:1 as any}]),code("input.arcDirection"));
+ session.dispose();
+});
+
+test("spherical cap intent preserves requested dimensions and placement for native validation",()=>{
+ const translation:[number,number,number]=[10,20,30],options={radius:25,height:12,placement:placement({translation,rotationXYZ:[Math.PI/2,0,0]})};
+ const cap=sphericalCap(options),h=host(),session=new AuthoringSession(h.native,{units:"mm"});
+ session.build({dome:cap}).dispose();options.radius=99;options.height=99;translation[2]=999;
+ session.build({dome:cap}).dispose();assert.deepEqual(h.requests[0],h.requests[1]);
+ assert.equal(h.requests[0].profiles.length,0);assert.equal(h.requests[0].nodes[0].kind,"sphericalCap");
+ assert.equal(h.requests[0].nodes[0].radius,25);assert.equal(h.requests[0].nodes[0].height,12);assert.deepEqual(h.requests[0].nodes[0].placement.translation,[10,20,30]);
+ assert.throws(()=>sphericalCap({radius:Infinity,height:12}),code("input.nonFinite"));
  session.dispose();
 });

@@ -15,7 +15,7 @@ use exedra_analytic::{
     bore::{Bore, BoreError, BorePolicy, BoredPlate},
     extrusion::{End, Extrusion, Pocket, Workplane},
     loft::{Loft, LoftPolicy},
-    revolve::Revolution,
+    revolve::{Revolution, SphericalCapError},
     sweep::Sweep,
 };
 use exedra_compile::{NativeGeometryRef, NativeSource};
@@ -240,6 +240,12 @@ enum FinishKind {
 #[derive(Debug, Deserialize)]
 #[serde(tag = "kind", rename_all = "camelCase", deny_unknown_fields)]
 enum Node {
+    SphericalCap {
+        radius: f64,
+        height: f64,
+        #[serde(default)]
+        placement: InputPlacement,
+    },
     ThroughBore {
         base: u32,
         point: [f64; 3],
@@ -424,6 +430,31 @@ fn corner_treatment_error(
     diagnostic
 }
 
+fn spherical_cap_error(error: SphericalCapError, index: usize, radius: f64, height: f64) -> Error {
+    let code = match &error {
+        SphericalCapError::Radius { .. } => "revolve.cap.radius",
+        SphericalCapError::Height { .. } => "revolve.cap.height",
+        SphericalCapError::HeightResolution { .. } => "revolve.cap.heightResolution",
+        SphericalCapError::RimResolution { .. } => "revolve.cap.rimResolution",
+        SphericalCapError::Loop(_) | SphericalCapError::Profile(_) => "revolve.cap.profile",
+        SphericalCapError::Revolution(_) => "revolve.cap.invalid",
+    };
+    let mut diagnostic = Error::new(code, "solid.sphericalCap", error.to_string()).node(index);
+    let context = diagnostic.context_mut();
+    context.radius = radius.is_finite().then_some(radius);
+    context.height = height.is_finite().then_some(height);
+    match error {
+        SphericalCapError::HeightResolution { axis_offset, .. } => {
+            context.axis_offset = axis_offset.is_finite().then_some(axis_offset);
+        }
+        SphericalCapError::RimResolution { rim_radius, .. } => {
+            context.rim_radius = rim_radius.is_finite().then_some(rim_radius);
+        }
+        _ => {}
+    }
+    diagnostic
+}
+
 impl Request {
     fn validate(&self) -> Result<BTreeMap<String, SegTag>, Error> {
         if !self.separation.is_finite() || self.separation <= 0.0 {
@@ -587,6 +618,7 @@ impl Request {
         let mut depths: Vec<u16> = Vec::with_capacity(self.nodes.len());
         for (i, node) in self.nodes.iter().enumerate() {
             let (profile_ids, parent, multiplier): (Vec<u32>, Option<u32>, usize) = match node {
+                Node::SphericalCap { .. } => (Vec::new(), None, 1),
                 Node::Extrude { profile, .. } | Node::Revolve { profile, .. } => {
                     (alloc::vec![*profile], None, 1)
                 }
@@ -682,6 +714,11 @@ impl Request {
                 .iter()
                 .fold(0_usize, |sum, id| sum.saturating_add(counts[*id as usize]))
                 .saturating_mul(multiplier)
+                .saturating_add(if matches!(node, Node::SphericalCap { .. }) {
+                    3
+                } else {
+                    0
+                })
                 .saturating_add(
                     if matches!(
                         node,
@@ -1075,6 +1112,14 @@ impl Request {
                     )
                     .map_err(|e| failure("extrude.invalid", "solid.extrude", e.to_string()))?,
                 ),
+                Node::SphericalCap {
+                    radius,
+                    height,
+                    placement,
+                } => Model::Revolution(
+                    Revolution::spherical_cap(radius, height, placement.frame(), &policy)
+                        .map_err(|error| spherical_cap_error(error, i, radius, height))?,
+                ),
                 Node::Revolve {
                     profile,
                     angle,
@@ -1204,6 +1249,53 @@ impl Request {
 #[cfg(test)]
 mod tests {
     use super::*;
+    #[test]
+    fn spherical_caps_preserve_dimensions_and_remain_native_revolutions() {
+        let input = |radius, height| serde_json::json!({"units":"mm","separation":1e-9,"profiles":[],"nodes":[{"kind":"sphericalCap","radius":radius,"height":height}],"roots":[{"name":"dome","node":0}]});
+        let mut failures = Vec::new();
+        let cases = [(25.0, 0.25), (25.0, 12.0), (25.0, 40.0)]
+            .into_iter()
+            .chain([2.0_f64, 25.0, 60.0].into_iter().flat_map(|radius| {
+                [0.5, radius / 2.0, radius, 1.5 * radius, 2.0 * radius]
+                    .into_iter()
+                    .map(move |height| (radius, height))
+            }));
+        for (radius, height) in cases {
+            let request: Request = serde_json::from_value(input(radius, height)).unwrap();
+            let built = match request.build() {
+                Ok(built) => built,
+                Err(error) => {
+                    failures.push((radius, height, error));
+                    continue;
+                }
+            };
+            let NativeGeometryRef::Revolution(cap) = built.roots[0].1.geometry() else {
+                panic!("cap is an ordinary native revolution")
+            };
+            assert!(cap.body().is_closed());
+            let volume = core::f64::consts::PI * height * height * (radius - height / 3.0);
+            assert!((cap.volume() - volume).abs() <= volume * 2e-12);
+            assert_eq!(cap.profile().bounds()[0][1], 0.0);
+            assert!((cap.profile().bounds()[1][1] - height).abs() < 1e-12);
+        }
+        assert!(
+            failures.is_empty(),
+            "valid native cap refusals: {failures:?}"
+        );
+        for (height, code, offset) in [
+            (51.0, "revolve.cap.height", None),
+            (1e-20, "revolve.cap.heightResolution", Some(25.0)),
+        ] {
+            let request: Request = serde_json::from_value(input(25.0, height)).unwrap();
+            let error = request.build().unwrap_err();
+            assert_eq!(error.code, code);
+            let context = error.context.unwrap();
+            assert_eq!(context.node, Some(0));
+            assert_eq!(context.radius, Some(25.0));
+            assert_eq!(context.height, Some(height));
+            assert_eq!(context.axis_offset, offset);
+        }
+    }
     fn request(nodes: serde_json::Value) -> Request {
         serde_json::from_value(serde_json::json!({"units":"mm","separation":1e-6,"profiles":[{"kind":"rectangle","width":40,"height":30}],"nodes":nodes,"roots":[{"name":"panel","node":0}]})).unwrap()
     }

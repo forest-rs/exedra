@@ -77,6 +77,14 @@ struct ErrorContext {
     )]
     radius_roundoff_bound: Option<f64>,
     #[serde(skip_serializing_if = "Option::is_none")]
+    radius: Option<f64>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    height: Option<f64>,
+    #[serde(rename = "axisOffset", skip_serializing_if = "Option::is_none")]
+    axis_offset: Option<f64>,
+    #[serde(rename = "rimRadius", skip_serializing_if = "Option::is_none")]
+    rim_radius: Option<f64>,
+    #[serde(skip_serializing_if = "Option::is_none")]
     face: Option<u32>,
     #[serde(rename = "geometryFamily", skip_serializing_if = "Option::is_none")]
     geometry_family: Option<&'static str>,
