@@ -3,14 +3,15 @@
 Narrow analytic geometry head for Exedra. It retains exact boundary geometry
 until an explicit conversion into `exedra_mesh::Mesh`.
 
-`geometry` provides checked f64 lines, circles, planes, cylinders, regular
-cones and ring tori, with first and second derivatives in their native parameter units.
+`geometry` provides checked f64 lines, circles, ellipses, planes, cylinders, regular
+cones, spheres and ring tori, with first and second derivatives in their native parameter units.
 Rotational angles are radians; axial height and plane coordinates are model
 lengths. A cone uses `radius + slope * height` and excludes its apex and the
 nonpositive-radius nappe.
 Both torus parameters are radians; its major radius must exceed its positive
-minor radius. Horns, spindles and spherical poles are excluded.
-`CurveSpan` supplies normalized traversal of a bounded line or circle.
+minor radius. Horns and spindles are excluded. Sphere coordinate poles and cone
+apices use explicit collapsed boundaries; they have no fictitious 3D edge curve.
+`CurveSpan` supplies normalized traversal of a bounded line, circle or ellipse.
 `Surface::ruled` interpolates two spans exactly over a unit square and certifies
 local regularity using conservative interval bounds. It supplies all first and
 second partials; a closest-point inverse is not supplied. Other supporting
@@ -26,22 +27,41 @@ curve/vertex/support agreement against an explicit gap tolerance. It does not
 heal geometry or certify trim nesting, global self-intersection, shell containment
 or regular-solid validity. `is_closed` checks oriented edge incidence.
 
-The extrusion, revolution, sweep and loft constructors and planar shell builder own this shared
-model and expose it through `body()`. A cloned body can outlive its construction
-record. `Body::realize` handles planar trims, four-edge cylindrical/conical
-strips, toroidal parameter rectangles and complete ruled unit patches, including periodic seams where applicable. Coaxial planar annuli and sectors use
-the same paired strips to preserve their angular coordinate net. Native edges
-are sampled once into flat shared chains; paired circular edges have synchronized
-counts. Other curved trims
-are typed refusals. Realization checks planar arrangements and local triangle
-orientation after f32 emission; global solid validity remains the caller's
-responsibility. The report bounds chord error using the actual rounded parameter intervals,
-measures emitted paired samples against one fixed axial/radial ruling, and includes that
-residual alongside vertex displacement and native support gaps in its deviation
-bound. Rectangular-strip eligibility is checked independently of caller gap
-slack. Storage and sampling
-budgets are explicit. `realize_with_regions` maps metadata to mesh regions once
-per native face while retaining individual native correspondence.
+`BodyParts::trims` stores optional `LoopTrims` records, with a parameter curve
+for each coedge occurrence in a uniquely owned loop. A seam's two occurrences
+can have different chart coordinates while retaining the same shared edge.
+Each `TrimCurve` maps a normalized canonical edge fraction to face parameters;
+coedge reversal affects traversal only. Affine and affine-plus-harmonic curves
+represent straight chart boundaries, planar ellipses and oblique cylinder-section
+trims. Complete analytic coefficient bounds establish supported 3D/UV agreement,
+including arithmetic at the original operand scale. Unsupported compositions are
+refused rather than certified from a few samples. Validation reports count
+explicitly checked trim occurrences separately from legacy support-only loops.
+Domain bounds and chart closure are checked independently of model-space gaps.
+`Body::map_roles` consumes and remaps metadata while moving all retained geometry,
+topology and trim tables unchanged.
+
+The extrusion, revolution, sweep and loft constructors and planar shell builder
+own this shared model and expose it through `body()`. A cloned body can outlive
+its construction record. Legacy constructors may omit explicit trim records;
+that means support-only validation, never an inferred UV correspondence.
+`Body::realize` keeps bounded specialized paths for planar trims, cylindrical/conical
+strips, toroidal rectangles, complete ruled patches and supported pole patches.
+Other elementary curved faces with complete explicit trims use chart polygon
+triangulation and conforming interior-edge refinement. Uniform second-partial
+bounds certify the surface interpolation error. Shared boundary chains remain
+fixed, including periodic seam copies and hole boundaries. Multi-period charts,
+unsupported pole patches and exhausted sampling/storage budgets are typed
+refusals. Recognized patches keep their optimized path even when explicit trim
+records are present.
+
+Native edges are sampled once into flat shared chains. Paired strip edges and
+opposite grid boundaries synchronize their counts. Planar arrangements and local
+triangle orientation are checked after f32 emission; global solid validity
+remains the caller's responsibility. The report combines curve/surface error,
+emitted precision, native geometric gaps and paired-ruling residuals.
+`realize_with_regions` maps metadata to mesh regions once per native face while
+retaining individual native correspondence.
 
 Toroidal grids synchronize both pairs of opposite boundary chains. Refinement
 uses both principal curvatures and a mixed term, rather than accepting the

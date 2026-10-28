@@ -81,7 +81,7 @@ impl CurveSpan {
             .all(f64::is_finite)
             .then_some(e)
     }
-    fn speed(&self) -> f64 {
+    pub(crate) fn speed(&self) -> f64 {
         match &self.curve {
             Curve::Line(l) => norm(l.direction()) * self.range.span(),
             curve => {
@@ -91,7 +91,7 @@ impl CurveSpan {
             }
         }
     }
-    fn second_bound(&self) -> f64 {
+    pub(crate) fn second_bound(&self) -> f64 {
         match &self.curve {
             Curve::Line(_) => 0.0,
             curve => {

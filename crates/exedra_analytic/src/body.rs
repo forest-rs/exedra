@@ -211,7 +211,7 @@ impl<F, E> Default for BodyParts<F, E> {
 /// tessellation error or healing. Validation never changes geometry or tolerances.
 #[derive(Copy, Clone, Debug, PartialEq)]
 pub struct ValidationPolicy {
-    /// Maximum endpoint-to-curve and curve-to-surface distance in model units.
+    /// Maximum endpoint, curve/support and explicit trim-correspondence gap in model units.
     pub max_gap: f64,
 }
 
@@ -244,7 +244,8 @@ impl<F, E> Default for Body<F, E> {
 }
 
 impl<F, E> Body<F, E> {
-    /// Checks references, vertex-identity closure and analytic support agreement.
+    /// Checks references, vertex-identity closure, analytic support agreement,
+    /// and every supplied continuous face-local parameter correspondence.
     ///
     /// # Errors
     /// Returns the first [`BodyError`], with the offending local IDs and bounds.
