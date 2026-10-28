@@ -32,6 +32,7 @@ pub mod machining;
 mod planar;
 mod profile_geometry;
 pub mod realize;
+pub mod rectilinear;
 pub mod revolve;
 pub mod sweep;
 pub use planar::{
