@@ -47,6 +47,8 @@ its construction record. Legacy constructors may omit explicit trim records;
 that means support-only validation, never an inferred UV correspondence.
 `Body::realize` keeps bounded specialized paths for planar trims, cylindrical/conical
 strips, toroidal rectangles, complete ruled patches and supported pole patches.
+Monotone collinear line-edge chains on strip boundaries retain every native
+split vertex without refining the whole strip; only adjacent panels change.
 Other elementary curved faces with complete explicit trims use chart polygon
 triangulation and conforming interior-edge refinement. Uniform second-partial
 bounds certify the surface interpolation error. Shared boundary chains remain
