@@ -533,8 +533,7 @@ impl Extrusion {
                         }
                     };
                     edges.push(Edge {
-                        curve,
-                        range,
+                        geometry: crate::body::EdgeGeometry::Curve { curve, range },
                         start: vertex_id(band.vertices[slot] + (k + n - 1) % n),
                         end: vertex_id(band.vertices[slot] + k),
                         role: EdgeRole::Boundary {
@@ -554,8 +553,7 @@ impl Extrusion {
                     [segment.to[0], segment.to[1], heights[1]],
                 );
                 edges.push(Edge {
-                    curve,
-                    range,
+                    geometry: crate::body::EdgeGeometry::Curve { curve, range },
                     start: vertex_id(band.vertices[0] + k),
                     end: vertex_id(band.vertices[1] + k),
                     role: EdgeRole::Seam {

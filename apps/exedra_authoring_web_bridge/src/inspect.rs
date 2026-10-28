@@ -113,7 +113,8 @@ fn bore_info(source: &exedra_analytic::bore::BoredPlate) -> Result<Value, Error>
     }
     let rims=report.rims.iter().map(|id| {
         let edge=source.body().edge(*id).ok_or_else(||Error::new("inspection.boreRim","part.inspect","Native bore rim edge is absent"))?;
-        let (major,minor,local_center)=match &edge.curve {
+        let (curve,_)=edge.regular().ok_or_else(||Error::new("inspection.boreRim","part.inspect","Native bore rim is a collapsed boundary"))?;
+        let (major,minor,local_center)=match curve {
             Curve::Ellipse(e)=>(e.semi_major(),e.semi_minor(),e.frame().transform_point([0.0;3])),
             Curve::Circle(c)=>(c.radius(),c.radius(),c.frame().transform_point([0.0;3])),
             Curve::Line(_)=>return Err(Error::new("inspection.boreRim","part.inspect","Native bore rim is not a conic")),

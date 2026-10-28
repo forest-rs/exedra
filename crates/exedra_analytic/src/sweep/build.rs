@@ -313,8 +313,7 @@ pub(super) fn construct(
             sections.push(push_edge(
                 &mut parts,
                 Edge {
-                    curve,
-                    range,
+                    geometry: crate::body::EdgeGeometry::Curve { curve, range },
                     start: a,
                     end: b,
                     role: EdgeRole::Section {
@@ -381,8 +380,7 @@ pub(super) fn construct(
             rails.push(push_edge(
                 &mut parts,
                 Edge {
-                    curve,
-                    range,
+                    geometry: crate::body::EdgeGeometry::Curve { curve, range },
                     start,
                     end,
                     role: EdgeRole::Rail {

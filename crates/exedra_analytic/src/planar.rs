@@ -734,8 +734,10 @@ fn push_loop(
             let from = parts.vertices[start.index()];
             let to = parts.vertices[end.index()];
             parts.edges.push(Edge {
-                curve: Curve::line(from, sub(to, from)).expect("validated line"),
-                range: ParameterRange::UNIT,
+                geometry: crate::body::EdgeGeometry::Curve {
+                    curve: Curve::line(from, sub(to, from)).expect("validated line"),
+                    range: ParameterRange::UNIT,
+                },
                 start,
                 end,
                 role: (),

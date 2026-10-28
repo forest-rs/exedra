@@ -215,6 +215,136 @@ fn enclosure_cross(a: [Enclosure; 3], b: [Enclosure; 3]) -> [Enclosure; 3] {
     })
 }
 
+/// Encloses the complete affine pole position against an authoritative vertex.
+pub(crate) fn pole_gap(sphere: &Sphere, latitude: f64, point: [f64; 3]) -> Option<f64> {
+    if latitude.abs() != core::f64::consts::FRAC_PI_2 {
+        return None;
+    }
+    let z = Enclosure::exact(sphere.radius() * latitude.signum());
+    let frame = sphere.frame();
+    let mut bound = Enclosure::exact(0.0);
+    for (k, p) in point.into_iter().enumerate() {
+        let ideal =
+            Enclosure::exact(frame.rows[k][3]).add(Enclosure::exact(frame.rows[k][2]).mul(z));
+        let residual = Enclosure::exact(p).sub(ideal);
+        bound = bound.add(Enclosure::exact(residual.magnitude()));
+    }
+    Some(bound.hi)
+}
+
+fn axial_point(frame: Placement3, z: Enclosure) -> [Enclosure; 3] {
+    core::array::from_fn(|k| {
+        Enclosure::exact(frame.rows[k][3]).add(Enclosure::exact(frame.rows[k][2]).mul(z))
+    })
+}
+fn point_gap(a: [Enclosure; 3], b: [Enclosure; 3]) -> f64 {
+    (0..3)
+        .fold(Enclosure::exact(0.0), |sum, k| {
+            sum.add(Enclosure::exact(a[k].sub(b[k]).magnitude()))
+        })
+        .hi
+}
+pub(crate) fn cone_pole_bounds(cone: &super::Cone) -> Option<[[f64; 3]; 2]> {
+    cone.apex_parameter()?;
+    let z = Enclosure::exact(-cone.radius()).div(Enclosure::exact(cone.slope()))?;
+    let points = axial_point(cone.frame(), z);
+    points
+        .into_iter()
+        .all(Enclosure::finite)
+        .then_some([points.map(|v| v.lo), points.map(|v| v.hi)])
+}
+
+/// The exact cone apex quotient is enclosed independently of its canonical
+/// rounded parameter; no normal is assigned to this singular point.
+pub(crate) fn cone_pole_gap(cone: &super::Cone, v: f64, point: [f64; 3]) -> Option<f64> {
+    if Some(v) != cone.apex_parameter() {
+        return None;
+    }
+    let z = Enclosure::exact(-cone.radius()).div(Enclosure::exact(cone.slope()))?;
+    Some(point_gap(
+        point.map(Enclosure::exact),
+        axial_point(cone.frame(), z),
+    ))
+}
+
+/// Bounds a complete line against one closed conical generator. Only the
+/// explicitly identified pole endpoint may use the apex limit. Both projected
+/// endpoints lie on one closed ray, so convexity bounds the whole line.
+pub(crate) fn cone_generator_gap(
+    cone: &super::Cone,
+    line: &super::Line,
+    range: super::ParameterRange,
+    poles: [bool; 2],
+) -> f64 {
+    let compute = || -> Option<f64> {
+        let endpoint = |t: f64| {
+            core::array::from_fn::<_, 3, _>(|k| {
+                Enclosure::exact(line.origin()[k])
+                    .add(Enclosure::exact(line.direction()[k]).mul(Enclosure::exact(t)))
+            })
+        };
+        let bounds = range.bounds();
+        let source = bounds.map(endpoint);
+        let reference = usize::from(poles[0]);
+        let nominal = line_origin_at(line, bounds[reference])?;
+        let local = frame_coordinates(cone.frame(), nominal)?;
+        let scale = local[0].abs().max(local[1].abs());
+        if scale == 0.0 || !scale.is_finite() {
+            return None;
+        }
+        let sign = if local[0] < 0.0 { -1.0 } else { 1.0 };
+        let x = sign * local[0] / scale;
+        let y = sign * local[1] / scale;
+        // Any finite Cayley parameter defines an exact unit direction by the
+        // rational circle identity. Hypot only chooses a nearby generator;
+        // its rounding cannot invalidate that identity or the residual bound.
+        let t = y / (libm::hypot(x, y) + x);
+        if !t.is_finite() {
+            return None;
+        }
+        let t = Enclosure::exact(t);
+        let t2 = t.mul(t);
+        let denominator = Enclosure::exact(1.0).add(t2);
+        let c = Enclosure::exact(1.0)
+            .sub(t2)
+            .div(denominator)?
+            .mul(Enclosure::exact(sign));
+        let s = t
+            .mul(Enclosure::exact(2.0))
+            .div(denominator)?
+            .mul(Enclosure::exact(sign));
+        let mut gap = 0.0_f64;
+        for i in 0..2 {
+            let ideal = if poles[i] {
+                let z = Enclosure::exact(-cone.radius()).div(Enclosure::exact(cone.slope()))?;
+                axial_point(cone.frame(), z)
+            } else {
+                let p = line_origin_at(line, bounds[i])?;
+                let z = Enclosure::exact(frame_coordinates(cone.frame(), p)?[2]);
+                let radial =
+                    Enclosure::exact(cone.radius()).add(Enclosure::exact(cone.slope()).mul(z));
+                if radial.lo <= 0.0 {
+                    return None;
+                }
+                let local = [radial.mul(c), radial.mul(s), z];
+                let frame = cone.frame();
+                core::array::from_fn(|k| {
+                    (0..3).fold(Enclosure::exact(frame.rows[k][3]), |sum, j| {
+                        sum.add(Enclosure::exact(frame.rows[k][j]).mul(local[j]))
+                    })
+                })
+            };
+            gap = gap.max(point_gap(source[i], ideal));
+        }
+        gap.is_finite().then_some(gap)
+    };
+    compute().unwrap_or(f64::INFINITY)
+}
+fn line_origin_at(line: &super::Line, t: f64) -> Option<[f64; 3]> {
+    let p = core::array::from_fn(|k| line.origin()[k] + line.direction()[k] * t);
+    finite(p).then_some(p)
+}
+
 /// Whole harmonic curve comparison with the actual affine image of the sphere.
 /// The bound uses all coefficients, not samples. Supplied A/B coefficients each
 /// came from one rounded frame-axis/radius product; their neighboring floats

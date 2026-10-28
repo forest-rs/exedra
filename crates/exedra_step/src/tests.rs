@@ -35,8 +35,10 @@ fn cube() -> Body {
     ]
     .into_iter()
     .map(|(a, b)| Edge {
-        curve: Curve::line(vertices[a], exedra_math::sub(vertices[b], vertices[a])).unwrap(),
-        range: ParameterRange::UNIT,
+        geometry: exedra_analytic::body::EdgeGeometry::Curve {
+            curve: Curve::line(vertices[a], exedra_math::sub(vertices[b], vertices[a])).unwrap(),
+            range: ParameterRange::UNIT,
+        },
         start: VertexId(u32::try_from(a).unwrap()),
         end: VertexId(u32::try_from(b).unwrap()),
         role: (),
@@ -336,10 +338,10 @@ fn unsupported_supports_and_open_or_multiple_shells_have_distinct_refusals() {
         p[0] += 10.0;
     }
     for e in &mut other.edges {
-        let Curve::Line(l) = &e.curve else {
+        let Curve::Line(l) = e.regular().unwrap().0 else {
             unreachable!()
         };
-        e.curve = Curve::line(
+        *e.regular_mut().unwrap().0 = Curve::line(
             exedra_math::add(l.origin(), [10.0, 0.0, 0.0]),
             l.direction(),
         )

@@ -119,14 +119,15 @@ impl GridPatch {
             let slack = 128.0 * crate::geometry::FRAME_TOLERANCE * size;
             for &coedge in coedges {
                 let edge = &body.edges()[coedge.edge.index()];
+                let (curve, edge_range) = edge.regular().ok_or_else(refuse)?;
                 let mut found = None;
                 for (slot, side) in sides.iter().enumerate() {
                     if side.is_some() {
                         continue;
                     }
                     let reverse = coedge.reversed ^ (slot >= 2) ^ (face.sense == Sense::Reverse);
-                    let actual = CurveSpan::new(edge.curve.clone(), edge.range, reverse)
-                        .map_err(|_| refuse())?;
+                    let actual =
+                        CurveSpan::new(curve.clone(), edge_range, reverse).map_err(|_| refuse())?;
                     let bound = ruled.boundary(slot).ok_or_else(refuse)?.alignment(&actual);
                     if bound <= slack {
                         found = Some((
@@ -186,7 +187,8 @@ impl GridPatch {
                 }
                 let reverse = coedge.reversed ^ (slot >= 2) ^ (face.sense == Sense::Reverse);
                 let edge = &body.edges()[coedge.edge.index()];
-                let Curve::Circle(circle) = &edge.curve else {
+                let (curve, edge_range) = edge.regular().ok_or_else(refuse)?;
+                let Curve::Circle(circle) = &curve else {
                     return Err(refuse());
                 };
                 let range = if slot.is_multiple_of(2) {
@@ -195,11 +197,11 @@ impl GridPatch {
                     face.domain.v
                 };
                 if range.span() > core::f64::consts::TAU
-                    || (edge.range.span() - range.span()).abs() > 64.0 * f64::EPSILON * range.span()
+                    || (edge_range.span() - range.span()).abs() > 64.0 * f64::EPSILON * range.span()
                 {
                     continue;
                 }
-                let phase = edge.range.bounds()[usize::from(reverse)];
+                let phase = edge_range.bounds()[usize::from(reverse)];
                 let (s, c) = (libm::sin(phase), libm::cos(phase));
                 let actual = [
                     circle.frame().rows.map(|r| r[3]),
@@ -220,12 +222,11 @@ impl GridPatch {
                     .zip(ideal)
                     .map(|(a, b)| distance(a, b))
                     .sum::<f64>()
-                    + circle.radius() * (edge.range.span() - range.span()).abs()
+                    + circle.radius() * (edge_range.span() - range.span()).abs()
                     + 8.0
                         * f64::EPSILON
                         * circle.radius()
-                        * (edge
-                            .range
+                        * (edge_range
                             .bounds()
                             .iter()
                             .map(|v| v.abs())
@@ -640,16 +641,28 @@ mod tests {
             let mut edges = Vec::new();
             for (a, b) in [(0, 1), (1, 2), (3, 2), (0, 3)] {
                 edges.push(Edge {
-                    curve: Curve::line(p[a], sub(p[b], p[a])).unwrap(),
-                    range: ParameterRange::UNIT,
+                    geometry: crate::body::EdgeGeometry::Curve {
+                        curve: Curve::line(p[a], sub(p[b], p[a])).unwrap(),
+                        range: ParameterRange::UNIT,
+                    },
                     start: VertexId(u32::try_from(a).unwrap()),
                     end: VertexId(u32::try_from(b).unwrap()),
                     role: (),
                 });
             }
             let surface = Surface::ruled(
-                CurveSpan::new(edges[0].curve.clone(), ParameterRange::UNIT, false).unwrap(),
-                CurveSpan::new(edges[2].curve.clone(), ParameterRange::UNIT, false).unwrap(),
+                CurveSpan::new(
+                    edges[0].regular().unwrap().0.clone(),
+                    ParameterRange::UNIT,
+                    false,
+                )
+                .unwrap(),
+                CurveSpan::new(
+                    edges[2].regular().unwrap().0.clone(),
+                    ParameterRange::UNIT,
+                    false,
+                )
+                .unwrap(),
             )
             .unwrap();
             let mut coedges: Vec<_> = (0..4)
@@ -765,15 +778,19 @@ mod tests {
                     vertices: vec![[12.0, 0.0, 0.0]],
                     edges: vec![
                         Edge {
-                            curve: Curve::circle(Placement3::IDENTITY, 12.0).unwrap(),
-                            range,
+                            geometry: crate::body::EdgeGeometry::Curve {
+                                curve: Curve::circle(Placement3::IDENTITY, 12.0).unwrap(),
+                                range,
+                            },
                             start: VertexId(0),
                             end: VertexId(0),
                             role: (),
                         },
                         Edge {
-                            curve: Curve::circle(meridian, 2.0).unwrap(),
-                            range,
+                            geometry: crate::body::EdgeGeometry::Curve {
+                                curve: Curve::circle(meridian, 2.0).unwrap(),
+                                range,
+                            },
                             start: VertexId(0),
                             end: VertexId(0),
                             role: (),

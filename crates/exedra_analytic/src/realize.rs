@@ -496,6 +496,9 @@ impl<F, E> Body<F, E> {
             let id = FaceId(crate::usize_to_u32(i));
             for &loop_id in &face.loops {
                 for coedge in &self.boundary_loop(loop_id).expect("validated loop").coedges {
+                    if self.edges()[coedge.edge.index()].is_collapsed() {
+                        return Err(RealizationError::UnsupportedSurfaceTrim { face: id });
+                    }
                     let item = &mut incidence[coedge.edge.index()];
                     if item.count == 2 {
                         return Err(RealizationError::NonManifold {
@@ -532,11 +535,12 @@ impl<F, E> Body<F, E> {
             let n = if incidence[i].count == 0 {
                 0
             } else {
-                match &edge.curve {
+                let (curve, range) = edge.regular().expect("used collapsed trims refused above");
+                match curve {
                     Curve::Line(_) => 1,
                     curve => circular_edge_count(
                         curve.sampling_radius().expect("periodic curve"),
-                        edge.range.span(),
+                        range.span(),
                         curve_tolerance,
                         CircularEdgeConstraints::new(
                             policy.min_arc_segments,
@@ -672,13 +676,14 @@ impl<F, E> Body<F, E> {
                 continue;
             }
             let id = EdgeId(crate::usize_to_u32(i));
+            let (curve, range) = edge.regular().expect("sampled edge is regular");
             chains
                 .vertices
                 .push(vertex_map[edge.start.index()].expect("active vertex"));
-            let [min, max] = edge.range.bounds();
+            let [min, max] = range.bounds();
             let key = (min.to_bits(), max.to_bits(), n);
             let reuse_phases = phase_key == Some(key);
-            if edge.curve.harmonic().is_some() && !reuse_phases {
+            if curve.harmonic().is_some() && !reuse_phases {
                 phases.clear();
                 phases.reserve(n as usize - 1);
                 phase_key = Some(key);
@@ -687,10 +692,10 @@ impl<F, E> Body<F, E> {
             let mut max_parameter_step = 0.0_f64;
             for k in 1..n {
                 let t = f64::from(k) / f64::from(n);
-                let parameter = edge.range.at(t).expect("bounded sample fraction");
+                let parameter = range.at(t).expect("bounded sample fraction");
                 max_parameter_step = max_parameter_step.max((parameter - previous_parameter).abs());
                 previous_parameter = parameter;
-                let point = match &edge.curve {
+                let point = match &curve {
                     curve if curve.harmonic().is_some() => {
                         let [sin, cos] = if reuse_phases {
                             phases[k as usize - 1]
@@ -703,7 +708,7 @@ impl<F, E> Body<F, E> {
                         frame.transform_point([a * cos, b * sin, 0.0])
                     }
                     _ => {
-                        edge.curve
+                        curve
                             .evaluate(parameter)
                             .ok_or(RealizationError::CollapsedEdge { edge: id })?
                             .point
@@ -732,7 +737,7 @@ impl<F, E> Body<F, E> {
             {
                 return Err(RealizationError::CollapsedEdge { edge: id });
             }
-            if let Some(radius) = edge.curve.sampling_radius() {
+            if let Some(radius) = curve.sampling_radius() {
                 // Absolute parameter origins can make nominally equal steps
                 // round differently. Bound the intervals actually evaluated.
                 max_parameter_step = max_parameter_step.max((max - previous_parameter).abs());
@@ -1039,7 +1044,12 @@ impl<F, E> Body<F, E> {
                 .iter()
                 .filter_map(|&id| self.boundary_loop(id))
                 .flat_map(|loop_| &loop_.coedges)
-                .any(|c| matches!(self.edges()[c.edge.index()].curve, Curve::Ellipse(_)))
+                .any(|c| {
+                    matches!(
+                        self.edges()[c.edge.index()].regular(),
+                        Some((Curve::Ellipse(_), _))
+                    )
+                })
         {
             let band = self
                 .cylindrical_band(id, &ValidationPolicy { max_gap: gap })
@@ -1065,12 +1075,13 @@ impl<F, E> Body<F, E> {
             let (a, b) = (rings[0].coedges[0], rings[1].coedges[0]);
             if [a, b].iter().any(|c| {
                 let edge = &self.edges()[c.edge.index()];
-                !matches!(edge.curve, Curve::Circle(_)) || edge.start != edge.end
+                !matches!(edge.regular(), Some((Curve::Circle(_), _))) || edge.start != edge.end
             }) {
                 return Err(refuse());
             }
             let circle = |coedge: Coedge| {
-                let Curve::Circle(circle) = &self.edges()[coedge.edge.index()].curve else {
+                let Some((Curve::Circle(circle), _)) = self.edges()[coedge.edge.index()].regular()
+                else {
                     unreachable!()
                 };
                 circle
@@ -1086,7 +1097,13 @@ impl<F, E> Body<F, E> {
                 || winding(a) <= 0.0
                 || winding(b) >= 0.0
                 || [a, b].iter().any(|c| {
-                    (self.edges()[c.edge.index()].range.span() - core::f64::consts::TAU).abs()
+                    (self.edges()[c.edge.index()]
+                        .regular()
+                        .expect("checked circle")
+                        .1
+                        .span()
+                        - core::f64::consts::TAU)
+                        .abs()
                         > 64.0 * f64::EPSILON
                 })
             {
@@ -1106,17 +1123,23 @@ impl<F, E> Body<F, E> {
             }
             let first = coedges
                 .iter()
-                .position(|c| matches!(self.edges()[c.edge.index()].curve, Curve::Circle(_)))
-                .ok_or_else(refuse)?;
-            let (a, b) = (coedges[first], coedges[(first + 2) % 4]);
-            if !matches!(self.edges()[b.edge.index()].curve, Curve::Circle(_))
-                || [1, 3].into_iter().any(|j| {
-                    !matches!(
-                        self.edges()[coedges[(first + j) % 4].edge.index()].curve,
-                        Curve::Line(_)
+                .position(|c| {
+                    matches!(
+                        self.edges()[c.edge.index()].regular(),
+                        Some((Curve::Circle(_), _))
                     )
                 })
-            {
+                .ok_or_else(refuse)?;
+            let (a, b) = (coedges[first], coedges[(first + 2) % 4]);
+            if !matches!(
+                self.edges()[b.edge.index()].regular(),
+                Some((Curve::Circle(_), _))
+            ) || [1, 3].into_iter().any(|j| {
+                !matches!(
+                    self.edges()[coedges[(first + j) % 4].edge.index()].regular(),
+                    Some((Curve::Line(_), _))
+                )
+            }) {
                 return Err(refuse());
             }
             (a, b)
@@ -1126,15 +1149,16 @@ impl<F, E> Body<F, E> {
         let axis = axis.map(|v| v / axis_length);
         let signed = |coedge: Coedge| {
             let edge = &self.edges()[coedge.edge.index()];
-            let Curve::Circle(circle) = &edge.curve else {
+            let Some((Curve::Circle(circle), range)) = edge.regular() else {
                 unreachable!();
             };
             exedra_math::dot(circle.frame().rows.map(|r| r[2]), axis).signum()
-                * edge.range.span()
+                * range.span()
                 * if coedge.reversed { -1.0 } else { 1.0 }
         };
         let circle = |coedge: Coedge| {
-            let Curve::Circle(circle) = &self.edges()[coedge.edge.index()].curve else {
+            let Some((Curve::Circle(circle), _)) = self.edges()[coedge.edge.index()].regular()
+            else {
                 unreachable!()
             };
             circle
@@ -1230,6 +1254,7 @@ impl<F, E> Body<F, E> {
                 .and_then(|f| {
                     if let Surface::Ruled(ruled) = &f.surface {
                         let edge = self.edge(id_edge)?;
+                        let (curve, range) = edge.regular()?;
                         let slack = ruled
                             .curves()
                             .iter()
@@ -1238,12 +1263,9 @@ impl<F, E> Body<F, E> {
                             * 128.0
                             * crate::geometry::FRAME_TOLERANCE;
                         for reversed in [false, true] {
-                            let actual = crate::geometry::CurveSpan::new(
-                                edge.curve.clone(),
-                                edge.range,
-                                reversed,
-                            )
-                            .ok()?;
+                            let actual =
+                                crate::geometry::CurveSpan::new(curve.clone(), range, reversed)
+                                    .ok()?;
                             for side in 0..4 {
                                 if ruled.boundary(side)?.alignment(&actual) <= slack {
                                     return Some(match side {
@@ -1335,27 +1357,33 @@ mod tests {
             upper.evaluate(b.bounds()[1]).unwrap().point,
         ];
         let line = |from: usize, to: usize| Edge {
-            curve: Curve::line(
-                vertices[from],
-                exedra_math::sub(vertices[to], vertices[from]),
-            )
-            .unwrap(),
-            range: ParameterRange::UNIT,
+            geometry: crate::body::EdgeGeometry::Curve {
+                curve: Curve::line(
+                    vertices[from],
+                    exedra_math::sub(vertices[to], vertices[from]),
+                )
+                .unwrap(),
+                range: ParameterRange::UNIT,
+            },
             start: VertexId(u32::try_from(from).unwrap()),
             end: VertexId(u32::try_from(to).unwrap()),
             role: (),
         };
         let edges = vec![
             Edge {
-                curve: lower,
-                range: a,
+                geometry: crate::body::EdgeGeometry::Curve {
+                    curve: lower,
+                    range: a,
+                },
                 start: VertexId(0),
                 end: VertexId(1),
                 role: (),
             },
             Edge {
-                curve: upper,
-                range: b,
+                geometry: crate::body::EdgeGeometry::Curve {
+                    curve: upper,
+                    range: b,
+                },
                 start: VertexId(2),
                 end: VertexId(3),
                 role: (),
@@ -1410,7 +1438,8 @@ mod tests {
         let mut parts = cylinder_parts();
         parts.vertices[1] = [1.0, 0.0, 0.0];
         parts.edges.truncate(2);
-        parts.edges[1].curve = Curve::circle(Placement3::IDENTITY, 1.0).unwrap();
+        *parts.edges[1].regular_mut().unwrap().0 =
+            Curve::circle(Placement3::IDENTITY, 1.0).unwrap();
         parts.loops = vec![
             BoundaryLoop {
                 coedges: vec![Coedge {
@@ -1470,12 +1499,12 @@ mod tests {
         use crate::geometry::ParameterRange;
         for phase in [0.0, 0.125] {
             let mut parts = cylinder_parts();
-            parts.edges[1].curve = Curve::circle(
+            *parts.edges[1].regular_mut().unwrap().0 = Curve::circle(
                 Placement3::rotate_z_then_translate(-phase, 0.0, 0.0, 3.0),
                 2.0,
             )
             .unwrap();
-            parts.edges[1].range =
+            *parts.edges[1].regular_mut().unwrap().1 =
                 ParameterRange::new(phase, phase + core::f64::consts::TAU).unwrap();
             let body = Body::try_from_parts(parts, &ValidationPolicy { max_gap: 1e-12 }).unwrap();
             let placement = Placement3::rotate_y_then_translate(0.7, 3.0, -2.0, 1.0);
@@ -1498,8 +1527,10 @@ mod tests {
                     VertexSource::Edge { edge, parameter } => {
                         let curve = &body.edges()[edge.index()];
                         curve
-                            .curve
-                            .evaluate(curve.range.at(parameter).unwrap())
+                            .regular()
+                            .unwrap()
+                            .0
+                            .evaluate(curve.regular().unwrap().1.at(parameter).unwrap())
                             .unwrap()
                             .point
                     }
@@ -1566,12 +1597,12 @@ mod tests {
         use crate::body::Sense;
         use crate::geometry::ParameterRange;
         let mut parts = strip(1e15, 1.125, 0.0, 1e-12).into_parts();
-        parts.edges[0].curve = Curve::circle(
+        *parts.edges[0].regular_mut().unwrap().0 = Curve::circle(
             Placement3::rotate_z_then_translate(1e15, 0.0, 0.0, 0.0),
             1.0,
         )
         .unwrap();
-        parts.edges[0].range = ParameterRange::new(0.0, 1.125).unwrap();
+        *parts.edges[0].regular_mut().unwrap().1 = ParameterRange::new(0.0, 1.125).unwrap();
         for reverse in [false, true] {
             let mut parts = parts.clone();
             if reverse {

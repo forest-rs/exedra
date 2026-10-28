@@ -6,7 +6,10 @@
 //! Profile X is positive radius and Y is height. Positive right-handed angles
 //! carry +X toward -Z, matching constructive revolution. Full turns share one
 //! meridian seam; partial turns have planar start/end caps. This first slice
-//! accepts regular toroidal arc walls and refuses contact with the axis.
+//! accepts regular toroidal walls and exactly centered spherical arcs. Full
+//! turns may meet one contiguous outer axis boundary chain; genuine surface
+//! poles are explicit collapsed edges, while the axis chain and disk centers
+//! do not create physical boundary faces. Partial turns still avoid the axis.
 
 pub use crate::End;
 use crate::body::{
@@ -86,12 +89,19 @@ pub enum RevolutionError {
         /// Generating circle radius.
         minor_radius: f64,
     },
-    /// A source vertex touches or crosses the axis.
+    /// A source radius crosses the axis, or axis contact is unsupported for
+    /// this loop/sweep (holes and partial turns remain strictly positive).
     AxisContact {
         /// Segment starting at the offending vertex.
         segment: SegmentRef,
         /// Radius at that vertex.
         radius: f64,
+    },
+    /// Axis contact does not belong to one genuine contiguous outer axis
+    /// boundary chain. Isolated touching points can form nonmanifold solids.
+    AxisTopology {
+        /// Offending source segment.
+        segment: SegmentRef,
     },
     /// A line's slope or native measure cannot be represented finitely.
     NumericLimit {
@@ -144,12 +154,16 @@ impl Revolution {
     }
     /// Constructs a full or partial revolution with both partial-turn caps.
     ///
-    /// The checked profile's X coordinates must all be strictly positive.
+    /// Radius X is nonnegative. Axis contact is supported only on one genuine
+    /// contiguous outer axis boundary chain in a full turn; isolated touching
+    /// vertices, axis-crossing geometry, holes and partial-turn axis contact
+    /// refuse explicitly. Only an exactly axis-centered generating circle
+    /// becomes a sphere; near-axis toroidal geometry is never fitted or snapped.
     /// Placement is rigid and separate from the body's local geometry.
     ///
     /// # Errors
     /// Returns a typed refusal for invalid sweep/placement, nonregular toroidal arcs,
-    /// axis contact, numerical limits or generated boundary disagreement.
+    /// unsupported axis contact/topology, numerical limits or generated boundary disagreement.
     pub fn new(profile: Profile, frame: Placement3, sweep: f64) -> Result<Self, RevolutionError> {
         crate::geometry::rigid(frame).map_err(RevolutionError::Geometry)?;
         if !sweep.is_finite() || sweep <= 0.0 || sweep > core::f64::consts::TAU {
@@ -162,6 +176,7 @@ impl Revolution {
         let mut wall_area = 0.0;
         let origin = profile.outer().segments()[0].to;
         for (loop_ref, ring) in loops(&profile) {
+            let mut axis_starts = 0;
             let mut orbits = Vec::with_capacity(ring.segments().len());
             let mut start_meridians = Vec::with_capacity(ring.segments().len());
             let mut end_meridians = Vec::with_capacity(ring.segments().len());
@@ -170,15 +185,18 @@ impl Revolution {
                     loop_ref,
                     segment: i,
                 };
+                check_axis_vertex(loop_ref, ring, i, full, &mut axis_starts)?;
                 let arc = ring.arc(i);
                 let min_radius = arc.map_or(from[0], |a| a.bounds()[0][0]);
-                if min_radius <= 0.0 {
+                if min_radius < 0.0 || (min_radius == 0.0 && (!full || loop_ref != LoopRef::Outer))
+                {
                     return Err(RevolutionError::AxisContact {
                         segment: source,
                         radius: min_radius,
                     });
                 }
                 if let Some(arc) = arc
+                    && arc.center[0] != 0.0
                     && arc.center[0] <= arc.radius
                 {
                     return Err(RevolutionError::NonRegularArc {
@@ -187,24 +205,35 @@ impl Revolution {
                         minor_radius: arc.radius,
                     });
                 }
-                let start = push_vertex(&mut parts, point(from, 0.0));
-                let end = if full {
-                    start
+                let orbit = if from[0] > 0.0 {
+                    let start = push_vertex(&mut parts, point(from, 0.0));
+                    let end = if full {
+                        start
+                    } else {
+                        push_vertex(&mut parts, point(from, sweep))
+                    };
+                    Some(push_edge(
+                        &mut parts,
+                        Edge::new(
+                            Curve::circle(orbit_frame(from[1]), from[0])
+                                .map_err(RevolutionError::Geometry)?,
+                            ParameterRange::new(0.0, sweep).map_err(RevolutionError::Geometry)?,
+                            start,
+                            end,
+                            EdgeRole::Orbit { vertex: source },
+                        ),
+                    ))
+                } else if vertex_is_pole(ring, i) {
+                    let vertex = push_vertex(&mut parts, point(from, 0.0));
+                    Some(push_edge(
+                        &mut parts,
+                        Edge::collapsed(vertex, EdgeRole::Orbit { vertex: source }),
+                    ))
                 } else {
-                    push_vertex(&mut parts, point(from, sweep))
+                    // A planar disk's polar chart center and interior axis
+                    // chain vertices are not physical boundary entities.
+                    None
                 };
-                let orbit = push_edge(
-                    &mut parts,
-                    Edge {
-                        curve: Curve::circle(orbit_frame(from[1]), from[0])
-                            .map_err(RevolutionError::Geometry)?,
-                        range: ParameterRange::new(0.0, sweep)
-                            .map_err(RevolutionError::Geometry)?,
-                        start,
-                        end,
-                        role: EdgeRole::Orbit { vertex: source },
-                    },
-                );
                 orbits.push(orbit);
                 let to = segment.to;
                 wall_area += sweep
@@ -222,16 +251,25 @@ impl Revolution {
                     segment: i,
                 };
                 let next = (i + 1) % ring.segments().len();
-                let a = parts.edges[orbits[i].index()].start;
-                let b = parts.edges[orbits[next].index()].start;
-                let c = parts.edges[orbits[i].index()].end;
-                let d = parts.edges[orbits[next].index()].end;
+                if axis_line(from, segment) {
+                    continue;
+                }
                 let arc = ring.arc(i);
                 let radial = arc.is_none() && from[1] == segment.to[1];
-                let start = if full && radial {
-                    None
+                let (start, end) = if full && radial {
+                    (None, None)
                 } else {
-                    Some(push_meridian(
+                    let edge_a = orbits[i].ok_or(RevolutionError::NumericLimit {
+                        segment: Some(source),
+                    })?;
+                    let edge_b = orbits[next].ok_or(RevolutionError::NumericLimit {
+                        segment: Some(source),
+                    })?;
+                    let a = parts.edges[edge_a.index()].start;
+                    let b = parts.edges[edge_b.index()].start;
+                    let c = parts.edges[edge_a.index()].end;
+                    let d = parts.edges[edge_b.index()].end;
+                    let start = push_meridian(
                         &mut parts,
                         a,
                         b,
@@ -241,22 +279,23 @@ impl Revolution {
                             segment: source,
                             end: End::Start,
                         },
-                    )?)
-                };
-                let end = if full {
-                    start
-                } else {
-                    Some(push_meridian(
-                        &mut parts,
-                        c,
-                        d,
-                        arc,
-                        sweep,
-                        EdgeRole::Meridian {
-                            segment: source,
-                            end: End::End,
-                        },
-                    )?)
+                    )?;
+                    let end = if full {
+                        start
+                    } else {
+                        push_meridian(
+                            &mut parts,
+                            c,
+                            d,
+                            arc,
+                            sweep,
+                            EdgeRole::Meridian {
+                                segment: source,
+                                end: End::End,
+                            },
+                        )?
+                    };
+                    (Some(start), Some(end))
                 };
                 if let Some(edge) = start {
                     start_meridians.push(Coedge {
@@ -271,50 +310,59 @@ impl Revolution {
                     });
                 }
                 let boundary = if full && radial {
-                    let outer = if from[0] > segment.to[0] {
-                        Coedge {
-                            edge: orbits[i],
-                            reversed: false,
-                        }
-                    } else {
-                        Coedge {
-                            edge: orbits[next],
-                            reversed: true,
-                        }
-                    };
-                    let inner = if from[0] > segment.to[0] {
-                        Coedge {
-                            edge: orbits[next],
-                            reversed: true,
-                        }
-                    } else {
-                        Coedge {
-                            edge: orbits[i],
-                            reversed: false,
-                        }
-                    };
-                    alloc::vec![
-                        push_loop(&mut parts, alloc::vec![outer]),
-                        push_loop(&mut parts, alloc::vec![inner])
-                    ]
+                    let descending = from[0] > segment.to[0];
+                    let outer = if descending { orbits[i] } else { orbits[next] }.ok_or(
+                        RevolutionError::NumericLimit {
+                            segment: Some(source),
+                        },
+                    )?;
+                    let mut boundary = alloc::vec![push_loop(
+                        &mut parts,
+                        alloc::vec![Coedge {
+                            edge: outer,
+                            reversed: !descending
+                        }]
+                    )];
+                    let inner_radius = from[0].min(segment.to[0]);
+                    if inner_radius > 0.0 {
+                        let inner = if descending { orbits[next] } else { orbits[i] }.ok_or(
+                            RevolutionError::NumericLimit {
+                                segment: Some(source),
+                            },
+                        )?;
+                        boundary.push(push_loop(
+                            &mut parts,
+                            alloc::vec![Coedge {
+                                edge: inner,
+                                reversed: descending
+                            }],
+                        ));
+                    }
+                    boundary
                 } else {
+                    let a = orbits[i].ok_or(RevolutionError::NumericLimit {
+                        segment: Some(source),
+                    })?;
+                    let b = orbits[next].ok_or(RevolutionError::NumericLimit {
+                        segment: Some(source),
+                    })?;
                     alloc::vec![push_loop(
                         &mut parts,
                         alloc::vec![
                             Coedge {
-                                edge: orbits[i],
+                                edge: a,
                                 reversed: false
                             },
                             Coedge {
-                                edge: end.expect("partial or non-radial wall"),
+                                edge: end.expect("non-radial/partial meridian"),
                                 reversed: false
                             },
                             Coedge {
-                                edge: orbits[next],
+                                edge: b,
                                 reversed: true
                             },
                             Coedge {
-                                edge: start.expect("partial or non-radial wall"),
+                                edge: start.expect("non-radial/partial meridian"),
                                 reversed: true
                             },
                         ]
@@ -488,6 +536,50 @@ fn loops(profile: &Profile) -> impl Iterator<Item = (LoopRef, &Loop)> {
             .map(|(i, l)| (LoopRef::Hole(i), l)),
     )
 }
+fn axis_line(from: [f64; 2], segment: &exedra_profile::Segment) -> bool {
+    matches!(segment.curve, exedra_profile::Curve::Line) && from[0] == 0.0 && segment.to[0] == 0.0
+}
+fn vertex_is_pole(ring: &Loop, i: usize) -> bool {
+    let n = ring.segments().len();
+    [i, (i + n - 1) % n].into_iter().any(|k| {
+        let from = ring.segments()[(k + n - 1) % n].to;
+        let segment = &ring.segments()[k];
+        !axis_line(from, segment) && (ring.arc(k).is_some() || from[1] != segment.to[1])
+    })
+}
+fn check_axis_vertex(
+    loop_ref: LoopRef,
+    ring: &Loop,
+    i: usize,
+    full: bool,
+    starts: &mut usize,
+) -> Result<(), RevolutionError> {
+    let n = ring.segments().len();
+    let axis = |k: usize| axis_line(ring.segments()[(k + n - 1) % n].to, &ring.segments()[k]);
+    let from = ring.segments()[(i + n - 1) % n].to;
+    let source = SegmentRef {
+        loop_ref,
+        segment: i,
+    };
+    if from[0] == 0.0 {
+        if !full || loop_ref != LoopRef::Outer {
+            return Err(RevolutionError::AxisContact {
+                segment: source,
+                radius: 0.0,
+            });
+        }
+        if !axis(i) && !axis((i + n - 1) % n) {
+            return Err(RevolutionError::AxisTopology { segment: source });
+        }
+    }
+    if axis(i) && !axis((i + n - 1) % n) {
+        *starts += 1;
+    }
+    if *starts > 1 {
+        return Err(RevolutionError::AxisTopology { segment: source });
+    }
+    Ok(())
+}
 fn point(p: [f64; 2], angle: f64) -> [f64; 3] {
     [p[0] * libm::cos(angle), p[1], -p[0] * libm::sin(angle)]
 }
@@ -542,8 +634,7 @@ fn push_meridian(
     Ok(push_edge(
         parts,
         Edge {
-            curve,
-            range,
+            geometry: crate::body::EdgeGeometry::Curve { curve, range },
             start,
             end,
             role,
@@ -555,8 +646,13 @@ fn arc_wall(
     sweep: f64,
 ) -> Result<(Surface, ParameterDomain, Sense), GeometryError> {
     let end = a.start_angle + a.sweep;
+    let surface = if a.center[0] == 0.0 {
+        Surface::sphere(orbit_frame(a.center[1]), a.radius)?
+    } else {
+        Surface::torus(orbit_frame(a.center[1]), a.center[0], a.radius)?
+    };
     Ok((
-        Surface::torus(orbit_frame(a.center[1]), a.center[0], a.radius)?,
+        surface,
         ParameterDomain {
             u: ParameterRange::new(0.0, sweep)?,
             v: ParameterRange::new(a.start_angle.min(end), a.start_angle.max(end))?,
@@ -590,16 +686,27 @@ pub(crate) fn wall(
             },
         ));
     }
+    let reference = if a[0] > 0.0 { a } else { b };
     let surface = if dr == 0.0 {
-        Surface::cylinder(orbit_frame(a[1]), a[0])?
+        Surface::cylinder(orbit_frame(reference[1]), reference[0])?
     } else {
-        Surface::cone(orbit_frame(a[1]), a[0], dr / dh)?
+        Surface::cone(orbit_frame(reference[1]), reference[0], dr / dh)?
     };
+    let mut va = a[1] - reference[1];
+    let mut vb = b[1] - reference[1];
+    if let Surface::Cone(cone) = &surface {
+        if a[0] == 0.0 {
+            va = cone.apex_parameter().ok_or(GeometryError::NonFinite)?;
+        }
+        if b[0] == 0.0 {
+            vb = cone.apex_parameter().ok_or(GeometryError::NonFinite)?;
+        }
+    }
     Ok((
         surface,
         ParameterDomain {
             u: ParameterRange::new(0.0, sweep)?,
-            v: ParameterRange::new(dh.min(0.0), dh.max(0.0))?,
+            v: ParameterRange::new(va.min(vb), va.max(vb))?,
         },
         if dh > 0.0 {
             Sense::Forward
@@ -1003,3 +1110,6 @@ mod tests {
         }
     }
 }
+
+#[cfg(test)]
+mod pole_tests;
