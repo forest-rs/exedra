@@ -146,3 +146,19 @@ Borrowed constructor views also provide `family`, `frame`, `cap` and
 before source installation, avoiding content hashing or duplicate role scans in
 the bridge. Raw face IDs remain constructor-local; durable native selections
 belong to an installed `NativeSource` and its revision scope.
+
+Construction-independent native bodies can be installed with
+`NativeSource::from_body(body, frame)`. The body carries `Vec<SegTag>` per face
+and unit edge metadata; its validated f64 boundary tables and local IDs remain
+intact. Installation checks the rigid occurrence frame and captures content
+identity independently of installation/selection scope. `NativeGeometryRef::Body`
+provides the retained boundary directly. Face selections, conservative support
+bounds, display realization and native STEP export use the same paths as retained
+constructors. Generic bodies have no constructor caps or construction chart;
+exact volume and area explicitly report `NativeMeasureError::Unavailable`.
+
+`NativeSource::to_body()` and the borrowed `NativeGeometryRef::to_body()` copy
+boundary tables into the tagged generic representation. They retain all local
+IDs and sparse face-local trims; constructor roles become feature tags and edge
+metadata becomes unit metadata. Content identity includes the full ordered trim
+correspondence, including periodic chart copies, coefficients and ranges.

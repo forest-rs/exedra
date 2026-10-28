@@ -284,3 +284,15 @@ junctions, repeated selections and trims that consume adjacent edges return
 distinct `profile.corner.*` diagnostics. Errors identify the profile, selected
 position or local segment and available numeric trim evidence. Corner evidence
 is immutable; invalid edits never register a partial native document.
+
+`nativeBody(description, { placement })` authors exact boundary tables directly,
+without choosing a constructor family. The description includes f64 vertices,
+shared bounded line/circle/ellipse edges, oriented loops and trimmed analytic
+surfaces, with optional per-face feature names. Supporting frames are explicit
+3×4 rigid matrices. Inputs are copied immediately; Rust validates references,
+closure and support agreement when building a document. Such installed parts
+report `family: "body"` and neutral `boundary` face roles. Native selections,
+conservative bounds, display realization and supported STEP export remain
+available. Constructor charts, cap selectors and exact integrals are explicitly
+unavailable. Boundary validation does not certify global self-intersection or
+nested-shell containment.

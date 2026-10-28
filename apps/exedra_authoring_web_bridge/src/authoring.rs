@@ -151,14 +151,14 @@ enum FaceSelector {
 }
 #[derive(Copy, Clone, Debug, Default, Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
-struct InputPlacement {
+pub(crate) struct InputPlacement {
     #[serde(default)]
     translation: [f64; 3],
     #[serde(default, rename = "rotationXYZ")]
     rotation_xyz: [f64; 3],
 }
 impl InputPlacement {
-    fn frame(self) -> Placement3 {
+    pub(crate) fn frame(self) -> Placement3 {
         let [x, y, z] = self.rotation_xyz;
         Placement3::euler_extrinsic_xyz_then_translate(x, y, z, self.translation)
     }
@@ -170,6 +170,10 @@ enum Model {
     Sweep(Sweep),
     Loft(Loft),
     BoredPlate(Box<BoredPlate>),
+    Body {
+        body: exedra_analytic::body::Body<Vec<SegTag>>,
+        frame: Placement3,
+    },
 }
 impl Model {
     fn geometry(&self) -> NativeGeometryRef<'_> {
@@ -179,6 +183,10 @@ impl Model {
             Self::Sweep(v) => NativeGeometryRef::Sweep(v),
             Self::Loft(v) => NativeGeometryRef::Loft(v),
             Self::BoredPlate(v) => NativeGeometryRef::BoredPlate(v),
+            Self::Body { body, frame } => NativeGeometryRef::Body {
+                body,
+                frame: *frame,
+            },
         }
     }
     fn extrusion(&self) -> Result<&Extrusion, Error> {
@@ -199,6 +207,9 @@ impl Model {
             Self::Sweep(v) => NativeSource::from(v),
             Self::Loft(v) => NativeSource::from(v),
             Self::BoredPlate(v) => NativeSource::from(*v),
+            Self::Body { body, frame } => {
+                NativeSource::from_body(body, frame).expect("authoring checked body placement")
+            }
         }
     }
 }
@@ -240,6 +251,11 @@ enum FinishKind {
 #[derive(Debug, Deserialize)]
 #[serde(tag = "kind", rename_all = "camelCase", deny_unknown_fields)]
 enum Node {
+    Body {
+        body: crate::body::InputBody,
+        #[serde(default)]
+        placement: InputPlacement,
+    },
     SphericalCap {
         radius: f64,
         height: f64,
@@ -618,6 +634,20 @@ impl Request {
         let mut depths: Vec<u16> = Vec::with_capacity(self.nodes.len());
         for (i, node) in self.nodes.iter().enumerate() {
             let (profile_ids, parent, multiplier): (Vec<u32>, Option<u32>, usize) = match node {
+                Node::Body { body, .. } => {
+                    for feature in body.feature_names() {
+                        if !label(feature) {
+                            return Err(Error::new(
+                                "input.name",
+                                "document.validate",
+                                "Body feature names must contain text and fit in 128 UTF-8 bytes",
+                            )
+                            .node(i));
+                        }
+                        labels.insert(feature.to_string());
+                    }
+                    (Vec::new(), None, 1)
+                }
                 Node::SphericalCap { .. } => (Vec::new(), None, 1),
                 Node::Extrude { profile, .. } | Node::Revolve { profile, .. } => {
                     (alloc::vec![*profile], None, 1)
@@ -714,6 +744,11 @@ impl Request {
                 .iter()
                 .fold(0_usize, |sum, id| sum.saturating_add(counts[*id as usize]))
                 .saturating_mul(multiplier)
+                .saturating_add(if let Node::Body { body, .. } = node {
+                    body.work()
+                } else {
+                    0
+                })
                 .saturating_add(if matches!(node, Node::SphericalCap { .. }) {
                     3
                 } else {
@@ -961,6 +996,18 @@ impl Request {
                 Error::new(code, operation, message).node(i)
             };
             let solid = match node {
+                Node::Body { body, placement } => {
+                    let frame = placement.frame();
+                    exedra_analytic::geometry::Surface::plane(frame)
+                        .map_err(|e| failure("body.placement", "solid.body", e.to_string()))?;
+                    Model::Body {
+                        body: body
+                            .lower(&labels, self.separation)
+                            .map_err(|e| failure(e.code, e.operation, e.message))?,
+                        frame,
+                    }
+                }
+
                 Node::ThroughBore {
                     base,
                     point,

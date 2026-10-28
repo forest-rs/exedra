@@ -6,7 +6,7 @@
 use crate::PartFingerprint;
 mod chart;
 mod inspect;
-use alloc::{boxed::Box, sync::Arc, vec::Vec};
+use alloc::{boxed::Box, collections::BTreeSet, sync::Arc, vec::Vec};
 pub use chart::NativeChartError;
 use core::mem::{size_of, size_of_val};
 use exedra_analytic::{
@@ -40,6 +40,8 @@ pub enum NativeFamily {
     Loft,
     /// A supported rectangular plate with one fully contained cylindrical through bore.
     BoredPlate,
+    /// A validated boundary representation independent of construction history.
+    Body,
 }
 
 #[derive(Debug)]
@@ -49,6 +51,10 @@ enum Geometry {
     Sweep(Sweep),
     Loft(Loft),
     BoredPlate(Box<BoredPlate>),
+    Body {
+        body: Body<Vec<SegTag>>,
+        frame: Placement3,
+    },
 }
 
 /// Original constructor-specific geometry, preserving typed face and edge roles.
@@ -64,6 +70,13 @@ pub enum NativeGeometryRef<'a> {
     Loft(&'a Loft),
     /// Original plate source, authored bore and inherited/generated construction roles.
     BoredPlate(&'a BoredPlate),
+    /// Generic native boundary with retained per-face authored feature tags.
+    Body {
+        /// Geometry and tags in body-local coordinates.
+        body: &'a Body<Vec<SegTag>>,
+        /// Rigid occurrence placement.
+        frame: Placement3,
+    },
 }
 
 /// Immutable native model installation with content identity captured once.
@@ -293,7 +306,55 @@ impl core::fmt::Display for NativeSelectionError {
 }
 impl core::error::Error for NativeSelectionError {}
 
+enum FaceTags<'a> {
+    Constructor(core::iter::Flatten<core::array::IntoIter<Option<SegTag>, 2>>),
+    Body(core::iter::Copied<core::slice::Iter<'a, SegTag>>),
+}
+impl Iterator for FaceTags<'_> {
+    type Item = SegTag;
+    fn next(&mut self) -> Option<Self::Item> {
+        match self {
+            Self::Constructor(tags) => tags.next(),
+            Self::Body(tags) => tags.next(),
+        }
+    }
+}
+
 impl NativeSource {
+    /// Installs a validated body with caller-owned per-face feature tags.
+    ///
+    /// Native IDs, geometry and tags survive installation without reconstructing a
+    /// constructor. The body retains its validation contract; installation does
+    /// not certify global self-intersection, shell containment or solid regularity.
+    /// Repeated face tags are removed once, preserving their first authored order.
+    /// Construction charts and analytic integrals are unavailable for this path.
+    ///
+    /// # Errors
+    /// Returns the invalid occurrence-frame diagnosis before installing geometry.
+    pub fn from_body(
+        body: Body<Vec<SegTag>>,
+        frame: Placement3,
+    ) -> Result<Self, exedra_math::FrameError> {
+        let column = |i| frame.rows.map(|r| r[i]);
+        Placement3::try_from_orthonormal_axes(
+            column(0),
+            column(1),
+            column(2),
+            column(3),
+            exedra_analytic::geometry::FRAME_TOLERANCE,
+        )?;
+        let body = body.map_roles(
+            |mut tags| {
+                if tags.len() > 1 {
+                    let mut seen = BTreeSet::new();
+                    tags.retain(|tag| seen.insert(*tag));
+                }
+                tags
+            },
+            |()| (),
+        );
+        Ok(Self::new(Geometry::Body { body, frame }))
+    }
     fn new(geometry: Geometry) -> Self {
         let fingerprint = source_fingerprint(&geometry);
         Self {
@@ -323,6 +384,10 @@ impl NativeSource {
             Geometry::Sweep(v) => NativeGeometryRef::Sweep(v),
             Geometry::Loft(v) => NativeGeometryRef::Loft(v),
             Geometry::BoredPlate(v) => NativeGeometryRef::BoredPlate(v),
+            Geometry::Body { body, frame } => NativeGeometryRef::Body {
+                body,
+                frame: *frame,
+            },
         }
     }
     /// Original extrusion, or `None` for another construction family.
@@ -370,42 +435,16 @@ impl NativeSource {
         &self,
         face: FaceId,
     ) -> Result<impl Iterator<Item = SegTag>, NativeSelectionError> {
-        fn check<F, E>(body: &Body<F, E>, face: FaceId) -> Result<(), NativeSelectionError> {
-            body.face(face)
-                .map(|_| ())
-                .ok_or(NativeSelectionError::UnknownFace { face })
-        }
-        let mut tags = match self.geometry() {
-            NativeGeometryRef::Extrusion(v) => {
-                check(v.body(), face)?;
-                [v.face_tag(face), None]
-            }
-            NativeGeometryRef::Revolution(v) => {
-                check(v.body(), face)?;
-                [v.face_tag(face), None]
-            }
-            NativeGeometryRef::Sweep(v) => {
-                check(v.body(), face)?;
-                [v.face_tag(face), None]
-            }
-            NativeGeometryRef::BoredPlate(v) => {
-                check(v.body(), face)?;
-                [v.face_tag(face), None]
-            }
-            NativeGeometryRef::Loft(v) => match v
-                .body()
-                .face(face)
-                .ok_or(NativeSelectionError::UnknownFace { face })?
-                .role
-            {
-                exedra_analytic::loft::FaceRole::Wall { tags, .. } => tags,
-                exedra_analytic::loft::FaceRole::Cap { .. } => [None; 2],
-            },
-        };
-        if tags[0] == tags[1] {
-            tags[1] = None;
-        }
-        Ok(tags.into_iter().flatten())
+        self.geometry().face_tags(face)
+    }
+    /// Copies retained geometry into construction-independent tagged body tables.
+    ///
+    /// Native table IDs and all face feature tags are preserved. Constructor roles
+    /// and edge metadata are intentionally replaced by tags and unit metadata;
+    /// occurrence placement remains available separately through [`Self::frame`].
+    #[must_use]
+    pub fn to_body(&self) -> Body<Vec<SegTag>> {
+        self.geometry().to_body()
     }
     /// Finite conservative native support bounds in occurrence coordinates.
     ///
@@ -422,6 +461,7 @@ impl NativeSource {
             NativeGeometryRef::Sweep(v) => v.body().conservative_bounds_in(v.frame()),
             NativeGeometryRef::Loft(v) => v.body().conservative_bounds_in(v.frame()),
             NativeGeometryRef::BoredPlate(v) => v.body().conservative_bounds_in(v.frame()),
+            NativeGeometryRef::Body { body, frame } => body.conservative_bounds_in(frame),
         }
     }
 
@@ -463,7 +503,7 @@ impl NativeSource {
             (NativeMeasure::Volume, NativeGeometryRef::Sweep(v)) => v.volume(),
             (NativeMeasure::SurfaceArea, NativeGeometryRef::BoredPlate(v)) => v.surface_area(),
             (NativeMeasure::Volume, NativeGeometryRef::BoredPlate(v)) => v.volume(),
-            (_, NativeGeometryRef::Loft(_)) => {
+            (_, NativeGeometryRef::Loft(_) | NativeGeometryRef::Body { .. }) => {
                 return Err(NativeMeasureError::Unavailable { family, measure });
             }
         };
@@ -482,6 +522,7 @@ impl NativeSource {
             NativeGeometryRef::Sweep(v) => boundary_storage(v.body()),
             NativeGeometryRef::Loft(v) => boundary_storage(v.body()),
             NativeGeometryRef::BoredPlate(v) => boundary_storage(v.body()),
+            NativeGeometryRef::Body { body, .. } => boundary_storage(body),
         }
     }
     /// Selects a native face in this installation.
@@ -495,6 +536,7 @@ impl NativeSource {
             NativeGeometryRef::Sweep(v) => v.body().faces().len(),
             NativeGeometryRef::Loft(v) => v.body().faces().len(),
             NativeGeometryRef::BoredPlate(v) => v.body().faces().len(),
+            NativeGeometryRef::Body { body, .. } => body.faces().len(),
         };
         if face.index() >= faces {
             return Err(NativeSelectionError::UnknownFace { face });
@@ -531,6 +573,94 @@ impl NativeSource {
             NativeGeometryRef::BoredPlate(v) => {
                 v.body().realize_with_regions(v.frame(), policy, |_, _| 0)
             }
+            NativeGeometryRef::Body { body, frame } => {
+                body.realize_with_regions(frame, policy, |_, _| 0)
+            }
+        }
+    }
+}
+impl<'a> NativeGeometryRef<'a> {
+    /// Authored feature tags for a native face, borrowed without allocation.
+    /// # Errors
+    /// Returns the absent source-local face identity.
+    pub fn face_tags(
+        self,
+        face: FaceId,
+    ) -> Result<impl Iterator<Item = SegTag> + 'a, NativeSelectionError> {
+        fn check<F, E>(body: &Body<F, E>, face: FaceId) -> Result<(), NativeSelectionError> {
+            body.face(face)
+                .map(|_| ())
+                .ok_or(NativeSelectionError::UnknownFace { face })
+        }
+        if let NativeGeometryRef::Body { body, .. } = self {
+            let tags = &body
+                .face(face)
+                .ok_or(NativeSelectionError::UnknownFace { face })?
+                .role;
+            return Ok(FaceTags::Body(tags.iter().copied()));
+        }
+        let mut tags = match self {
+            NativeGeometryRef::Extrusion(v) => {
+                check(v.body(), face)?;
+                [v.face_tag(face), None]
+            }
+            NativeGeometryRef::Revolution(v) => {
+                check(v.body(), face)?;
+                [v.face_tag(face), None]
+            }
+            NativeGeometryRef::Sweep(v) => {
+                check(v.body(), face)?;
+                [v.face_tag(face), None]
+            }
+            NativeGeometryRef::BoredPlate(v) => {
+                check(v.body(), face)?;
+                [v.face_tag(face), None]
+            }
+            NativeGeometryRef::Body { .. } => unreachable!("handled generic face tags"),
+            NativeGeometryRef::Loft(v) => match v
+                .body()
+                .face(face)
+                .ok_or(NativeSelectionError::UnknownFace { face })?
+                .role
+            {
+                exedra_analytic::loft::FaceRole::Wall { tags, .. } => tags,
+                exedra_analytic::loft::FaceRole::Cap { .. } => [None; 2],
+            },
+        };
+        if tags[0] == tags[1] {
+            tags[1] = None;
+        }
+        Ok(FaceTags::Constructor(tags.into_iter().flatten()))
+    }
+    /// Copies this boundary into generic tagged tables, retaining native IDs.
+    /// Constructor roles become feature tags; edge metadata becomes unit metadata.
+    /// The occurrence frame is available separately through [`Self::frame`].
+    #[must_use]
+    pub fn to_body(self) -> Body<Vec<SegTag>> {
+        fn copy<F: Clone, E: Clone>(
+            body: &Body<F, E>,
+            source: NativeGeometryRef<'_>,
+        ) -> Body<Vec<SegTag>> {
+            let mut index = 0_u32;
+            body.clone().map_roles(
+                |_| {
+                    let tags = source
+                        .face_tags(FaceId(index))
+                        .expect("iterated native face")
+                        .collect();
+                    index += 1;
+                    tags
+                },
+                |_| (),
+            )
+        }
+        match self {
+            Self::Extrusion(v) => copy(v.body(), self),
+            Self::Revolution(v) => copy(v.body(), self),
+            Self::Sweep(v) => copy(v.body(), self),
+            Self::Loft(v) => copy(v.body(), self),
+            Self::BoredPlate(v) => copy(v.body(), self),
+            Self::Body { body, .. } => body.clone(),
         }
     }
 }
@@ -567,7 +697,13 @@ fn boundary_storage<F, E>(body: &Body<F, E>) -> NativeBoundaryStorage {
             + size_of_val(body.loops())
             + size_of_val(body.faces())
             + coedges * size_of::<exedra_analytic::body::Coedge>()
-            + face_loops * size_of::<exedra_analytic::body::LoopId>(),
+            + face_loops * size_of::<exedra_analytic::body::LoopId>()
+            + size_of_val(body.trims())
+            + body
+                .trims()
+                .iter()
+                .map(|trims| size_of_val(trims.curves.as_slice()))
+                .sum::<usize>(),
     }
 }
 
@@ -601,6 +737,134 @@ impl Identity {
             self.values(row);
         }
     }
+    fn curve(&mut self, curve: &exedra_analytic::geometry::Curve) {
+        use exedra_analytic::geometry::Curve;
+        match curve {
+            Curve::Line(v) => {
+                self.word(0);
+                self.values(v.origin());
+                self.values(v.direction());
+            }
+            Curve::Circle(v) => {
+                self.word(1);
+                self.frame(v.frame());
+                self.values([v.radius()]);
+            }
+            Curve::Ellipse(v) => {
+                self.word(2);
+                self.frame(v.frame());
+                self.values([v.semi_major(), v.semi_minor()]);
+            }
+        }
+    }
+    fn surface(&mut self, surface: &exedra_analytic::geometry::Surface) {
+        use exedra_analytic::geometry::Surface;
+        match surface {
+            Surface::Plane(v) => {
+                self.word(0);
+                self.frame(v.frame());
+            }
+            Surface::Cylinder(v) => {
+                self.word(1);
+                self.frame(v.frame());
+                self.values([v.radius()]);
+            }
+            Surface::Cone(v) => {
+                self.word(2);
+                self.frame(v.frame());
+                self.values([v.radius(), v.slope()]);
+            }
+            Surface::Sphere(v) => {
+                self.word(3);
+                self.frame(v.frame());
+                self.values([v.radius()]);
+            }
+            Surface::Torus(v) => {
+                self.word(4);
+                self.frame(v.frame());
+                self.values([v.major_radius(), v.minor_radius()]);
+            }
+            Surface::Ruled(v) => {
+                self.word(5);
+                for span in v.curves() {
+                    self.curve(span.curve());
+                    self.values(span.range().bounds());
+                    self.word(u64::from(span.reversed()));
+                }
+            }
+        }
+    }
+    fn body(&mut self, body: &Body<Vec<SegTag>>) {
+        self.word(body.vertices().len() as u64);
+        for &v in body.vertices() {
+            self.values(v);
+        }
+        self.word(body.edges().len() as u64);
+        for edge in body.edges() {
+            self.word(u64::from(edge.start.0));
+            self.word(u64::from(edge.end.0));
+            if let Some((curve, range)) = edge.regular() {
+                self.word(1);
+                self.curve(curve);
+                self.values(range.bounds());
+            } else {
+                self.word(0);
+            }
+        }
+        self.word(body.loops().len() as u64);
+        for ring in body.loops() {
+            self.word(ring.coedges.len() as u64);
+            for c in &ring.coedges {
+                self.word(u64::from(c.edge.0));
+                self.word(u64::from(c.reversed));
+            }
+        }
+        self.word(body.trims().len() as u64);
+        for trims in body.trims() {
+            self.word(u64::from(trims.loop_id.0));
+            self.word(trims.curves.len() as u64);
+            for curve in &trims.curves {
+                match curve {
+                    exedra_analytic::body::TrimCurve::Line { start, end } => {
+                        self.word(0);
+                        self.values(*start);
+                        self.values(*end);
+                    }
+                    exedra_analytic::body::TrimCurve::Harmonic {
+                        origin,
+                        linear,
+                        cosine,
+                        sine,
+                        range,
+                    } => {
+                        self.word(1);
+                        self.values(*origin);
+                        self.values(*linear);
+                        self.values(*cosine);
+                        self.values(*sine);
+                        self.values(range.bounds());
+                    }
+                }
+            }
+        }
+        self.word(body.faces().len() as u64);
+        for face in body.faces() {
+            self.surface(&face.surface);
+            self.values(face.domain.u.bounds());
+            self.values(face.domain.v.bounds());
+            self.word(u64::from(
+                face.sense == exedra_analytic::body::Sense::Reverse,
+            ));
+            self.word(face.loops.len() as u64);
+            for ring in &face.loops {
+                self.word(u64::from(ring.0));
+            }
+            self.word(face.role.len() as u64);
+            for tag in &face.role {
+                self.word(u64::from(tag.0));
+            }
+        }
+    }
     fn profile(&mut self, profile: &Profile) {
         self.word(profile.holes().len() as u64);
         for ring in core::iter::once(profile.outer()).chain(profile.holes()) {
@@ -628,6 +892,11 @@ fn source_fingerprint(geometry: &Geometry) -> PartFingerprint {
     let mut id = Identity(0x6c62272e07bb014262b821756295c58d);
     id.bytes(b"exedra-native-source-v1");
     match geometry {
+        Geometry::Body { body, frame } => {
+            id.word(5);
+            id.frame(*frame);
+            id.body(body);
+        }
         Geometry::Extrusion(v) => {
             id.word(0);
             id.frame(v.frame());
