@@ -1,0 +1,487 @@
+{
+  "platform": "macOS-27.0.1-arm64-arm-64bit-Mach-O",
+  "kernel_commit": "60f1747",
+  "method": "one warmup per case, three alternating rounds; no compiler/profiler started by this worker during timing; shared host concurrency uncontrolled",
+  "bore_patterns": [
+    {
+      "holes": 7,
+      "repetitions": 2000,
+      "ns_per_cut": {
+        "single": {
+          "samples": [
+            15105.5,
+            14987.7,
+            15087.2
+          ],
+          "median": 15087.2
+        },
+        "batch": {
+          "samples": [
+            13903.4,
+            13849.5,
+            13898.7
+          ],
+          "median": 13898.7
+        }
+      },
+      "removed_volume_checksums_match": true
+    },
+    {
+      "holes": 31,
+      "repetitions": 200,
+      "ns_per_cut": {
+        "single": {
+          "samples": [
+            50601.2,
+            50493.8,
+            50921.6
+          ],
+          "median": 50601.2
+        },
+        "batch": {
+          "samples": [
+            47506.4,
+            47101.2,
+            48119.2
+          ],
+          "median": 47506.4
+        }
+      },
+      "removed_volume_checksums_match": true
+    },
+    {
+      "holes": 127,
+      "repetitions": 10,
+      "ns_per_cut": {
+        "single": {
+          "samples": [
+            193782.2,
+            191834.7,
+            193198.3
+          ],
+          "median": 193198.3
+        },
+        "batch": {
+          "samples": [
+            180780.5,
+            179569.7,
+            180244.8
+          ],
+          "median": 180244.8
+        }
+      },
+      "removed_volume_checksums_match": true
+    }
+  ],
+  "rectilinear": [
+    {
+      "lugs": 4,
+      "repetitions": 200,
+      "microseconds_per_union": {
+        "before": {
+          "samples": [
+            66.62,
+            66.813,
+            66.639
+          ],
+          "median": 66.639
+        },
+        "after": {
+          "samples": [
+            59.883,
+            59.654,
+            59.536
+          ],
+          "median": 59.654
+        }
+      }
+    },
+    {
+      "lugs": 16,
+      "repetitions": 20,
+      "microseconds_per_union": {
+        "before": {
+          "samples": [
+            285.849,
+            282.921,
+            280.627
+          ],
+          "median": 282.921
+        },
+        "after": {
+          "samples": [
+            225.081,
+            225.832,
+            224.566
+          ],
+          "median": 225.081
+        }
+      }
+    },
+    {
+      "lugs": 64,
+      "repetitions": 3,
+      "microseconds_per_union": {
+        "before": {
+          "samples": [
+            2029.377,
+            2043.248,
+            2015.161
+          ],
+          "median": 2029.377
+        },
+        "after": {
+          "samples": [
+            1174.77,
+            1177.326,
+            1172.714
+          ],
+          "median": 1174.77
+        }
+      }
+    }
+  ],
+  "rectilinear_comparison": {
+    "before": "663c3e2 with explicit trims, repeated output validation and all-pairs edge image scans",
+    "after": "60f1747 with explicit trims, once-only output validation, exact line image index, face scan preflight, stronger vertex/domain input validation",
+    "note": "input validation became stronger; small workloads may be neutral or slower; larger cases improve"
+  },
+  "allocation": {
+    "7": {
+      "single": {
+        "checkpoints": [
+          {
+            "current_blocks": 81,
+            "current_bytes": 29684,
+            "peak_blocks": 141,
+            "peak_bytes": 55444,
+            "phase": "retained",
+            "total_blocks": 445,
+            "total_bytes": 205506
+          },
+          {
+            "current_blocks": 66,
+            "current_bytes": 27612,
+            "peak_blocks": 141,
+            "peak_bytes": 55444,
+            "phase": "native_only",
+            "total_blocks": 445,
+            "total_bytes": 205506
+          },
+          {
+            "current_blocks": 0,
+            "current_bytes": 0,
+            "peak_blocks": 141,
+            "peak_bytes": 55444,
+            "phase": "released",
+            "total_blocks": 445,
+            "total_bytes": 205506
+          }
+        ],
+        "scope": "retained native through-cylinder pattern construction plus operation history; prepared source/tools and warmup excluded; native_only drops history, released drops final body; no display, STEP, compiler, JS or GPU"
+      },
+      "batch": {
+        "checkpoints": [
+          {
+            "current_blocks": 81,
+            "current_bytes": 27204,
+            "peak_blocks": 82,
+            "peak_bytes": 28220,
+            "phase": "retained",
+            "total_blocks": 164,
+            "total_bytes": 55670
+          },
+          {
+            "current_blocks": 66,
+            "current_bytes": 25132,
+            "peak_blocks": 82,
+            "peak_bytes": 28220,
+            "phase": "native_only",
+            "total_blocks": 164,
+            "total_bytes": 55670
+          },
+          {
+            "current_blocks": 0,
+            "current_bytes": 0,
+            "peak_blocks": 82,
+            "peak_bytes": 28220,
+            "phase": "released",
+            "total_blocks": 164,
+            "total_bytes": 55670
+          }
+        ],
+        "scope": "retained native through-cylinder pattern construction plus operation history; prepared source/tools and warmup excluded; native_only drops history, released drops final body; no display, STEP, compiler, JS or GPU"
+      }
+    },
+    "31": {
+      "single": {
+        "checkpoints": [
+          {
+            "current_blocks": 297,
+            "current_bytes": 114548,
+            "peak_blocks": 525,
+            "peak_bytes": 209716,
+            "phase": "retained",
+            "total_blocks": 4585,
+            "total_bytes": 2469234
+          },
+          {
+            "current_blocks": 234,
+            "current_bytes": 96444,
+            "peak_blocks": 525,
+            "peak_bytes": 209716,
+            "phase": "native_only",
+            "total_blocks": 4585,
+            "total_bytes": 2469234
+          },
+          {
+            "current_blocks": 0,
+            "current_bytes": 0,
+            "peak_blocks": 525,
+            "peak_bytes": 209716,
+            "phase": "released",
+            "total_blocks": 4585,
+            "total_bytes": 2469234
+          }
+        ],
+        "scope": "retained native through-cylinder pattern construction plus operation history; prepared source/tools and warmup excluded; native_only drops history, released drops final body; no display, STEP, compiler, JS or GPU"
+      },
+      "batch": {
+        "checkpoints": [
+          {
+            "current_blocks": 297,
+            "current_bytes": 100932,
+            "peak_blocks": 298,
+            "peak_bytes": 102524,
+            "phase": "retained",
+            "total_blocks": 633,
+            "total_bytes": 274454
+          },
+          {
+            "current_blocks": 234,
+            "current_bytes": 82828,
+            "peak_blocks": 298,
+            "peak_bytes": 102524,
+            "phase": "native_only",
+            "total_blocks": 633,
+            "total_bytes": 274454
+          },
+          {
+            "current_blocks": 0,
+            "current_bytes": 0,
+            "peak_blocks": 298,
+            "peak_bytes": 102524,
+            "phase": "released",
+            "total_blocks": 633,
+            "total_bytes": 274454
+          }
+        ],
+        "scope": "retained native through-cylinder pattern construction plus operation history; prepared source/tools and warmup excluded; native_only drops history, released drops final body; no display, STEP, compiler, JS or GPU"
+      }
+    }
+  },
+  "native_sampling": {
+    "before_rectilinear": {
+      "workload": "64 sequential lug unions, repeated",
+      "duration_seconds": 3,
+      "samples": 2463,
+      "edge_image_inclusive_samples": 1191,
+      "physical_footprint_KiB": 7472
+    },
+    "after_rectilinear": {
+      "workload": "same64-lug workload, stronger input validation and explicit trims",
+      "duration_seconds": 3,
+      "samples": 2226,
+      "edge_image_inclusive_samples": 42,
+      "largest_named_tasks": {
+        "point_in_grid_loop": 248,
+        "contours": 230
+      }
+    },
+    "bore_pattern": {
+      "workload": "7 individual oblique cuts, repeated",
+      "duration_seconds": 3,
+      "samples": 1382,
+      "finding": "full boundary/support validation dominates; no weakening of geometric validation was introduced"
+    },
+    "raw_artifacts": [
+      "/private/tmp/exedra-native-rectilinear-sample.txt",
+      "/private/tmp/exedra-native-rectilinear-optimized-sample.txt",
+      "/private/tmp/exedra-native-bore-sample.txt"
+    ],
+    "rejected_optimization": "vertex image mapping was not established as a material named hotspot; retained existing mapping"
+  },
+  "validation": {
+    "analytic_unit_tests": 183,
+    "analytic_doctests": 8,
+    "independent_OCCT_fixtures": 11,
+    "tiny_prismatic_cases": 243,
+    "tiny_spatial_cases": 2187,
+    "geometry_metadata_history_batch_equals_individual": true,
+    "released_allocations_zero": true,
+    "rectilinear64_lug_final_face_tests": 408672,
+    "rectilinear64_lug_preflight_face_test_bound": 613008
+  },
+  "workload_spec": {
+    "units": "body-local model units",
+    "bore_pattern": {
+      "tool_radius": 4,
+      "axis_input": [
+        0.1,
+        0,
+        1
+      ],
+      "x_pitch": 22,
+      "x_centering": "(index-(holes-1)/2)*22",
+      "stock_half_x": "(holes-1)*11+34",
+      "stock_half_y": 50,
+      "stock_length_z": 20,
+      "separation": 1e-06,
+      "min_axis_dot": 0.05,
+      "geometry_gap": "max(1e-9,stock_half_x*1e-11)",
+      "metadata": "Extrusion FaceRole/EdgeRole enums treated as opaque caller metadata; all operation reports retained"
+    },
+    "rectilinear_lugs": {
+      "stock_x": [
+        -30,
+        30
+      ],
+      "stock_half_y": "(lugs-1)*10+15",
+      "stock_length_z": 20,
+      "lug_x": [
+        30,
+        45
+      ],
+      "lug_half_y": 5,
+      "lug_y_pitch": 20,
+      "operation": "one sequential face-contact Union per lug; same Z extent as stock"
+    }
+  },
+  "allocation_interpretation": "dhat tracks Rust heap payload allocation/reallocation traffic, peak and retained payload. Allocator overhead/fragmentation and prepared source/tools are excluded; source/output validation scratch and operation history are included. native_only drops reports; released drops result Body.",
+  "interpretation": "Explicit trim correspondence increased work versus support-only geometry. Removing duplicate full validation and all-pairs edge provenance scans retained every geometric check and improved measured valid-case throughput. Batch pattern construction primarily reduces allocation traffic/peak; CPU gains are modest because complete input/output validation remains per cut. Larger hole patterns still perform whole-boundary checks per tool; no general curved Boolean, overlap support or linear scaling is claimed.",
+  "compiler": "rustc 1.99.0 (b940084d7 2026-09-28)\nbinary: rustc\ncommit-hash: b940084d7eb6a299eb4bfeb8e34901bc051e7ac4\ncommit-date: 2026-09-28\nhost: aarch64-apple-darwin\nrelease: 1.99.0\nLLVM version: 23.1.1",
+  "build": "cargo build --release -p constructive_wind_tunnel --bin native_machining",
+  "independent_exchange_evidence": [
+    {
+      "file": "native-hole-pattern.step",
+      "sha256": "61c3e780f74b48d9819df1ec05b5c4a2ea7f4f9e98266428b290e73ebbd5fe08",
+      "oracle_status": "passed",
+      "oracle": "raw OCCT8.0.1.1.0 import, no model/transfer checks, valid1solid/1shell, matching face/edge/vertex counts, analytic measures and material witnesses",
+      "expected_volume": 23623.00888156923,
+      "expected_area": 7101.592894744619,
+      "export_max_deviation": 9.816155900976354e-10,
+      "native_support_gap": 1.8204984965986835e-11,
+      "declared_uncertainty": 1e-07
+    },
+    {
+      "file": "native-oblique-passage.step",
+      "sha256": "0302c2876c487e6768136b18d1d46675ed1ae3774df36a7b413fea3e92bafd3a",
+      "oracle_status": "passed",
+      "oracle": "raw OCCT8.0.1.1.0 import, no model/transfer checks, valid1solid/1shell, matching face/edge/vertex counts, analytic measures and material witnesses",
+      "expected_volume": 23868.202793102748,
+      "expected_area": 6905.437765517802,
+      "export_max_deviation": 9.771997842533705e-10,
+      "native_support_gap": 1.3789179121721969e-11,
+      "declared_uncertainty": 1e-07
+    },
+    {
+      "file": "native-reversed-oblique-passage.step",
+      "sha256": "7ea02d3929dafd7d3c7cea7dbef63754aa6e0491e947e59db1ea2069684003ac",
+      "oracle_status": "passed",
+      "oracle": "raw OCCT8.0.1.1.0 import, no model/transfer checks, valid1solid/1shell, matching face/edge/vertex counts, analytic measures and material witnesses",
+      "expected_volume": 23868.202793102748,
+      "expected_area": 6905.437765517802,
+      "export_max_deviation": 9.771997842533705e-10,
+      "native_support_gap": 1.3789179121721969e-11,
+      "declared_uncertainty": 1e-07
+    },
+    {
+      "file": "native-annular-stock.step",
+      "sha256": "3b0759522acda25ff870251560b9b56f4ed90c3ebf4f44d55262a66be7b54478",
+      "oracle_status": "passed",
+      "oracle": "raw OCCT8.0.1.1.0 import, no model/transfer checks, valid1solid/1shell, matching face/edge/vertex counts, analytic measures and material witnesses",
+      "expected_volume": 25007.077522574757,
+      "expected_area": 7640.353333530377,
+      "export_max_deviation": 1.3055946294178919e-09,
+      "native_support_gap": 2.1047155909027236e-11,
+      "declared_uncertainty": 1e-07
+    },
+    {
+      "file": "native-axis-clip.step",
+      "sha256": "0f302c6b094b56c3e000b98f80adba82a75d7deb3d8f805acc94cd64cbe3a571",
+      "oracle_status": "passed",
+      "oracle": "raw OCCT8.0.1.1.0 import, no model/transfer checks, valid1solid/1shell, matching face/edge/vertex counts, analytic measures and material witnesses",
+      "expected_volume": 1248.0,
+      "expected_area": 764.0,
+      "export_max_deviation": 3.343245415529236e-10,
+      "native_support_gap": 1.318767317570746e-11,
+      "declared_uncertainty": 1e-07
+    },
+    {
+      "file": "native-oblique-clip.step",
+      "sha256": "56256e339218e2daae91f65b5fcec32b466dd5ff1878936d76d945e1fff71b51",
+      "oracle_status": "passed",
+      "oracle": "raw OCCT8.0.1.1.0 import, no model/transfer checks, valid1solid/1shell, matching face/edge/vertex counts, analytic measures and material witnesses",
+      "expected_volume": 960.0,
+      "expected_area": 671.7645019878171,
+      "export_max_deviation": 3.35688783605583e-10,
+      "native_support_gap": 1.4551915228366852e-11,
+      "declared_uncertainty": 1e-07
+    },
+    {
+      "file": "native-trihedral-clip.step",
+      "sha256": "01b0391b20014f9302b1eaf97e0de1574cbc371e6ae892ab4051439f74d1add2",
+      "oracle_status": "passed",
+      "oracle": "raw OCCT8.0.1.1.0 import, no model/transfer checks, valid1solid/1shell, matching face/edge/vertex counts, analytic measures and material witnesses",
+      "expected_volume": 960.0,
+      "expected_area": 700.5448267190434,
+      "export_max_deviation": 3.370530256582424e-10,
+      "native_support_gap": 1.5916157281026244e-11,
+      "declared_uncertainty": 1e-07
+    },
+    {
+      "file": "native-union-lug.step",
+      "sha256": "677e4875f36c2e7bb9d8289a4b0ddffb6cee888e4fcb40a6a804d9842eacf517",
+      "oracle_status": "passed",
+      "oracle": "raw OCCT8.0.1.1.0 import, no model/transfer checks, valid1solid/1shell, matching face/edge/vertex counts, analytic measures and material witnesses",
+      "expected_volume": 13500.0,
+      "expected_area": 4400.0,
+      "export_max_deviation": 1.1501270119962283e-09,
+      "native_support_gap": 2.6147972675971687e-11,
+      "declared_uncertainty": 1e-07
+    },
+    {
+      "file": "native-machined-lug.step",
+      "sha256": "b5adc300a5c727da3b069d37d7b9e6a0b529e5fbec0d31b72feb481ee73f5c27",
+      "oracle_status": "passed",
+      "oracle": "raw OCCT8.0.1.1.0 import, no model/transfer checks, valid1solid/1shell, matching face/edge/vertex counts, analytic measures and material witnesses",
+      "expected_volume": 13374.336293856408,
+      "expected_area": 4500.530964914873,
+      "export_max_deviation": 1.1501270119962283e-09,
+      "native_support_gap": 2.6147972675971687e-11,
+      "declared_uncertainty": 1e-07
+    },
+    {
+      "file": "native-box-passage.step",
+      "sha256": "b013ef3f5ea2b2cd0e34ae35c0ce2a4a379e66d620a56c354634ce71733f5204",
+      "oracle_status": "passed",
+      "oracle": "raw OCCT8.0.1.1.0 import, no model/transfer checks, valid1solid/1shell, matching face/edge/vertex counts, analytic measures and material witnesses",
+      "expected_volume": 11200.0,
+      "expected_area": 4000.0,
+      "export_max_deviation": 6.581898940354585e-10,
+      "native_support_gap": 1.5916157281026244e-11,
+      "declared_uncertainty": 1e-07
+    },
+    {
+      "file": "native-solid-intersection.step",
+      "sha256": "9c4c31e0a3ab5cb09b75513c897b7fddd0b4f04ccbd85a70779714f9f9288204",
+      "oracle_status": "passed",
+      "oracle": "raw OCCT8.0.1.1.0 import, no model/transfer checks, valid1solid/1shell, matching face/edge/vertex counts, analytic measures and material witnesses",
+      "expected_volume": 676.0,
+      "expected_area": 546.0,
+      "export_max_deviation": 3.3114131009671835e-10,
+      "native_support_gap": 1.000444171950221e-11,
+      "declared_uncertainty": 1e-07
+    }
+  ]
+}
