@@ -14,6 +14,7 @@ use crate::body::{
     Body, BodyError, BoundaryLoop, Coedge, Edge, EdgeId, Face, FaceId, LoopId, Sense,
     ValidationPolicy, VertexId,
 };
+use crate::body::{LoopTrims, TrimCurve};
 use crate::geometry::intersection::{
     PlaneCylinderSection, SectionError, SectionPolicy, plane_cylinder,
 };
@@ -32,8 +33,11 @@ impl CylinderTool {
     /// Refuses nonfinite inputs, a zero direction or a nonpositive radius.
     pub fn new(point: [f64; 3], direction: [f64; 3], radius: f64) -> Result<Self, GeometryError> {
         let n = norm(direction);
-        if !n.is_finite() || n == 0.0 {
+        if !n.is_finite() {
             return Err(GeometryError::NonFinite);
+        }
+        if n == 0.0 {
+            return Err(GeometryError::ZeroDirection);
         }
         let z = scale(direction, 1.0 / n);
         let seed = if z[0].abs() < 0.8 {
@@ -343,6 +347,8 @@ pub fn subtract_through_cylinder_with_roles<F: Clone, E: Clone>(
             }],
         });
         parts.faces[exits[i].0.index()].loops.push(loop_id);
+        crate::operation_trims::append_planar_loop(&mut parts, exits[i].0, loop_id)
+            .map_err(MachiningError::Geometry)?;
     }
     if reversed[0] == reversed[1] {
         return Err(MachiningError::NonparallelExits);
@@ -378,13 +384,45 @@ pub fn subtract_through_cylinder_with_roles<F: Clone, E: Clone>(
             }
         ],
     });
+    let rim_trims = [
+        section_trim(&exits[0].1, range),
+        section_trim(&exits[1].1, range),
+    ];
+    let first_fraction = if !reversed[0] { 0.0 } else { 1.0 };
+    let second_fraction = 1.0 - first_fraction;
+    let seam_trim = |fraction| -> Result<TrimCurve, MachiningError> {
+        Ok(TrimCurve::Line {
+            start: rim_trims[0]
+                .evaluate(fraction)
+                .ok_or(MachiningError::NumericLimit)?,
+            end: rim_trims[1]
+                .evaluate(fraction)
+                .ok_or(MachiningError::NumericLimit)?,
+        })
+    };
+    parts.trims.push(LoopTrims {
+        loop_id,
+        curves: alloc::vec![
+            rim_trims[0].clone(),
+            seam_trim(first_fraction)?,
+            rim_trims[1].clone(),
+            seam_trim(second_fraction)?
+        ],
+    });
+    let ua = rim_trims[0]
+        .evaluate(0.0)
+        .ok_or(MachiningError::NumericLimit)?[0];
+    let ub = rim_trims[0]
+        .evaluate(1.0)
+        .ok_or(MachiningError::NumericLimit)?[0];
+    let wall_u = ParameterRange::new(ua.min(ub), ua.max(ub)).map_err(MachiningError::Geometry)?;
     let wall = FaceId(crate::usize_to_u32(parts.faces.len()));
     let lo = exits[0].1.axial().bounds()[0];
     let hi = exits[1].1.axial().bounds()[1];
     parts.faces.push(Face {
         surface: tool.surface.clone(),
         domain: ParameterDomain {
-            u: range,
+            u: wall_u,
             v: ParameterRange::new(
                 (lo - 4.0 * policy.geometry_gap).next_down(),
                 (hi + 4.0 * policy.geometry_gap).next_up(),
@@ -449,6 +487,19 @@ pub fn subtract_through_cylinder_with_roles<F: Clone, E: Clone>(
     })
 }
 
+fn section_trim(section: &PlaneCylinderSection, range: ParameterRange) -> TrimCurve {
+    let [offset, cosine, sine] = section.axial().coefficients();
+    let phase = section.phase();
+    let sign = if section.reversed() { -1.0 } else { 1.0 };
+    let (s, c) = (libm::sin(phase), libm::cos(phase));
+    TrimCurve::Harmonic {
+        origin: [phase, offset],
+        linear: [sign, 0.0],
+        cosine: [0.0, cosine * c + sine * s],
+        sine: [0.0, sign * (-cosine * s + sine * c)],
+        range,
+    }
+}
 fn col(frame: Placement3, i: usize) -> [f64; 3] {
     frame.rows.map(|r| r[i])
 }
@@ -815,6 +866,15 @@ mod tests {
             .unwrap();
             assert_eq!(body, before);
             assert!(result.body.is_closed());
+            assert!(result.body.has_explicit_trims(result.report.wall));
+            assert_eq!(&result.body.trims()[..body.trims().len()], body.trims());
+            for face in result.report.trimmed_faces {
+                let loop_id = *result.body.faces()[face.index()].loops.last().unwrap();
+                assert!(matches!(
+                    result.body.trim_curve(loop_id, 0),
+                    Some(TrimCurve::Harmonic { .. })
+                ));
+            }
             assert_eq!(result.report.wall.index(), 6 + index);
             assert_eq!(result.report.retained_edges.len(), body.edges().len());
             assert!((result.report.removed_volume - core::f64::consts::PI * 40.0).abs() < 1e-10);

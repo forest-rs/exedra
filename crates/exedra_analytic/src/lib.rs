@@ -29,6 +29,7 @@ pub mod geometry;
 pub mod halfspace;
 pub mod loft;
 pub mod machining;
+mod operation_trims;
 mod planar;
 mod profile_geometry;
 pub mod realize;
