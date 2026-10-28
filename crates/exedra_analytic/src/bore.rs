@@ -394,6 +394,7 @@ impl Extrusion {
         }
         let source = self.body().clone().into_parts();
         let mut parts = BodyParts {
+            trims: Vec::new(),
             vertices: source.vertices,
             loops: source.loops,
             edges: source

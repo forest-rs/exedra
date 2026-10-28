@@ -105,6 +105,7 @@ fn cube() -> Body {
         .collect();
     Body::try_from_parts(
         BodyParts {
+            trims: Vec::new(),
             vertices,
             edges,
             loops,
@@ -453,6 +454,7 @@ fn sphere_with_poles(seam: bool) -> Body {
     };
     Body::try_from_parts(
         BodyParts {
+            trims: Vec::new(),
             vertices: vec![[0.0, 0.0, -radius], [0.0, 0.0, radius]],
             edges,
             loops: vec![BoundaryLoop { coedges }],

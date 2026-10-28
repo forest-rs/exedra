@@ -11,7 +11,9 @@
 //! A closed boundary is not by itself a certified regular solid.
 
 mod cylindrical;
+pub(crate) mod trims;
 pub use cylindrical::{CylindricalBand, CylindricalBandError};
+pub use trims::{LoopTrims, TrimCurve};
 
 use crate::geometry::{Curve, ParameterDomain, ParameterRange, Surface, SurfaceEvaluation};
 use alloc::vec::Vec;
@@ -179,6 +181,9 @@ pub struct Face<F = ()> {
 /// Explicit input tables for a boundary representation.
 #[derive(Clone, Debug, PartialEq)]
 pub struct BodyParts<F = (), E = ()> {
+    /// Explicit face-local parameter correspondence, indexed by boundary loop.
+    /// Missing records retain support-only validation for legacy constructors.
+    pub trims: Vec<LoopTrims>,
     /// Authoritative body-local vertex positions.
     pub vertices: Vec<[f64; 3]>,
     /// Shared native edges, including collapsed pole boundaries.
@@ -191,6 +196,7 @@ pub struct BodyParts<F = (), E = ()> {
 impl<F, E> Default for BodyParts<F, E> {
     fn default() -> Self {
         Self {
+            trims: Vec::new(),
             vertices: Vec::new(),
             edges: Vec::new(),
             loops: Vec::new(),
@@ -214,8 +220,13 @@ pub struct ValidationPolicy {
 pub struct ValidationReport {
     /// Largest measured endpoint gap or conservative curve/support gap bound.
     pub max_gap: f64,
-    /// Number of face-edge occurrences checked.
+    /// Number of face-edge occurrences checked for geometric support.
     pub coedges: usize,
+    /// Number of occurrences with certified explicit parameter correspondence.
+    /// Support-only legacy loops do not contribute to this count.
+    pub trimmed_coedges: usize,
+    /// Largest conservative parameter-curve to shared-edge correspondence bound.
+    pub max_trim_gap: f64,
 }
 
 /// A boundary representation independent of its construction history.
@@ -251,6 +262,64 @@ impl<F, E> Body<F, E> {
     #[must_use]
     pub fn into_parts(self) -> BodyParts<F, E> {
         self.parts
+    }
+    /// Changes caller roles without cloning or revalidating geometry.
+    #[must_use]
+    pub fn map_roles<F2, E2>(
+        self,
+        mut face: impl FnMut(F) -> F2,
+        mut edge: impl FnMut(E) -> E2,
+    ) -> Body<F2, E2> {
+        let parts = self.parts;
+        Body {
+            parts: BodyParts {
+                vertices: parts.vertices,
+                edges: parts
+                    .edges
+                    .into_iter()
+                    .map(|e| Edge {
+                        geometry: e.geometry,
+                        start: e.start,
+                        end: e.end,
+                        role: edge(e.role),
+                    })
+                    .collect(),
+                loops: parts.loops,
+                faces: parts
+                    .faces
+                    .into_iter()
+                    .map(|f| Face {
+                        surface: f.surface,
+                        domain: f.domain,
+                        sense: f.sense,
+                        loops: f.loops,
+                        role: face(f.role),
+                    })
+                    .collect(),
+                trims: parts.trims,
+            },
+        }
+    }
+    /// Explicit parameter curves in deterministic record order.
+    #[must_use]
+    pub fn trims(&self) -> &[LoopTrims] {
+        &self.parts.trims
+    }
+    /// A loop occurrence's parameter curve in canonical edge direction.
+    #[must_use]
+    pub fn trim_curve(&self, loop_id: LoopId, coedge: usize) -> Option<&TrimCurve> {
+        self.parts
+            .trims
+            .iter()
+            .find(|t| t.loop_id == loop_id)?
+            .curves
+            .get(coedge)
+    }
+    /// Whether every boundary loop of a face has explicit parameter curves.
+    #[must_use]
+    pub fn has_explicit_trims(&self, face: FaceId) -> bool {
+        self.face(face)
+            .is_some_and(|f| f.loops.iter().all(|id| self.trim_curve(*id, 0).is_some()))
     }
     /// Vertex positions in deterministic table order.
     #[must_use]
@@ -459,6 +528,8 @@ impl<F, E> Body<F, E> {
         let mut report = ValidationReport {
             max_gap: 0.0,
             coedges: 0,
+            trimmed_coedges: 0,
+            max_trim_gap: 0.0,
         };
         for (i, p) in self.parts.vertices.iter().enumerate() {
             if !p.iter().all(|v| v.is_finite()) {
@@ -652,6 +723,7 @@ impl<F, E> Body<F, E> {
                 }
             }
         }
+        self.validate_trims(policy, &mut report)?;
         Ok(report)
     }
 }
@@ -675,6 +747,44 @@ fn collapsed_gap(surface: &Surface, domain: ParameterDomain, point: [f64; 3]) ->
 /// A boundary-table, incidence or geometric-support violation.
 #[derive(Copy, Clone, Debug, PartialEq)]
 pub enum BodyError {
+    /// An explicit trim table does not match its unique owning loop.
+    TrimStructure {
+        /// Offending boundary loop.
+        loop_id: LoopId,
+        /// Missing owner, repeated record/owner, or curve count mismatch.
+        reason: &'static str,
+    },
+    /// A parameter curve is invalid or leaves the finite face domain.
+    TrimDomain {
+        /// Owning face.
+        face: FaceId,
+        /// Offending boundary loop.
+        loop_id: LoopId,
+        /// Occurrence index.
+        coedge: usize,
+    },
+    /// Continuous parameter-to-3D correspondence could not be certified.
+    TrimCorrespondence {
+        /// Owning face.
+        face: FaceId,
+        /// Offending boundary loop.
+        loop_id: LoopId,
+        /// Occurrence index.
+        coedge: usize,
+        /// Conservative gap bound, infinity for unsupported compositions.
+        bound: f64,
+        /// Requested bound.
+        allowed: f64,
+    },
+    /// Adjacent parameter curves do not close in the same face chart.
+    TrimClosure {
+        /// Owning face.
+        face: FaceId,
+        /// Offending boundary loop.
+        loop_id: LoopId,
+        /// First occurrence index.
+        coedge: usize,
+    },
     /// A finite nonnegative agreement tolerance was required.
     InvalidTolerance {
         /// Supplied maximum gap.
@@ -1006,6 +1116,7 @@ pub(crate) mod tests {
             reversed,
         };
         BodyParts {
+            trims: Vec::new(),
             vertices: vec![[2.0, 0.0, 0.0], [2.0, 0.0, 3.0]],
             edges: vec![
                 Edge {

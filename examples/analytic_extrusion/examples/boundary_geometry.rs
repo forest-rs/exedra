@@ -31,6 +31,7 @@ fn cylinder() -> Result<Body, Box<dyn std::error::Error>> {
         reversed,
     };
     let parts = BodyParts {
+        trims: Vec::new(),
         vertices: vec![[13.0, 0.0, 0.0], [13.0, 0.0, 24.0]],
         edges: vec![
             Edge {
@@ -158,6 +159,7 @@ fn plate() -> Result<Body<u32>, Box<dyn std::error::Error>> {
     drop(solid);
     Ok(Body::try_from_parts(
         BodyParts {
+            trims: Vec::new(),
             vertices: core::mem::take(&mut parts.vertices),
             edges,
             loops: parts.loops,

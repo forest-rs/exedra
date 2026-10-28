@@ -651,6 +651,7 @@ impl Extrusion {
             .fold(1.0_f64, |a, v| a.max(v.abs()));
         let body = Body::try_from_parts(
             BodyParts {
+                trims: Vec::new(),
                 vertices,
                 edges,
                 loops,
