@@ -16,6 +16,13 @@ use alloc::{
 use exedra_math::{Placement3, cross, dot, narrow, sub};
 use exedra_triangulate::{PolygonInput, TriParams, triangulate_preserving_boundary};
 
+#[derive(Default)]
+pub(super) struct Work {
+    pub batches: usize,
+    pub triangle_tests: usize,
+    pub vertices: usize,
+}
+
 /// Uniform bounds on the norms of `S_uu`, `S_uv`, `S_vv` throughout a face domain.
 fn hessian<F>(face: &Face<F>) -> [f64; 3] {
     let bound = match &face.surface {
@@ -46,7 +53,13 @@ fn hessian<F>(face: &Face<F>) -> [f64; 3] {
             ]
         }
     };
-    bound.map(|v| (v * (1.0 + 16.0 * crate::geometry::FRAME_TOLERANCE)).next_up())
+    bound.map(|v| {
+        if v == 0.0 {
+            0.0
+        } else {
+            (v * (1.0 + 16.0 * crate::geometry::FRAME_TOLERANCE)).next_up()
+        }
+    })
 }
 
 fn deviation(points: &[[f64; 2]], triangle: [u32; 3], h: [f64; 3]) -> f64 {
@@ -57,10 +70,11 @@ fn deviation(points: &[[f64; 2]], triangle: [u32; 3], h: [f64; 3]) -> f64 {
     });
     // Taylor's remainder at any point of the parameter triangle, followed by
     // barycentric interpolation. The affine terms cancel exactly.
-    (0.5 * (h[0] * width[0] * width[0]
-        + 2.0 * h[1] * width[0] * width[1]
-        + h[2] * width[1] * width[1]))
-        .next_up()
+    let error = 0.5
+        * (h[0] * width[0] * width[0]
+            + 2.0 * h[1] * width[0] * width[1]
+            + h[2] * width[1] * width[1]);
+    if error == 0.0 { 0.0 } else { error.next_up() }
 }
 #[expect(
     clippy::cast_possible_truncation,
@@ -142,8 +156,10 @@ pub(super) fn emit_face<F, E>(
     triangles: &mut Vec<[u32; 3]>,
     regions: &mut Vec<u32>,
     faces: &mut Vec<FaceId>,
+    work: &mut Work,
 ) -> Result<f64, RealizationError> {
     let face = &body.faces()[id.index()];
+    let initial_vertices = emitted.len();
     let mut rings = Vec::with_capacity(face.loops.len());
     let mut indices = Vec::new();
     for &loop_id in &face.loops {
@@ -197,7 +213,20 @@ pub(super) fn emit_face<F, E>(
     // All chart boundary samples stay authoritative. Only interior edges split;
     // every incident triangle sees the same split in a deterministic batch.
     // This preserves shared native chains, seam copies and hole boundaries.
+    let mut bad = Vec::new();
     loop {
+        work.triangle_tests += cover.len();
+        bad.clear();
+        bad.extend(
+            cover
+                .iter()
+                .enumerate()
+                .filter_map(|(i, &t)| (deviation(&points, t, h) > target).then_some(i)),
+        );
+        if bad.is_empty() {
+            break;
+        }
+        work.batches += 1;
         let mut incidence = BTreeMap::<(u32, u32), u8>::new();
         for t in &cover {
             for i in 0..3 {
@@ -206,12 +235,8 @@ pub(super) fn emit_face<F, E>(
         }
         let mut split = BTreeSet::new();
         let mut centers = BTreeSet::new();
-        let mut pending = false;
-        for (i, &t) in cover.iter().enumerate() {
-            if deviation(&points, t, h) <= target {
-                continue;
-            }
-            pending = true;
+        for &i in &bad {
+            let t = cover[i];
             let candidate = (0..3)
                 .map(|k| edge(t[k], t[(k + 1) % 3]))
                 .filter(|e| incidence[e] == 2)
@@ -230,9 +255,6 @@ pub(super) fn emit_face<F, E>(
                 centers.insert(i);
             }
         }
-        if !pending {
-            break;
-        }
         let mut midpoint = BTreeMap::new();
         for &(a, b) in &split {
             let uv = uv_average(points[a as usize], points[b as usize]);
@@ -250,7 +272,19 @@ pub(super) fn emit_face<F, E>(
             )?;
             midpoint.insert((a, b), index);
         }
-        let mut refined = Vec::new();
+        let maximum_triangles = cover
+            .len()
+            .saturating_add(split.len().saturating_mul(2))
+            .saturating_add(centers.len().saturating_mul(2));
+        if maximum_triangles > u32::MAX as usize {
+            return Err(RealizationError::Budget {
+                storage: "triangles",
+                required: maximum_triangles,
+                maximum: u32::MAX,
+            });
+        }
+        super::check_table_capacity::<[u32; 3]>("triangles", maximum_triangles)?;
+        let mut refined = Vec::with_capacity(maximum_triangles);
         for (i, t) in cover.into_iter().enumerate() {
             let mids: [Option<u32>; 3] =
                 core::array::from_fn(|k| midpoint.get(&edge(t[k], t[(k + 1) % 3])).copied());
@@ -325,8 +359,17 @@ pub(super) fn emit_face<F, E>(
         {
             return Err(RealizationError::DegenerateFace { face: id });
         }
+        let required = triangles.len().saturating_add(1);
+        if required > u32::MAX as usize {
+            return Err(RealizationError::Budget {
+                storage: "triangles",
+                required,
+                maximum: u32::MAX,
+            });
+        }
         emit(triangles, corners, id, region, emitted, regions, faces)?;
     }
+    work.vertices += emitted.len() - initial_vertices;
     Ok(bound)
 }
 
@@ -342,6 +385,14 @@ fn push_point<F, E>(
     points: &mut Vec<[f64; 2]>,
     indices: &mut Vec<u32>,
 ) -> Result<u32, RealizationError> {
+    let required_parameters = points.len().saturating_add(1);
+    if required_parameters > u32::MAX as usize {
+        return Err(RealizationError::Budget {
+            storage: "face parameters",
+            required: required_parameters,
+            maximum: u32::MAX,
+        });
+    }
     let required = emitted.len().saturating_add(1);
     if required > policy.max_vertices as usize {
         return Err(RealizationError::Budget {
@@ -380,7 +431,7 @@ mod tests {
     use crate::geometry::{Curve, ParameterDomain, ParameterRange};
     use alloc::vec;
     #[test]
-    fn explicit_cylinder_chart_refines_conformingly_and_keeps_shared_seams() {
+    fn split_cylinder_seams_keep_optimized_sampling_and_authoritative_vertices() {
         let mut parts = crate::body::trims::tests::cylinder_parts();
         parts.vertices.push([2.0, 0.0, 1.5]);
         let seam = parts.edges[2].regular().unwrap().0.clone();
@@ -445,12 +496,19 @@ mod tests {
             )
             .unwrap();
         assert!(output.report.within_tolerance(), "{:?}", output.report);
-        assert!(output.report.max_surface_deviation > 0.0);
+        assert_eq!(output.report.max_surface_deviation, 0.0);
+        assert_eq!(output.report.work.trim_refinement_batches, 0);
+        assert!(
+            output
+                .mesh_vertices
+                .iter()
+                .any(|(_, s)| *s == VertexSource::Vertex(VertexId(2)))
+        );
         assert!(output.mesh.validate_deep().is_empty());
         assert!(output.mesh.boundary_loops().unwrap().is_empty());
         let mut constrained = RealizationPolicy {
             tolerance: 0.05,
-            max_vertices: 200,
+            max_vertices: 20,
             ..Default::default()
         };
         assert!(matches!(
@@ -558,6 +616,22 @@ mod tests {
         .unwrap()
     }
     #[test]
+    fn unusable_subnormal_surface_budget_is_refused_before_sampling() {
+        let body = spherical_rectangle();
+        let policy = RealizationPolicy {
+            tolerance: f64::from_bits(1),
+            ..Default::default()
+        };
+        assert_eq!(
+            body.realize(Placement3::IDENTITY, &policy).unwrap_err(),
+            RealizationError::InvalidPolicy
+        );
+        assert_eq!(
+            deviation(&[[0.0, 0.0], [1.0, 0.0], [0.0, 1.0]], [0, 1, 2], [0.0; 3]),
+            0.0
+        );
+    }
+    #[test]
     fn spherical_trim_without_poles_uses_generic_chart_and_honest_error() {
         let body = spherical_rectangle();
         let mut last = f64::INFINITY;
@@ -572,6 +646,9 @@ mod tests {
                 )
                 .unwrap();
             assert!(output.report.within_tolerance());
+            assert!(output.report.work.trim_refinement_batches > 0);
+            assert!(output.report.work.trim_triangle_tests >= output.mesh_faces.len());
+            assert!(output.report.work.trim_generated_vertices > 0);
             assert!(output.report.max_deviation < last);
             last = output.report.max_deviation;
             assert!(output.mesh.validate_deep().is_empty());

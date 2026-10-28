@@ -1,0 +1,317 @@
+{
+  "repetitions": 9,
+  "rows": [
+    {
+      "fixture": "support_cylinder",
+      "generated_vertices": 0,
+      "max_deviation": 0.09788701760413995,
+      "max_trim_gap": 0.0,
+      "native_edges": 3,
+      "native_faces": 3,
+      "realize_us_p50": 29.584,
+      "refinement_batches": 0,
+      "tolerance": 0.1,
+      "triangle_error_tests": 0,
+      "triangles": 36,
+      "trimmed_coedges": 0,
+      "validate_us_p50": 0.29200000000000004,
+      "vertices": 20
+    },
+    {
+      "fixture": "support_cylinder",
+      "generated_vertices": 0,
+      "max_deviation": 0.02462336900417174,
+      "max_trim_gap": 0.0,
+      "native_edges": 3,
+      "native_faces": 3,
+      "realize_us_p50": 49.792,
+      "refinement_batches": 0,
+      "tolerance": 0.025,
+      "triangle_error_tests": 0,
+      "triangles": 76,
+      "trimmed_coedges": 0,
+      "validate_us_p50": 0.25,
+      "vertices": 40
+    },
+    {
+      "fixture": "explicit_cylinder",
+      "generated_vertices": 0,
+      "max_deviation": 0.09788701762206325,
+      "max_trim_gap": 8.962144087467534e-12,
+      "native_edges": 3,
+      "native_faces": 3,
+      "realize_us_p50": 23.125,
+      "refinement_batches": 0,
+      "tolerance": 0.1,
+      "triangle_error_tests": 0,
+      "triangles": 36,
+      "trimmed_coedges": 6,
+      "validate_us_p50": 1.208,
+      "vertices": 20
+    },
+    {
+      "fixture": "explicit_cylinder",
+      "generated_vertices": 0,
+      "max_deviation": 0.024623369022095047,
+      "max_trim_gap": 8.962144087467534e-12,
+      "native_edges": 3,
+      "native_faces": 3,
+      "realize_us_p50": 45.625,
+      "refinement_batches": 0,
+      "tolerance": 0.025,
+      "triangle_error_tests": 0,
+      "triangles": 76,
+      "trimmed_coedges": 6,
+      "validate_us_p50": 1.209,
+      "vertices": 40
+    },
+    {
+      "fixture": "split_cylinder",
+      "generated_vertices": 0,
+      "max_deviation": 0.09788701762208457,
+      "max_trim_gap": 8.962144087467534e-12,
+      "native_edges": 4,
+      "native_faces": 3,
+      "realize_us_p50": 23.5,
+      "refinement_batches": 0,
+      "tolerance": 0.1,
+      "triangle_error_tests": 0,
+      "triangles": 38,
+      "trimmed_coedges": 8,
+      "validate_us_p50": 1.334,
+      "vertices": 21
+    },
+    {
+      "fixture": "split_cylinder",
+      "generated_vertices": 0,
+      "max_deviation": 0.024623369022116363,
+      "max_trim_gap": 8.962144087467534e-12,
+      "native_edges": 4,
+      "native_faces": 3,
+      "realize_us_p50": 46.542,
+      "refinement_batches": 0,
+      "tolerance": 0.025,
+      "triangle_error_tests": 0,
+      "triangles": 78,
+      "trimmed_coedges": 8,
+      "validate_us_p50": 1.292,
+      "vertices": 41
+    },
+    {
+      "fixture": "four_split_cylinder",
+      "generated_vertices": 0,
+      "max_deviation": 0.09788701762208457,
+      "max_trim_gap": 8.962144087467534e-12,
+      "native_edges": 6,
+      "native_faces": 3,
+      "realize_us_p50": 24.209000000000003,
+      "refinement_batches": 0,
+      "tolerance": 0.1,
+      "triangle_error_tests": 0,
+      "triangles": 42,
+      "trimmed_coedges": 12,
+      "validate_us_p50": 1.625,
+      "vertices": 23
+    },
+    {
+      "fixture": "four_split_cylinder",
+      "generated_vertices": 0,
+      "max_deviation": 0.024623369022116363,
+      "max_trim_gap": 8.962144087467534e-12,
+      "native_edges": 6,
+      "native_faces": 3,
+      "realize_us_p50": 47.458,
+      "refinement_batches": 0,
+      "tolerance": 0.025,
+      "triangle_error_tests": 0,
+      "triangles": 82,
+      "trimmed_coedges": 12,
+      "validate_us_p50": 1.625,
+      "vertices": 43
+    },
+    {
+      "fixture": "sphere_patch",
+      "generated_vertices": 341,
+      "max_deviation": 0.024877059029451025,
+      "max_trim_gap": 2.5011104298755527e-12,
+      "native_edges": 4,
+      "native_faces": 1,
+      "realize_us_p50": 844.584,
+      "refinement_batches": 7,
+      "tolerance": 0.1,
+      "triangle_error_tests": 3816,
+      "triangles": 736,
+      "trimmed_coedges": 4,
+      "validate_us_p50": 3.5829999999999997,
+      "vertices": 397
+    },
+    {
+      "fixture": "sphere_patch",
+      "generated_vertices": 1866,
+      "max_deviation": 0.00615942137199174,
+      "max_trim_gap": 2.5011104298755527e-12,
+      "native_edges": 4,
+      "native_faces": 1,
+      "realize_us_p50": 5288.625,
+      "refinement_batches": 8,
+      "tolerance": 0.025,
+      "triangle_error_tests": 18832,
+      "triangles": 3840,
+      "trimmed_coedges": 4,
+      "validate_us_p50": 3.875,
+      "vertices": 1976
+    }
+  ],
+  "scope": "native fixed-source validation and realization; source construction, quality inspection, output destruction excluded; no compile/STEP/JS/GPU",
+  "environment": {
+    "architecture": "arm64",
+    "rustc": "rustc 1.99.0 (b940084d7 2026-09-28)"
+  },
+  "allocation_policy": {
+    "tolerance": 0.025,
+    "tool": "isolated dhat 0.3.3",
+    "scope": "one fixed-source realization; source construction and profiler setup excluded; returned output retained at first checkpoint and released at second; tracked heap is not RSS"
+  },
+  "sphere_before_final_pass_and_capacity_changes": {
+    "triangles": 3840,
+    "total_blocks": 5087,
+    "total_bytes": 3535312,
+    "peak_bytes": 1132112,
+    "retained_bytes": 663552
+  },
+  "allocations": {
+    "support_cylinder": {
+      "checkpoints": [
+        {
+          "current_blocks": 13,
+          "current_bytes": 14812,
+          "peak_blocks": 26,
+          "peak_bytes": 22425,
+          "phase": "retained",
+          "total_blocks": 139,
+          "total_bytes": 54893
+        },
+        {
+          "current_blocks": 0,
+          "current_bytes": 0,
+          "peak_blocks": 26,
+          "peak_bytes": 22425,
+          "phase": "released",
+          "total_blocks": 139,
+          "total_bytes": 54893
+        }
+      ],
+      "scope": "one explicit retained BRep realization selected by EXEDRA_BREP_PROFILE; fixed source and profiler setup excluded; topology, correspondence, normals and release included; no compile/STEP/Wasm/JS/GPU"
+    },
+    "explicit_cylinder": {
+      "checkpoints": [
+        {
+          "current_blocks": 13,
+          "current_bytes": 14812,
+          "peak_blocks": 26,
+          "peak_bytes": 22425,
+          "phase": "retained",
+          "total_blocks": 142,
+          "total_bytes": 54923
+        },
+        {
+          "current_blocks": 0,
+          "current_bytes": 0,
+          "peak_blocks": 26,
+          "peak_bytes": 22425,
+          "phase": "released",
+          "total_blocks": 142,
+          "total_bytes": 54923
+        }
+      ],
+      "scope": "one explicit retained BRep realization selected by EXEDRA_BREP_PROFILE; fixed source and profiler setup excluded; topology, correspondence, normals and release included; no compile/STEP/Wasm/JS/GPU"
+    },
+    "split_cylinder": {
+      "checkpoints": [
+        {
+          "current_blocks": 13,
+          "current_bytes": 15168,
+          "peak_blocks": 26,
+          "peak_bytes": 23019,
+          "phase": "retained",
+          "total_blocks": 144,
+          "total_bytes": 55729
+        },
+        {
+          "current_blocks": 0,
+          "current_bytes": 0,
+          "peak_blocks": 26,
+          "peak_bytes": 23019,
+          "phase": "released",
+          "total_blocks": 144,
+          "total_bytes": 55729
+        }
+      ],
+      "scope": "one explicit retained BRep realization selected by EXEDRA_BREP_PROFILE; fixed source and profiler setup excluded; topology, correspondence, normals and release included; no compile/STEP/Wasm/JS/GPU"
+    },
+    "four_split_cylinder": {
+      "checkpoints": [
+        {
+          "current_blocks": 13,
+          "current_bytes": 15880,
+          "peak_blocks": 26,
+          "peak_bytes": 24207,
+          "phase": "retained",
+          "total_blocks": 144,
+          "total_bytes": 57117
+        },
+        {
+          "current_blocks": 0,
+          "current_bytes": 0,
+          "peak_blocks": 26,
+          "peak_bytes": 24207,
+          "phase": "released",
+          "total_blocks": 144,
+          "total_bytes": 57117
+        }
+      ],
+      "scope": "one explicit retained BRep realization selected by EXEDRA_BREP_PROFILE; fixed source and profiler setup excluded; topology, correspondence, normals and release included; no compile/STEP/Wasm/JS/GPU"
+    },
+    "sphere_patch": {
+      "checkpoints": [
+        {
+          "current_blocks": 13,
+          "current_bytes": 663552,
+          "peak_blocks": 28,
+          "peak_bytes": 1132120,
+          "phase": "retained",
+          "total_blocks": 4173,
+          "total_bytes": 3093560
+        },
+        {
+          "current_blocks": 0,
+          "current_bytes": 0,
+          "peak_blocks": 28,
+          "peak_bytes": 1132120,
+          "phase": "released",
+          "total_blocks": 4173,
+          "total_bytes": 3093560
+        }
+      ],
+      "scope": "one explicit retained BRep realization selected by EXEDRA_BREP_PROFILE; fixed source and profiler setup excluded; topology, correspondence, normals and release included; no compile/STEP/Wasm/JS/GPU"
+    }
+  },
+  "split_seam_before_chain_recognition": {
+    "tolerance": 0.025,
+    "triangles": 23068,
+    "vertices": 11536,
+    "refinement_batches": 9,
+    "triangle_error_tests": 114628,
+    "realize_us_p50": 38734.709,
+    "total_blocks": 25517,
+    "total_bytes": 14847073,
+    "peak_bytes": 6290671,
+    "retained_bytes": 3988232
+  },
+  "interpretation": [
+    "Recognized explicit cylinder uses the same optimized strip output as support-only cylinder; additional trim validation costs 3 allocation events and 30 traffic bytes with identical output and peak residency. Timing differences at this scale are noise, not a speedup claim.",
+    "Two-edge and four-edge monotone collinear seam chains retain every authoritative split vertex using only two and six additional triangles. The generic-refinement path is no longer selected for this harmless topology subdivision.",
+    "Generic sphere patch refinement performs 4.9 to 5.2 error tests per final output triangle, over 7 to 8 batches. These cases do not show quadratic scan amplification; total complexity remains data dependent.",
+    "Skipping final accepted-pass incidence construction and reserving exact split-triangle storage reduces matched sphere allocation events and traffic while preserving topology, correspondence, error and retained heap. Peak differs by 8 bytes for the expanded patch descriptor."
+  ]
+}

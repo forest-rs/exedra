@@ -516,3 +516,50 @@ The matched fine-sphere DHAT window fell from 102 to 87 allocation events and
 3,400,261 bytes; retained output fell from 5,512,932 to 2,194,788 bytes, returning
 to zero after release. These counts cover realization and returned ownership,
 not the retained source constructor or total process residency.
+
+## Retained explicit BRep trims
+
+`generic_brep` builds bodies directly from public geometry/topology/trim tables,
+without a constructor-family wrapper. It compares support-only and explicit
+cylinders, their two-edge and four-edge subdivided seam equivalents, and a
+non-pole spherical patch. Every measured output checks topology, closure or the
+expected open patch boundary, and the reported geometric tolerance. Construction,
+validation/quality inspection and output drop are outside realization timing.
+Two warmups precede the reported median.
+
+```sh
+cargo run --release -p constructive_wind_tunnel --bin generic_brep -- 9
+python3 benchmarks/constructive_wind_tunnel/profile_authoring.py --workload generic_brep --output /tmp/exedra-generic-brep-allocations
+```
+
+`EXEDRA_BREP_PROFILE` selects `support_cylinder`, `explicit_cylinder`,
+`split_cylinder`, `four_split_cylinder` or `sphere_patch` for the isolated
+allocation window (default: `sphere_patch`). DHAT is linked only into that
+temporary external profiler; production dependencies are unchanged.
+`generic-brep-study.json` records parameters, work counts, timings and tracked
+allocation checkpoints.
+
+At tolerance 0.025, ordinary cylinders retain 40 vertices and 76 triangles.
+Explicit trim validation adds three allocation events and 30 traffic bytes;
+retained output and peak heap are identical. Their approximately 46–50µs timings
+are too close for a speedup claim. Two-edge and four-edge seam chains preserve
+all split vertices with 78 and 82 triangles at approximately 47µs. These chains
+are recognized as monotone collinear strip boundaries, and only their adjacent
+panels receive extra triangles. The previous generic fallback produced 23,068
+triangles at about 39ms for the same two-edge seam, consuming 14.85MB allocation
+traffic and 6.29MB peak heap. The chain path needs 55.7KB traffic and 23.0KB peak.
+Ordinary inputs keep their original triangle output and allocation event counts;
+the compact optional strip descriptor adds eight bytes per planned patch.
+
+The sphere remains a substantive generic-chart workload: 3,840 triangles at about
+5.3ms for tolerance 0.025. The report exposes refinement batches, triangle error
+tests and generated vertices. Across its coarse/fine cases, 7–8 batches perform
+4.9–5.2 error tests per final triangle. These inputs do not show quadratic scan
+amplification; worst-case total scanning remains data dependent. Interior edge
+incidence uses deterministic ordered maps. Skipping that map on the final
+accepted pass and reserving exact split-triangle cardinality reduced the matched
+sphere window from 5,087 to 4,173 allocation events and from 3,535,312 to
+3,093,560 traffic bytes. Peak tracked heap is 1,132,120 bytes (eight bytes more
+than the earlier patch descriptor), with 663,552 bytes retained by the output
+and zero tracked bytes after release. These are allocation traffic/live-heap
+measurements, not RSS or whole-process residency.
