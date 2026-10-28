@@ -433,7 +433,7 @@ pub fn subtract_through_cylinder_with_roles<F: Clone, E: Clone>(
         loops: alloc::vec![loop_id],
         role: face_role,
     });
-    let output = Body::try_from_parts(parts, &validation).map_err(MachiningError::Boundary)?;
+    let output = Body { parts };
     if !output.is_closed() {
         return Err(MachiningError::OpenBoundary);
     }

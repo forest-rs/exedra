@@ -61,6 +61,10 @@ pub struct FaceSource {
 pub struct RectilinearPolicy {
     /// Largest allowed Cartesian product of open coordinate intervals.
     pub max_cells: usize,
+    /// Maximum source-face entries examined by arrangement classification and
+    /// boundary provenance. Preflight uses `9*cells*(left_faces+right_faces)`;
+    /// native validation and per-face trim-edge tests are separate work.
+    pub max_face_tests: usize,
     /// Minimum allowed distance between distinct parallel input planes.
     pub minimum_spacing: f64,
     /// Maximum native support disagreement and conservative arithmetic allowance.
@@ -70,6 +74,7 @@ impl Default for RectilinearPolicy {
     fn default() -> Self {
         Self {
             max_cells: 1_000_000,
+            max_face_tests: 50_000_000,
             minimum_spacing: 1e-6,
             geometry_gap: 1e-9,
         }
@@ -84,6 +89,10 @@ pub struct RectilinearReport {
     pub planes: [usize; 3],
     /// Cartesian arrangement cells classified for each operand.
     pub cells: usize,
+    /// Actual source-face entries scanned by classification and provenance.
+    pub face_tests: usize,
+    /// Conservative source-face scan bound admitted before grid allocation.
+    pub face_test_bound: usize,
     /// Positive-volume output material cells.
     pub material_cells: usize,
     /// Material components connected through positive-area faces.
@@ -98,9 +107,9 @@ pub struct RectilinearReport {
     pub left_faces: Vec<Vec<FaceId>>,
     /// Output face images for each right input face, including empty images.
     pub right_faces: Vec<Vec<FaceId>>,
-    /// Output edge fragments on each left source edge, in source order.
+    /// Output fragments for each left source edge, ordered start to end.
     pub left_edges: Vec<Vec<EdgeId>>,
-    /// Output edge fragments on each right source edge, in source order.
+    /// Output fragments for each right source edge, ordered start to end.
     pub right_edges: Vec<Vec<EdgeId>>,
     /// Output image of each left source vertex, absent when internal or removed.
     pub left_vertices: Vec<Option<VertexId>>,
@@ -168,12 +177,24 @@ pub enum RectilinearError {
         /// Caller limit.
         maximum: usize,
     },
+    /// Source-face classification/provenance scan work exceeds policy.
+    FaceTestBudget {
+        /// Conservative required scan count, absent on arithmetic overflow.
+        required: Option<usize>,
+        /// Caller limit.
+        maximum: usize,
+    },
     /// An input has inconsistent oriented material winding in the exact arrangement.
     InvalidMaterial {
         /// Offending operand.
         operand: Operand,
         /// Open arrangement cell coordinates.
         cell: [usize; 3],
+    },
+    /// Input has a disconnected vertex link or duplicated geometric vertex IDs.
+    NonManifoldInput {
+        /// Offending operand.
+        operand: Operand,
     },
     /// Output has an edge/vertex-only contact or another nonmanifold boundary.
     NonManifold,
@@ -220,6 +241,7 @@ pub fn boolean_rectilinear<LF, LE, RF, RE>(
     policy: &RectilinearPolicy,
 ) -> Result<RectilinearResult, RectilinearError> {
     if policy.max_cells == 0
+        || policy.max_face_tests == 0
         || !policy.minimum_spacing.is_finite()
         || policy.minimum_spacing <= 0.0
         || !policy.geometry_gap.is_finite()
@@ -289,6 +311,20 @@ pub fn boolean_rectilinear<LF, LE, RF, RE>(
             maximum: policy.max_cells,
         });
     }
+    let source_faces = left_faces
+        .len()
+        .checked_add(right_faces.len())
+        .ok_or(RectilinearError::NumericLimit)?;
+    let face_test_bound = cells
+        .checked_mul(source_faces)
+        .and_then(|n| n.checked_mul(9));
+    let Some(face_test_bound) = face_test_bound.filter(|&n| n <= policy.max_face_tests) else {
+        return Err(RectilinearError::FaceTestBudget {
+            required: face_test_bound,
+            maximum: policy.max_face_tests,
+        });
+    };
+    let mut face_tests = cells * source_faces * 3;
     let references: [Vec<f64>; 3] = coordinates
         .each_ref()
         .map(|v| {
@@ -447,6 +483,7 @@ pub fn boolean_rectilinear<LF, LE, RF, RE>(
                 {
                     continue;
                 }
+                face_tests += source_faces;
                 for (operand, faces) in
                     [(Operand::Left, &left_faces), (Operand::Right, &right_faces)]
                 {
@@ -540,11 +577,7 @@ pub fn boolean_rectilinear<LF, LE, RF, RE>(
         }
     }
     crate::operation_trims::append_all_planar(&mut parts).map_err(RectilinearError::Geometry)?;
-    let body =
-        Body::try_from_parts(parts, &validation).map_err(|error| RectilinearError::Boundary {
-            operand: None,
-            error,
-        })?;
+    let body = Body { parts };
     if material_cells > 0 && (!body.is_closed() || !manifold_vertices(&body)) {
         return Err(RectilinearError::NonManifold);
     }
@@ -570,10 +603,13 @@ pub fn boolean_rectilinear<LF, LE, RF, RE>(
             operand: None,
             error,
         })?;
+    let edge_index = edge_index(&body);
     let report = RectilinearReport {
         operation,
         planes,
         cells,
+        face_tests,
+        face_test_bound,
         material_cells,
         material_components,
         cavities,
@@ -581,8 +617,8 @@ pub fn boolean_rectilinear<LF, LE, RF, RE>(
         face_sources,
         left_faces: left_images,
         right_faces: right_images,
-        left_edges: edge_images(left, &body),
-        right_edges: edge_images(right, &body),
+        left_edges: edge_images(left, &edge_index),
+        right_edges: edge_images(right, &edge_index),
         left_vertices: vertex_images(left, &body),
         right_vertices: vertex_images(right, &body),
         volume,
@@ -627,6 +663,26 @@ fn inspect<F, E>(
     if !body.is_closed() {
         return Err(RectilinearError::OpenInput { operand });
     }
+    if !manifold_vertices(body) {
+        return Err(RectilinearError::NonManifoldInput { operand });
+    }
+    let mut vertex_positions = BTreeMap::new();
+    for face in body.faces() {
+        for l in &face.loops {
+            for co in &body.loops()[l.index()].coedges {
+                let edge = &body.edges()[co.edge.index()];
+                let vertex = if co.reversed { edge.end } else { edge.start };
+                let key =
+                    body.vertices()[vertex.index()].map(|v| if v == 0.0 { 0 } else { v.to_bits() });
+                if vertex_positions
+                    .insert(key, vertex)
+                    .is_some_and(|prior| prior != vertex)
+                {
+                    return Err(RectilinearError::NonManifoldInput { operand });
+                }
+            }
+        }
+    }
     let mut result = Vec::new();
     for (index, face) in body.faces().iter().enumerate() {
         let id = FaceId(crate::usize_to_u32(index));
@@ -666,6 +722,14 @@ fn inspect<F, E>(
                 let b = body.vertices()[ids[1].index()];
                 if a[axis] != coordinate || b[axis] != coordinate {
                     return Err(unsupported());
+                }
+                let uv = face.surface.parameters(a).ok_or_else(unsupported)?;
+                for (value, domain) in uv.into_iter().zip([face.domain.u, face.domain.v]) {
+                    let [lo, hi] = domain.bounds();
+                    let padding = 128.0 * f64::EPSILON * lo.abs().max(hi.abs()).max(1.0);
+                    if value < lo - padding || value > hi + padding {
+                        return Err(unsupported());
+                    }
                 }
                 let p = [a[(axis + 1) % 3], a[(axis + 2) % 3]];
                 let q = [b[(axis + 1) % 3], b[(axis + 2) % 3]];
@@ -972,7 +1036,7 @@ fn grid_vertex(
         id
     })
 }
-fn manifold_vertices(body: &Body) -> bool {
+fn manifold_vertices<F, E>(body: &Body<F, E>) -> bool {
     let mut links = alloc::vec![Vec::new();body.vertices().len()];
     for face in body.faces() {
         for l in &face.loops {
@@ -1070,34 +1134,62 @@ fn vertex_images<F, E>(source: &Body<F, E>, output: &Body) -> Vec<Option<VertexI
         })
         .collect()
 }
-fn edge_images<F, E>(source: &Body<F, E>, output: &Body) -> Vec<Vec<EdgeId>> {
+type EdgeIndex = BTreeMap<(usize, u64, u64), Vec<(f64, f64, EdgeId)>>;
+fn line_key(a: [f64; 3], b: [f64; 3]) -> Option<(usize, u64, u64)> {
+    let axis = (0..3).find(|&i| a[i] != b[i])?;
+    if (0..3).any(|i| i != axis && a[i] != b[i]) {
+        return None;
+    }
+    let bits = |v: f64| if v == 0.0 { 0 } else { v.to_bits() };
+    Some((axis, bits(a[(axis + 1) % 3]), bits(a[(axis + 2) % 3])))
+}
+fn edge_index(output: &Body) -> EdgeIndex {
+    let mut index: EdgeIndex = BTreeMap::new();
+    for (i, e) in output.edges().iter().enumerate() {
+        let a = output.vertices()[e.start.index()];
+        let b = output.vertices()[e.end.index()];
+        if let Some(key) = line_key(a, b) {
+            index.entry(key).or_default().push((
+                a[key.0].min(b[key.0]),
+                a[key.0].max(b[key.0]),
+                EdgeId(crate::usize_to_u32(i)),
+            ));
+        }
+    }
+    for fragments in index.values_mut() {
+        fragments.sort_by(|a, b| {
+            a.0.total_cmp(&b.0)
+                .then_with(|| a.1.total_cmp(&b.1))
+                .then_with(|| a.2.cmp(&b.2))
+        });
+    }
+    index
+}
+fn edge_images<F, E>(source: &Body<F, E>, index: &EdgeIndex) -> Vec<Vec<EdgeId>> {
     source
         .edges()
         .iter()
         .map(|edge| {
             let a = source.vertices()[edge.start.index()];
             let b = source.vertices()[edge.end.index()];
-            let axis = (0..3).find(|&i| a[i] != b[i]);
-            output
-                .edges()
+            let Some(key) = line_key(a, b) else {
+                return Vec::new();
+            };
+            let Some(fragments) = index.get(&key) else {
+                return Vec::new();
+            };
+            let lower = a[key.0].min(b[key.0]);
+            let upper = a[key.0].max(b[key.0]);
+            let start = fragments.partition_point(|f| f.0 < lower);
+            let mut image = fragments[start..]
                 .iter()
-                .enumerate()
-                .filter_map(|(i, e)| {
-                    let axis = axis?;
-                    let p = output.vertices()[e.start.index()];
-                    let q = output.vertices()[e.end.index()];
-                    if (0..3).all(|j| j == axis || (a[j] == p[j] && a[j] == q[j]))
-                        && p[axis] >= a[axis].min(b[axis])
-                        && p[axis] <= a[axis].max(b[axis])
-                        && q[axis] >= a[axis].min(b[axis])
-                        && q[axis] <= a[axis].max(b[axis])
-                    {
-                        Some(EdgeId(crate::usize_to_u32(i)))
-                    } else {
-                        None
-                    }
-                })
-                .collect()
+                .take_while(|f| f.0 < upper)
+                .filter_map(|f| (f.1 <= upper).then_some(f.2))
+                .collect::<Vec<_>>();
+            if a[key.0] > b[key.0] {
+                image.reverse();
+            }
+            image
         })
         .collect()
 }
@@ -1450,6 +1542,109 @@ mod tests {
             ),
             Err(RectilinearError::NumericLimit) | Err(RectilinearError::PlaneSpacing { .. })
         ));
+    }
+    #[test]
+    fn invalid_touching_input_is_not_healed_by_a_covering_union() {
+        let mut parts = block([0.0; 3], [1.0; 3]).into_parts();
+        let other = block([1.0; 3], [2.0; 3]).into_parts();
+        let vo = crate::usize_to_u32(parts.vertices.len());
+        let eo = crate::usize_to_u32(parts.edges.len());
+        let lo = crate::usize_to_u32(parts.loops.len());
+        parts.vertices.extend(other.vertices);
+        parts.edges.extend(other.edges.into_iter().map(|mut e| {
+            e.start.0 += vo;
+            e.end.0 += vo;
+            e
+        }));
+        parts.loops.extend(other.loops.into_iter().map(|mut l| {
+            for co in &mut l.coedges {
+                co.edge.0 += eo;
+            }
+            l
+        }));
+        parts.faces.extend(other.faces.into_iter().map(|mut f| {
+            for l in &mut f.loops {
+                l.0 += lo;
+            }
+            f
+        }));
+        let touching = Body::try_from_parts(parts, &ValidationPolicy { max_gap: 1e-9 }).unwrap();
+        assert!(touching.is_closed());
+        let envelope = block([-1.0; 3], [3.0; 3]);
+        assert!(matches!(
+            boolean_rectilinear(
+                &touching,
+                &envelope,
+                BooleanOperation::Union,
+                &RectilinearPolicy::default()
+            ),
+            Err(RectilinearError::NonManifoldInput {
+                operand: Operand::Left
+            })
+        ));
+    }
+    #[test]
+    fn source_domain_that_excludes_its_trim_is_not_repaired() {
+        let source = block([0.0; 3], [1.0; 3]);
+        let mut parts = source.clone().into_parts();
+        parts.faces[0].domain.u = ParameterRange::new(0.25, 0.75).unwrap();
+        let invalid = Body::try_from_parts(parts, &ValidationPolicy { max_gap: 1e-9 }).unwrap();
+        assert!(matches!(
+            boolean_rectilinear(
+                &invalid,
+                &source,
+                BooleanOperation::Union,
+                &RectilinearPolicy::default()
+            ),
+            Err(RectilinearError::UnsupportedFace {
+                operand: Operand::Left,
+                ..
+            })
+        ));
+    }
+    #[test]
+    fn face_scan_work_budget_is_preflighted_and_reported() {
+        let source = block([0.0; 3], [1.0; 3]);
+        let result = boolean(&source, &source, BooleanOperation::Union);
+        assert_eq!(result.report.cells, 1);
+        assert_eq!(result.report.face_tests, 108);
+        assert_eq!(result.report.face_test_bound, 108);
+        assert!(matches!(
+            boolean_rectilinear(
+                &source,
+                &source,
+                BooleanOperation::Union,
+                &RectilinearPolicy {
+                    max_face_tests: 107,
+                    ..Default::default()
+                }
+            ),
+            Err(RectilinearError::FaceTestBudget {
+                required: Some(108),
+                maximum: 107
+            })
+        ));
+        let long = block([0.0; 3], [4.0, 4.0, 4.0]);
+        let splitter = block([4.0, 1.0, 0.0], [5.0, 3.0, 4.0]);
+        let result = boolean(&long, &splitter, BooleanOperation::Union);
+        assert!(result.report.face_tests <= result.report.face_test_bound);
+        for (source, images) in long.edges().iter().zip(&result.report.left_edges) {
+            let a = long.vertices()[source.start.index()];
+            let b = long.vertices()[source.end.index()];
+            let axis = (0..3).find(|&i| a[i] != b[i]).unwrap();
+            let mut previous = -f64::INFINITY;
+            for &id in images {
+                let edge = &result.body.edges()[id.index()];
+                let p = result.body.vertices()[edge.start.index()];
+                let q = result.body.vertices()[edge.end.index()];
+                let ta = (p[axis] - a[axis]) / (b[axis] - a[axis]);
+                let tb = (q[axis] - a[axis]) / (b[axis] - a[axis]);
+                let lo = ta.min(tb);
+                let hi = ta.max(tb);
+                assert!(lo >= 0.0 && hi <= 1.0 && lo >= previous);
+                previous = hi;
+            }
+        }
     }
     #[test]
     fn edge_vertex_contacts_and_subresolution_planes_refuse() {

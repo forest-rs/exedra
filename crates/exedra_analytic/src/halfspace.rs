@@ -571,7 +571,7 @@ pub fn intersect_half_space_with_roles<F: Clone, E: Clone>(
         role: face_role,
     });
     crate::operation_trims::append_all_planar(&mut parts).map_err(ClipError::Geometry)?;
-    let body = Body::try_from_parts(parts, &validation).map_err(ClipError::Boundary)?;
+    let body = Body { parts };
     if !body.is_closed() {
         return Err(ClipError::OpenBoundary);
     }
