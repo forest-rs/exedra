@@ -156,7 +156,9 @@ impl NativeSource {
                 )
                 .map_err(NativeChartError::Loft)
             }
-            NativeGeometryRef::Extrusion(_) | NativeGeometryRef::BoredPlate(_) => {
+            NativeGeometryRef::Extrusion(_)
+            | NativeGeometryRef::BoredPlate(_)
+            | NativeGeometryRef::Body { .. } => {
                 unreachable!("preflight refused unavailable family")
             }
         }

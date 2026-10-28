@@ -21,6 +21,7 @@ impl NativeGeometryRef<'_> {
             Self::Sweep(_) => NativeFamily::Sweep,
             Self::Loft(_) => NativeFamily::Loft,
             Self::BoredPlate(_) => NativeFamily::BoredPlate,
+            Self::Body { .. } => NativeFamily::Body,
         }
     }
     /// Complete occurrence placement, separate from body-local geometry.
@@ -32,6 +33,7 @@ impl NativeGeometryRef<'_> {
             Self::Sweep(v) => v.frame(),
             Self::Loft(v) => v.frame(),
             Self::BoredPlate(v) => v.frame(),
+            Self::Body { frame, .. } => frame,
         }
     }
     /// Structural chart operation available for this constructor, if any.
@@ -43,7 +45,7 @@ impl NativeGeometryRef<'_> {
             Self::Revolution(_) => Some(SurfaceChartKind::Revolve),
             Self::Sweep(_) => Some(SurfaceChartKind::Sweep),
             Self::Loft(_) => Some(SurfaceChartKind::Loft),
-            Self::Extrusion(_) | Self::BoredPlate(_) => None,
+            Self::Extrusion(_) | Self::BoredPlate(_) | Self::Body { .. } => None,
         }
     }
     /// Current construction cap, if present, without installing a native source.
@@ -57,6 +59,7 @@ impl NativeGeometryRef<'_> {
             Self::Sweep(v) => v.cap(end),
             Self::Loft(v) => v.cap(end),
             Self::BoredPlate(v) => Some(v.source().cap(end)),
+            Self::Body { .. } => None,
         }
     }
     /// Exact oriented supporting-plane frame in occurrence coordinates.
@@ -87,6 +90,7 @@ impl NativeGeometryRef<'_> {
             NativeGeometryRef::Sweep(v) => local(v.body(), face),
             NativeGeometryRef::Loft(v) => local(v.body(), face),
             NativeGeometryRef::BoredPlate(v) => local(v.body(), face),
+            NativeGeometryRef::Body { body, .. } => local(body, face),
         }?;
         let frame = self.frame() * plane;
         if frame.rows.iter().flatten().any(|v| !v.is_finite()) {

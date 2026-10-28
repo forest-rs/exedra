@@ -5,7 +5,7 @@
 export type LengthUnit = "mm" | "m";
 export type XY = readonly [number, number];
 export type XYZ = readonly [number, number, number];
-export type NativeFamily = "extrusion" | "revolution" | "sweep" | "loft" | "boredPlate";
+export type NativeFamily = "extrusion" | "revolution" | "sweep" | "loft" | "boredPlate" | "body";
 /** Rigid placement intent: fixed-axis X, Y, Z rotations in radians, then translation. */
 export interface Placement {
   readonly translation: XYZ;
@@ -289,8 +289,74 @@ export const paths=Object.freeze({start:CurvePath.start});
 /** Corresponding section intent; the constructor snapshots the placement. */
 export interface LoftSection {readonly profile:Profile;readonly placement:Placement;}
 
+/** Exact row-major rigid axes and origin; geometry validation stays in Rust. */
+export type NativeFrame = readonly [readonly [number,number,number,number],readonly [number,number,number,number],readonly [number,number,number,number]];
+/** Exact unbounded curve support; edge ranges select bounded portions. */
+export type NativeCurveDescription =
+  | {readonly kind:"line";readonly origin:XYZ;readonly direction:XYZ}
+  | {readonly kind:"circle";readonly frame:NativeFrame;readonly radius:number}
+  | {readonly kind:"ellipse";readonly frame:NativeFrame;readonly semiMajor:number;readonly semiMinor:number};
+/** Bounded traversal used by an exact ruled support. */
+export interface NativeCurveSpanDescription {readonly curve:NativeCurveDescription;readonly range:XY;readonly reversed?:boolean;}
+/** Exact supporting geometry. Face loops retain the actual bounded domain. */
+export type NativeSurfaceDescription =
+  | {readonly kind:"plane";readonly frame:NativeFrame}
+  | {readonly kind:"cylinder"|"sphere";readonly frame:NativeFrame;readonly radius:number}
+  | {readonly kind:"cone";readonly frame:NativeFrame;readonly radius:number;readonly slope:number}
+  | {readonly kind:"torus";readonly frame:NativeFrame;readonly majorRadius:number;readonly minorRadius:number}
+  | {readonly kind:"ruled";readonly curves:readonly [NativeCurveSpanDescription,NativeCurveSpanDescription]};
+/** A shared edge or an explicit collapsed surface-pole boundary. IDs index tables. */
+export type NativeEdgeDescription =
+  | {readonly kind:"curve";readonly curve:NativeCurveDescription;readonly range:XY;readonly start:number;readonly end:number}
+  | {readonly kind:"collapsed";readonly vertex:number};
+/** One oriented occurrence of a shared native edge. */
+export interface NativeCoedgeDescription {readonly edge:number;readonly reversed?:boolean;}
+/** Trimmed supporting surface, with outer loop first and subsequent hole loops. */
+export interface NativeFaceDescription {
+  readonly surface:NativeSurfaceDescription;
+  readonly u:XY;
+  readonly v:XY;
+  readonly sense:"forward"|"reverse";
+  readonly loops:readonly number[];
+  readonly features?:readonly string[];
+}
+/** Face parameters following a shared edge's canonical start-to-end direction.
+ * Coedge reversal changes traversal, not this parameter correspondence.
+ * Values are origin + linear*t + cosine*cos(t) + sine*sin(t).
+ */
+export type NativeTrimDescription =
+  | {readonly kind:"line";readonly start:XY;readonly end:XY}
+  | {readonly kind:"harmonic";readonly origin:XY;readonly linear:XY;readonly cosine:XY;readonly sine:XY;readonly range:XY};
+/** Sparse per-loop face parameters, in coedge occurrence order. */
+export interface NativeLoopTrimsDescription {readonly loop:number;readonly curves:readonly NativeTrimDescription[];}
+/** Construction-independent authoritative f64 boundary tables.
+ * Rust checks references, endpoint identity closure and exact support agreement.
+ * Validation does not establish global self-intersection or shell containment.
+ */
+export interface NativeBodyDescription {
+  readonly trims?:readonly NativeLoopTrimsDescription[];
+  readonly vertices:readonly XYZ[];
+  readonly edges:readonly NativeEdgeDescription[];
+  readonly loops:readonly (readonly NativeCoedgeDescription[])[];
+  readonly faces:readonly NativeFaceDescription[];
+}
+function snapshotBody(body:NativeBodyDescription):NativeBodyDescription {
+  let work=body.vertices.length+body.edges.length+body.faces.length+body.loops.length+(body.trims?.length??0);
+  for(const face of body.faces){work+=face.loops.length+(face.features?.length??0);for(const id of face.loops)work+=body.loops[id]?.length??0;}
+  for(const ring of body.loops)work+=ring.length;
+  for(const trims of body.trims??[])work+=trims.curves.length;
+  if(work>8192)fail("budget.nativeSegments","Boundary tables exceed the 8192 native work budget");
+  const freeze=(value:unknown):unknown=>{if(value&&typeof value==="object"){for(const child of Object.values(value))freeze(child);Object.freeze(value);}return value;};
+  try {
+    const copy=JSON.parse(JSON.stringify(body,(_key,value:unknown)=>{if(typeof value==="number")finite(value,"native body value");return value;})) as NativeBodyDescription;
+    for(const face of copy.faces)for(const feature of face.features??[])name(feature);
+    return freeze(copy) as NativeBodyDescription;
+  } catch(error) {if(error instanceof ExedraError)throw error;fail("input.body","Expected finite acyclic native boundary tables");}
+}
+
 type FaceSelector = { kind: "floor"; feature: string } | { kind: "cap"; end: End };
 type SolidNode =
+  | {kind:"body";body:NativeBodyDescription;placement:Placement}
   | {kind:"sphericalCap";radius:number;height:number;placement:Placement}
   | {kind:"throughBore";base:Solid;point:XYZ;direction:XYZ;radius:number;separation:number;feature?:string}
   | { kind:"sweep"; profile:Profile; path:CurvePath; placement:Placement }
@@ -316,6 +382,14 @@ export class Solid {
   private constructor(node: SolidNode) {
     solidNodes.set(this, Object.freeze(node));
     Object.freeze(this);
+  }
+  /** Installs exact boundary tables without reconstructing a constructor family.
+   * Inputs are copied immediately. Geometry is validated at document build time.
+   * Generic sources expose native selections, bounds and STEP support; construction
+   * charts and exact integral measurements are explicitly unavailable.
+   */
+  static body(body:NativeBodyDescription,options:{placement?:Placement}={}):Solid {
+    return new Solid({kind:"body",body:snapshotBody(body),placement:placement(options.placement)});
   }
   static extrude(profile: Profile, options: { height: number; placement?: Placement }): Solid {
     return new Solid({ kind: "extrude", profile, height: finite(options.height, "height"), placement: placement(options.placement) });
@@ -366,6 +440,7 @@ export class Solid {
     return new Solid({ kind: "onFace", host, face: Object.freeze({ ...face }), profile, height: finite(height, "height"), offset: finite(offset, "offset"), at: point(at) });
   }
 }
+export const nativeBody = Solid.body;
 export const extrude = Solid.extrude;
 export const revolve = Solid.revolve;
 export const sphericalCap = Solid.sphericalCap;
@@ -433,7 +508,7 @@ export interface NativeFace {
   features: readonly string[];
   feature?: string;
   end?:End;
-  role: "cap" | "wall" | "floor";
+  role: "cap" | "wall" | "floor" | "boundary";
   surface: "plane" | "cylinder" | "cone" | "torus" | "sphere" | "ruled";
 }
 /** Completed work that generated this output; retained on cache hits. Current-call counters are separate. */
@@ -560,7 +635,7 @@ function graph(parts: Record<string, Solid>, units: LengthUnit, separation: numb
     const source = solidNodes.get(solid); if (!source) fail("graph.solid", "Expected an Exedra Solid");
     let wire:unknown;
     switch(source.kind){
-      case "sphericalCap":wire=source;break;
+      case "body":case "sphericalCap":wire=source;break;
       case "loft":wire={...source,sections:source.sections.map(s=>({...s,profile:visitProfile(s.profile)}))};break;
       case "throughBore":wire={...source,base:visit(source.base)};break;
       case "axialFinish":wire={...source,base:visit(source.base)};break;

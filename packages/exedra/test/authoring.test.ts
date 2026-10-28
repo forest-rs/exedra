@@ -252,3 +252,28 @@ test("spherical cap intent preserves requested dimensions and placement for nati
  assert.throws(()=>sphericalCap({radius:Infinity,height:12}),code("input.nonFinite"));
  session.dispose();
 });
+
+test("generic boundary authoring snapshots exact geometry and feature tables", () => {
+  const h=host(),session=new AuthoringSession(h.native,{units:"mm"});
+  const frame:any=[[1,0,0,0],[0,1,0,0],[0,0,1,0]],vertices:any=[[0,0,0]],features=["stock","machined"];
+  const description:any={vertices,edges:[{kind:"collapsed",vertex:0}],loops:[[{edge:0}]],faces:[{surface:{kind:"plane",frame},u:[0,2],v:[0,3],sense:"forward",loops:[0],features}]};
+  const intent=Solid.body(description);
+  vertices[0][0]=99;frame[0][3]=88;features[0]="mutated";
+  session.build({stock:intent});
+  const wire=h.requests[0].nodes[0];
+  assert.equal(wire.kind,"body");assert.equal(h.requests[0].profiles.length,0);
+  assert.equal(wire.body.vertices[0][0],0);assert.equal(wire.body.faces[0].surface.frame[0][3],0);
+  assert.deepEqual(wire.body.faces[0].features,["stock","machined"]);
+  assert.throws(()=>Solid.body({...description,vertices:[[Infinity,0,0]]}),code("input.nonFinite"));
+  session.dispose();
+});
+
+test("native table budgets count nested references, tags, records and expanded coedge visits",()=>{
+  const base={vertices:[],edges:[],loops:[],faces:[]} as const;
+  assert.throws(()=>Solid.body({...base,loops:Array.from({length:8193},()=>[])}),code("budget.nativeSegments"));
+  assert.throws(()=>Solid.body({...base,trims:Array.from({length:8193},()=>({loop:0,curves:[]}))}),code("budget.nativeSegments"));
+  const frame=[[1,0,0,0],[0,1,0,0],[0,0,1,0]] as const;
+  assert.throws(()=>Solid.body({...base,faces:[{surface:{kind:"plane",frame},u:[0,1],v:[0,1],sense:"forward",loops:Array(8193).fill(0)}]}),code("budget.nativeSegments"));
+  assert.throws(()=>Solid.body({...base,faces:[{surface:{kind:"plane",frame},u:[0,1],v:[0,1],sense:"forward",loops:[],features:Array(8193).fill("tag")}]}),code("budget.nativeSegments"));
+  assert.throws(()=>Solid.body({...base,loops:[Array.from({length:100},()=>({edge:0}))],faces:[{surface:{kind:"plane",frame},u:[0,1],v:[0,1],sense:"forward",loops:Array(100).fill(0)}]}),code("budget.nativeSegments"));
+});

@@ -23,6 +23,7 @@ use serde::{Deserialize, Serialize};
 use wasm_bindgen::prelude::*;
 
 mod authoring;
+mod body;
 mod chart;
 mod inspect;
 use authoring::{Request, Units};
@@ -482,6 +483,9 @@ impl Session {
             ..exedra_step::StepOptions::default()
         };
         let file = match native.geometry() {
+            NativeGeometryRef::Body { body, frame } => {
+                exedra_step::export_body(body, frame, &options)
+            }
             NativeGeometryRef::Extrusion(v) => {
                 exedra_step::export_body(v.body(), v.frame(), &options)
             }

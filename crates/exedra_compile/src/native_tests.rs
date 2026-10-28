@@ -463,3 +463,259 @@ fn bored_plate_retains_new_scope_provenance_and_native_picking_across_display_po
         native.volume()
     );
 }
+
+#[test]
+fn generic_body_installation_retains_tags_geometry_and_independent_selection_scope() {
+    use exedra_analytic::body::{Body, BodyParts, Edge, Face, ValidationPolicy};
+    let original = source(SegTag(7), Placement3::IDENTITY);
+    let parts = original.as_extrusion().unwrap().body().clone().into_parts();
+    let tagged = Body::try_from_parts(
+        BodyParts {
+            trims: parts.trims,
+            vertices: parts.vertices,
+            edges: parts
+                .edges
+                .into_iter()
+                .map(|edge| Edge {
+                    geometry: edge.geometry,
+                    start: edge.start,
+                    end: edge.end,
+                    role: (),
+                })
+                .collect(),
+            loops: parts.loops,
+            faces: parts
+                .faces
+                .into_iter()
+                .map(|face| Face {
+                    surface: face.surface,
+                    domain: face.domain,
+                    sense: face.sense,
+                    loops: face.loops,
+                    role: vec![SegTag(7), SegTag(9)],
+                })
+                .collect(),
+        },
+        &ValidationPolicy { max_gap: 1e-9 },
+    )
+    .unwrap();
+    let native =
+        NativeSource::from_body(tagged.clone(), Placement3::translate(2.0, 3.0, 4.0)).unwrap();
+    let equal = NativeSource::from_body(tagged, Placement3::translate(2.0, 3.0, 4.0)).unwrap();
+    assert_eq!(native.family(), NativeFamily::Body);
+    assert_eq!(native.chart_kind(), None);
+    assert_eq!(native.cap(End::Start), None);
+    assert_eq!(
+        native
+            .face_tags(FaceId(0))
+            .unwrap()
+            .collect::<vec::Vec<_>>(),
+        vec![SegTag(7), SegTag(9)]
+    );
+    assert_eq!(native.fingerprint(), equal.fingerprint());
+    assert!(!native.same_installation(&equal));
+    assert!(matches!(
+        native.volume(),
+        Err(NativeMeasureError::Unavailable {
+            family: NativeFamily::Body,
+            ..
+        })
+    ));
+    let mut compiler = PartCompiler::new();
+    let first = snapshot(&mut compiler, &native, 0.05);
+    let selection = native.select_face(FaceId(0)).unwrap();
+    let repeated = snapshot(&mut compiler, &equal, 0.05);
+    assert_eq!(compiler.counters().native_realizations, 1);
+    assert_eq!(
+        first
+            .body(PartId(0), 0)
+            .unwrap()
+            .native()
+            .unwrap()
+            .resolve_face(&selection),
+        Ok(FaceId(0))
+    );
+    assert_eq!(
+        repeated
+            .body(PartId(0), 0)
+            .unwrap()
+            .native()
+            .unwrap()
+            .resolve_face(&selection),
+        Err(NativeSelectionError::SourceMismatch)
+    );
+    assert!(native.planar_frame(FaceId(0)).is_ok());
+}
+
+#[test]
+fn generic_body_tags_are_distinct_in_authored_order_and_content_identity() {
+    use alloc::vec::Vec;
+    let original = source(SegTag(7), Placement3::IDENTITY).to_body();
+    let tagged = |tags: Vec<SegTag>| original.clone().map_roles(|_| tags.clone(), |_| ());
+    let native = NativeSource::from_body(
+        tagged(vec![SegTag(9), SegTag(7), SegTag(9), SegTag(7)]),
+        Placement3::IDENTITY,
+    )
+    .unwrap();
+    let distinct =
+        NativeSource::from_body(tagged(vec![SegTag(9), SegTag(7)]), Placement3::IDENTITY).unwrap();
+    assert_eq!(
+        native.face_tags(FaceId(0)).unwrap().collect::<Vec<_>>(),
+        vec![SegTag(9), SegTag(7)]
+    );
+    assert_eq!(native.to_body(), distinct.to_body());
+    assert_eq!(native.fingerprint(), distinct.fingerprint());
+}
+
+#[test]
+fn explicit_periodic_chart_trims_participate_in_identity_and_survive_role_mapping() {
+    use exedra_analytic::body::{
+        Body, BodyParts, BoundaryLoop, Coedge, Edge, EdgeId, Face, LoopId, LoopTrims, Sense,
+        TrimCurve, ValidationPolicy, VertexId,
+    };
+    use exedra_analytic::geometry::{Curve, ParameterDomain, ParameterRange, Surface};
+    let tau = core::f64::consts::TAU;
+    let range = |a, b| ParameterRange::new(a, b).unwrap();
+    let parts = BodyParts {
+        vertices: vec![[2.0, 0.0, 0.0], [2.0, 0.0, 3.0]],
+        edges: vec![
+            Edge::new(
+                Curve::circle(Placement3::IDENTITY, 2.0).unwrap(),
+                range(0.0, tau),
+                VertexId(0),
+                VertexId(0),
+                (),
+            ),
+            Edge::new(
+                Curve::circle(Placement3::translate(0.0, 0.0, 3.0), 2.0).unwrap(),
+                range(0.0, tau),
+                VertexId(1),
+                VertexId(1),
+                (),
+            ),
+            Edge::new(
+                Curve::line([2.0, 0.0, 0.0], [0.0, 0.0, 1.0]).unwrap(),
+                range(0.0, 3.0),
+                VertexId(0),
+                VertexId(1),
+                (),
+            ),
+        ],
+        loops: vec![
+            BoundaryLoop {
+                coedges: vec![
+                    Coedge {
+                        edge: EdgeId(0),
+                        reversed: false,
+                    },
+                    Coedge {
+                        edge: EdgeId(2),
+                        reversed: false,
+                    },
+                    Coedge {
+                        edge: EdgeId(1),
+                        reversed: true,
+                    },
+                    Coedge {
+                        edge: EdgeId(2),
+                        reversed: true,
+                    },
+                ],
+            },
+            BoundaryLoop {
+                coedges: vec![Coedge {
+                    edge: EdgeId(0),
+                    reversed: true,
+                }],
+            },
+            BoundaryLoop {
+                coedges: vec![Coedge {
+                    edge: EdgeId(1),
+                    reversed: false,
+                }],
+            },
+        ],
+        faces: vec![
+            Face {
+                surface: Surface::cylinder(Placement3::IDENTITY, 2.0).unwrap(),
+                domain: ParameterDomain {
+                    u: range(0.0, 2.0 * tau),
+                    v: range(0.0, 3.0),
+                },
+                sense: Sense::Forward,
+                loops: vec![LoopId(0)],
+                role: vec![SegTag(7)],
+            },
+            Face {
+                surface: Surface::plane(Placement3::IDENTITY).unwrap(),
+                domain: ParameterDomain {
+                    u: range(-2.0, 2.0),
+                    v: range(-2.0, 2.0),
+                },
+                sense: Sense::Reverse,
+                loops: vec![LoopId(1)],
+                role: vec![],
+            },
+            Face {
+                surface: Surface::plane(Placement3::translate(0.0, 0.0, 3.0)).unwrap(),
+                domain: ParameterDomain {
+                    u: range(-2.0, 2.0),
+                    v: range(-2.0, 2.0),
+                },
+                sense: Sense::Forward,
+                loops: vec![LoopId(2)],
+                role: vec![],
+            },
+        ],
+        trims: vec![LoopTrims {
+            loop_id: LoopId(0),
+            curves: vec![
+                TrimCurve::Line {
+                    start: [0.0, 0.0],
+                    end: [tau, 0.0],
+                },
+                TrimCurve::Line {
+                    start: [tau, 0.0],
+                    end: [tau, 3.0],
+                },
+                TrimCurve::Line {
+                    start: [0.0, 3.0],
+                    end: [tau, 3.0],
+                },
+                TrimCurve::Line {
+                    start: [0.0, 0.0],
+                    end: [0.0, 3.0],
+                },
+            ],
+        }],
+    };
+    let first = Body::try_from_parts(parts.clone(), &ValidationPolicy { max_gap: 1e-10 }).unwrap();
+    let mut shifted = parts;
+    for curve in &mut shifted.trims[0].curves {
+        let TrimCurve::Line { start, end } = curve else {
+            unreachable!()
+        };
+        start[0] += tau;
+        end[0] += tau;
+    }
+    let shifted = Body::try_from_parts(shifted, &ValidationPolicy { max_gap: 1e-10 }).unwrap();
+    assert_eq!(first.vertices(), shifted.vertices());
+    assert_eq!(first.edges(), shifted.edges());
+    assert_eq!(first.faces(), shifted.faces());
+    assert_eq!(
+        first.clone().map_roles(|tags| tags, |()| ()).trims(),
+        first.trims()
+    );
+    let a = NativeSource::from_body(first, Placement3::IDENTITY).unwrap();
+    let b = NativeSource::from_body(shifted, Placement3::IDENTITY).unwrap();
+    assert_ne!(
+        a.fingerprint(),
+        b.fingerprint(),
+        "different valid pcurve charts must not alias realized cache identity"
+    );
+    assert_eq!(a.to_body().trims(), a.geometry().to_body().trims());
+    let mut compiler = PartCompiler::new();
+    snapshot(&mut compiler, &a, 0.05);
+    snapshot(&mut compiler, &b, 0.05);
+    assert_eq!(compiler.counters().native_realizations, 2);
+}

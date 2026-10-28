@@ -19,6 +19,7 @@ pub(crate) fn family(value: NativeFamily) -> &'static str {
         NativeFamily::Sweep => "sweep",
         NativeFamily::Loft => "loft",
         NativeFamily::BoredPlate => "boredPlate",
+        NativeFamily::Body => "body",
     }
 }
 fn chart_kind(kind: exedra_constructive::chart::SurfaceChartKind) -> &'static str {
@@ -134,6 +135,7 @@ pub(crate) fn metadata(
     names: &BTreeMap<u32, String>,
 ) -> Result<Value, Error> {
     let faces = match native.geometry() {
+        NativeGeometryRef::Body { body, .. } => faces(body, names, native, |_| "boundary"),
         NativeGeometryRef::Extrusion(v) => faces(v.body(), names, native, |role| match role {
             exedra_analytic::extrusion::FaceRole::Cap(_) => "cap",
             exedra_analytic::extrusion::FaceRole::Wall { .. } => "wall",
@@ -161,6 +163,7 @@ pub(crate) fn metadata(
         }),
     };
     let support = match native.geometry() {
+        NativeGeometryRef::Body { body, .. } => exedra_step::check_geometry_support(body),
         NativeGeometryRef::Extrusion(v) => exedra_step::check_geometry_support(v.body()),
         NativeGeometryRef::Revolution(v) => exedra_step::check_geometry_support(v.body()),
         NativeGeometryRef::Sweep(v) => exedra_step::check_geometry_support(v.body()),
