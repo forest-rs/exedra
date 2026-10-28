@@ -11,14 +11,16 @@ import subprocess
 parser = argparse.ArgumentParser(description=__doc__)
 parser.add_argument("--repo", type=pathlib.Path, default=pathlib.Path(__file__).resolve().parents[3])
 parser.add_argument("--output", type=pathlib.Path, required=True)
-parser.add_argument("--workload", choices=["bores", "refinement"], default="bores")
+parser.add_argument("--workload", choices=["bores", "refinement", "machining"], default="bores")
 args = parser.parse_args()
 repo, output = args.repo.resolve(), args.output.resolve()
 output.mkdir(parents=True, exist_ok=True)
 (output / "src").mkdir(exist_ok=True)
 worker = (repo / "examples/step_exchange/src/bin/bore_study.rs" if args.workload == "bores"
-          else pathlib.Path(__file__).resolve().parents[3] / "benchmarks/constructive_wind_tunnel/src/bin/accuracy_refinement.rs")
+          else repo / "benchmarks/constructive_wind_tunnel/src/bin/native_machining.rs" if args.workload == "machining"
+          else repo / "benchmarks/constructive_wind_tunnel/src/bin/accuracy_refinement.rs")
 scope = ("three bore constructions, realizations and STEP exports including retained original Extrusion records; original preauthored source, requests, containers and warmup excluded; native_only drops display/export outputs; released drops models; no compiler, JS or GPU" if args.workload == "bores" else
+         "retained native through-cylinder pattern construction plus operation history; prepared source/tools and warmup excluded; native_only drops history, released drops final body; no display, STEP, compiler, JS or GPU" if args.workload == "machining" else
          "one translated-bore display realization including optional refinement; native model construction and warmup excluded; retained holds delivered mesh only; released drops mesh; no compiler, JS or GPU")
 extra_dependencies = ("\n".join(
     f'{name} = {{ path = {json.dumps(str(repo / "crates" / name))}, features = ["std"] }}'
