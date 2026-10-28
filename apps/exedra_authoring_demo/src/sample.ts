@@ -1,7 +1,7 @@
 // Copyright 2026 the Exedra Authors
 // SPDX-License-Identifier: Apache-2.0 OR MIT
 
-import { ExedraError, extrude, profiles, revolve, sweep, loft, paths, placement, charts, uvTransform, type NativePart, type ConstructionChart } from "@exedra/authoring";
+import { ExedraError, extrude, profiles, revolve, sphericalCap, sweep, loft, paths, placement, charts, uvTransform, type NativePart, type ConstructionChart } from "@exedra/authoring";
 
 export interface PanelParameters {
   width: number;
@@ -86,6 +86,34 @@ export function authorFlangedSleeve(p:FlangeParameters) {
     if(p.shoulder.kind==="chamfer"&&p.shoulder.distance!==0)section=corner.chamfer(p.shoulder.distance,{feature:"shoulder"});
   }
   return {sleeve:revolve(section,{angle:p.angle*Math.PI/180,placement:placement({rotationXYZ:[Math.PI/2,0,0]})})};
+}
+
+export interface SphereParameters {radius:number;}
+/** A center-defined half disk revolves to one spherical face with two exact poles. */
+export function authorSphere(p:SphereParameters) {
+  const r=p.radius;
+  const section=profiles.loop([
+    {kind:"line",to:[0,0]},
+    {kind:"arc",to:[0,2*r],center:[0,r],clockwise:false,feature:"shell"},
+  ]);
+  return {sphere:revolve(section,{placement:placement({rotationXYZ:[Math.PI/2,0,0]})})};
+}
+
+export interface DomeParameters {radius:number;height:number;}
+/** Rust derives the canonical center-defined section, preserving the requested cap dimensions. */
+export function authorDome(p:DomeParameters) {
+  return {dome:sphericalCap({...p,placement:placement({rotationXYZ:[Math.PI/2,0,0]})})};
+}
+
+export interface PointedConeParameters {radius:number;height:number;}
+/** An ordinary triangular section creates an exact cone, planar base and welded apex. */
+export function authorPointedCone(p:PointedConeParameters) {
+  const section=profiles.loop([
+    {kind:"line",to:[p.radius,0],feature:"base"},
+    {kind:"line",to:[0,p.height],feature:"shell"},
+    {kind:"line",to:[0,0]},
+  ]);
+  return {cone:revolve(section,{placement:placement({rotationXYZ:[Math.PI/2,0,0]})})};
 }
 
 /** The same authored section as the Rust turned-fitting study. */

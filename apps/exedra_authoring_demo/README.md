@@ -133,3 +133,17 @@ refused by the native profile operation, preserving the last valid display.
 face metadata, render-buffer hashes and deterministic GLB bytes across generated
 Wasm packages. The sharp sleeve fixture deliberately remains sharp while the
 interactive sleeve defaults to a rounded shoulder.
+
+The sphere, spherical-cap and pointed-cone samples use full-turn native
+revolutions. Sphere and cone author ordinary reusable center-arc/line profiles;
+the cap delegates its original radius and height to Rust's canonical section
+builder. Radius and height remain independent, including hemispheres and taller
+caps. Invalid dimensions retain the previous display with a typed diagnostic.
+The inspector keeps the same measurements, kernel timings, face picking,
+construction checker and exact STEP download paths. Show mesh triangles to
+inspect welded poles, and change display quality without changing native identity.
+
+The maintained Wasm inventory checks exact analytic measures, emitted closed
+oriented meshes, unit normals, coarse/medium/fine accuracy, charted poles and
+explicit collapsed-vertex STEP correspondence. It also checks recovery from an
+invalid cap height and from a representable height too small to preserve its rim.

@@ -5,7 +5,7 @@ import assert from "node:assert/strict";
 import { readFile } from "node:fs/promises";
 import { AuthoringSession, ExedraError, extrude, revolve, placement, profiles, charts, uvTransform } from "@exedra/authoring";
 import { AuthoringKernel, default as initialize } from "../../../packages/exedra/dist/wasm_pkg/exedra_authoring_web_bridge.js";
-import { authorPanel, authorFlangedSleeve } from "../src/sample.ts";
+import { authorPanel, authorFlangedSleeve, authorSphere, authorDome, authorPointedCone } from "../src/sample.ts";
 import { galleryCases } from "./gallery-cases.mjs";
 
 await initialize({module_or_path:await readFile(new URL("../../../packages/exedra/dist/wasm_pkg/exedra_authoring_web_bridge_bg.wasm",import.meta.url))});
@@ -21,6 +21,61 @@ function within(display) {
   assert.ok(display.timing.kernelMs>=0&&Number.isFinite(display.timing.kernelMs));
 }
 const results=[];
+
+// Render vertices may split at UV/normal seams; closure is checked by exact
+// emitted position identities, independently of the native edge tables.
+function closedDisplay(display) {
+  const point=index=>display.positions.slice(3*index,3*index+3);
+  const key=p=>Array.from(p,value=>Object.is(value,-0)?0:value).join(",");
+  const edges=new Map();
+  for(let i=0;i<display.indices.length;i+=3){
+    const indices=Array.from(display.indices.slice(i,i+3)),points=indices.map(point),keys=points.map(key);
+    const ab=points[1].map((value,j)=>value-points[0][j]),ac=points[2].map((value,j)=>value-points[0][j]);
+    const cross=[ab[1]*ac[2]-ab[2]*ac[1],ab[2]*ac[0]-ab[0]*ac[2],ab[0]*ac[1]-ab[1]*ac[0]];
+    assert.ok(Math.hypot(...cross)>0,"zero-area pole triangle");
+    const normal=[0,1,2].map(j=>indices.reduce((sum,index)=>sum+display.normals[3*index+j],0));
+    assert.ok(cross.reduce((sum,value,j)=>sum+value*normal[j],0)>0,"triangle winding disagrees with emitted normals");
+    for(let j=0;j<3;j++){
+      const a=keys[j],b=keys[(j+1)%3],edge=a<b?`${a}|${b}`:`${b}|${a}`;
+      const use=edges.get(edge)??[0,0];use[Number(a>b)]++;edges.set(edge,use);
+    }
+  }
+  for(const use of edges.values())assert.deepEqual(use,[1,1],"emitted position mesh must be closed and oriented");
+  for(let i=0;i<display.normals.length;i+=3)assert.ok(Math.abs(Math.hypot(...display.normals.slice(i,i+3))-1)<1e-6,"unit native normal");
+}
+
+const poleSession=new AuthoringSession(new AuthoringKernel(),{units:"mm"});
+try {
+ const radius=25,height=40;
+ for(const fixture of [
+  {id:"sphere",make:()=>authorSphere({radius}),volume:4*Math.PI*radius**3/3,area:4*Math.PI*radius**2,collapsed:2,surface:"sphere"},
+  {id:"dome",make:()=>authorDome({radius,height:12}),volume:Math.PI*12**2*(radius-12/3),area:2*Math.PI*radius*12+Math.PI*12*(2*radius-12),collapsed:1,surface:"sphere"},
+  {id:"cone",make:()=>authorPointedCone({radius,height}),volume:Math.PI*radius**2*height/3,area:Math.PI*radius*(radius+Math.hypot(radius,height)),collapsed:1,surface:"cone"},
+ ]){
+  const document=poleSession.build(fixture.make());
+  try {
+   const part=Object.values(document.parts)[0];
+   assert.equal(part.family,"revolution");assert.equal(part.faces().filter(face=>face.surface===fixture.surface).length,1);
+   if(fixture.id!=="dome")assert.equal(part.faces("shell")[0].surface,fixture.surface);
+   assert.ok(Math.abs(part.measurements.volume.value-fixture.volume)<fixture.volume*1e-12);
+   assert.ok(Math.abs(part.measurements.surfaceArea.value-fixture.area)<fixture.area*1e-12);
+   for(const tolerance of [.45,.12,.035]){const display=part.realize({tolerance});within(display);closedDisplay(display);}
+   const charted=part.realize({tolerance:.12,chart:charts.revolve({referenceRadius:radius})});within(charted);closedDisplay(charted);
+   assert.ok(charted.uvs.every(Number.isFinite));
+   const file=part.exportStep({timestamp});
+   assert.equal(file.report.correspondence.edges.filter(edge=>edge?.kind==="collapsedVertex").length,fixture.collapsed);
+   assert.ok(file.text.includes(fixture.surface==="sphere"?"SPHERICAL_SURFACE(":"CONICAL_SURFACE("));
+  }finally{document.dispose();}
+ }
+ const held=poleSession.build(authorDome({radius,height:12}));
+ try {
+  for(const [height,code] of [[51,"revolve.cap.height"],[1e-20,"revolve.cap.heightResolution"]])assert.throws(()=>poleSession.build(authorDome({radius,height})),error=>error instanceof ExedraError&&error.diagnostic.code===code&&error.diagnostic.radius===radius&&error.diagnostic.height===height&&error.timing.outcome==="refused");
+  held.parts.dome.realize(policy);
+ }finally{held.dispose();}
+ assert.equal(poleSession.stats().documents,0);assert.equal(poleSession.stats().cacheEntries,0);
+ results.push({sample:"native-pole-displays",outcome:"success",closedSamples:3,qualities:3,charted:true,refusals:["invalid-height","lost-height-resolution"]});
+}finally{poleSession.dispose();}
+
 for(const sample of galleryCases) {
   const session=new AuthoringSession(new AuthoringKernel(),{units:"mm"});
   let original,fresh;

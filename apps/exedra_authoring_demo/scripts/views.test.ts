@@ -4,6 +4,8 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 import { mountViews } from "../src/views.ts";
+import * as THREE from "three";
+import { meshTriangles } from "../src/mesh-overlay.ts";
 const settle=()=>new Promise(resolve=>setImmediate(resolve));
 function harness(loadScene:Parameters<typeof mountViews>[0]["loadScene"]){
   const select=Object.assign(new EventTarget(),{value:"geometry"}) as unknown as HTMLSelectElement;
@@ -33,4 +35,22 @@ test("failed lazy imports remain diagnosable and a new selection retries",async(
  let attempts=0;
  const h=harness(()=>{if(attempts++===0)throw Error("unavailable kernel");return Promise.resolve({async mountScene(){return {setActive(){},dispose(){}}}})});
  h.choose("scene");await settle();assert.equal(h.scene.textContent,"unavailable kernel");h.choose("geometry");h.choose("scene");await settle();assert.equal(attempts,2);h.views.dispose();
+});
+
+test("triangle overlays retain one surface geometry and preserve native mesh picking",()=>{
+ const geometry=new THREE.SphereGeometry(2,16,8),material=new THREE.MeshStandardMaterial(),surface=new THREE.Mesh(geometry,[material]);
+ geometry.addGroup(0,geometry.index!.count,0);
+ const overlay=meshTriangles(surface,false),group=new THREE.Group();group.add(surface,overlay.mesh);
+ const position=geometry.getAttribute("position").array,index=geometry.index;
+ let geometryReleases=0,surfaceReleases=0,overlayReleases=0;
+ geometry.addEventListener("dispose",()=>geometryReleases++);material.addEventListener("dispose",()=>surfaceReleases++);overlay.mesh.material.addEventListener("dispose",()=>overlayReleases++);
+ for(let i=0;i<20;i++)overlay.setVisible(i%2===0);
+ overlay.setVisible(true);group.updateMatrixWorld(true);
+ assert.strictEqual(overlay.mesh.geometry,geometry);assert.strictEqual(geometry.getAttribute("position").array,position);assert.strictEqual(geometry.index,index);
+ assert.equal(material.wireframe,false);assert.equal(material.polygonOffset,true);
+ assert.equal(overlay.mesh.material.depthTest,true);assert.equal(overlay.mesh.material.depthWrite,false);
+ const ray=new THREE.Raycaster(new THREE.Vector3(0,0,5),new THREE.Vector3(0,0,-1));
+ const hits=ray.intersectObjects([surface]);assert.ok(hits.length>0);assert.ok(hits.every(hit=>hit.object===surface&&Number.isInteger(hit.faceIndex)));
+ overlay.dispose();assert.equal(overlayReleases,1);assert.equal(geometryReleases,0);assert.equal(surfaceReleases,0);
+ geometry.dispose();material.dispose();assert.equal(geometryReleases,1);assert.equal(surfaceReleases,1);
 });
