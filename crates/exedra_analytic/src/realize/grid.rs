@@ -679,6 +679,7 @@ mod tests {
             }
             let body = Body::try_from_parts(
                 BodyParts {
+                    trims: Vec::new(),
                     vertices: p.to_vec(),
                     edges,
                     loops: vec![BoundaryLoop { coedges }],
@@ -775,6 +776,7 @@ mod tests {
             }
             let body = Body::try_from_parts(
                 BodyParts {
+                    trims: Vec::new(),
                     vertices: vec![[12.0, 0.0, 0.0]],
                     edges: vec![
                         Edge {

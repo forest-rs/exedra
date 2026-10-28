@@ -117,6 +117,7 @@ pub(super) fn construct<P: IntoProfile>(
         });
     }
     let mut parts = BodyParts {
+        trims: Vec::new(),
         vertices: Vec::with_capacity(vertices),
         edges: Vec::with_capacity(edges),
         loops: Vec::with_capacity(walls + 2 * offsets.len()),

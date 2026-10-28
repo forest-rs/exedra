@@ -1619,6 +1619,7 @@ mod tests {
         ];
         Body::try_from_parts(
             BodyParts {
+                trims: Vec::new(),
                 vertices,
                 edges,
                 loops: vec![BoundaryLoop {

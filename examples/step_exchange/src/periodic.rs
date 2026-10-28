@@ -92,6 +92,7 @@ pub(super) fn cylinder() -> Body {
     ];
     Body::try_from_parts(
         BodyParts {
+            trims: Vec::new(),
             vertices: vec![[2.0, 0.0, 0.0], [2.0, 0.0, 5.0]],
             edges,
             loops,
@@ -119,6 +120,7 @@ pub(super) fn torus() -> Body {
     .to_vec();
     Body::try_from_parts(
         BodyParts {
+            trims: Vec::new(),
             vertices: vec![[12.0, 0.0, 0.0]],
             edges,
             loops: vec![BoundaryLoop {

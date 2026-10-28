@@ -275,6 +275,7 @@ pub(super) fn construct(
         return Err(SweepError::UnsupportedPath);
     }
     let mut parts = BodyParts {
+        trims: Vec::new(),
         vertices: Vec::with_capacity(section_count),
         edges: Vec::with_capacity(edge_count),
         loops: Vec::with_capacity(loop_count),

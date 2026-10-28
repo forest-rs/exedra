@@ -117,6 +117,7 @@ fn sphere(hemisphere: bool, seam: bool) -> Body {
     }
     Body::try_from_parts(
         BodyParts {
+            trims: Vec::new(),
             vertices,
             edges,
             loops,
@@ -231,6 +232,7 @@ fn hollow_sector(angle: f64) -> Body {
     ];
     Body::try_from_parts(
         BodyParts {
+            trims: Vec::new(),
             vertices,
             edges,
             loops,

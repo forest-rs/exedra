@@ -8,6 +8,7 @@ use core::f64::consts::{FRAC_PI_2, PI, TAU};
 fn sphere_parts() -> BodyParts {
     let radius = 2.0;
     BodyParts {
+        trims: Vec::new(),
         vertices: vec![[0.0, 0.0, -radius], [0.0, 0.0, radius]],
         edges: vec![
             Edge::collapsed(VertexId(0), ()),
