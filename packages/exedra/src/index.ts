@@ -62,6 +62,10 @@ export interface Diagnostic {
   startRadius?:number;
   endRadius?:number;
   radiusRoundoffBound?:number;
+  radius?:number;
+  height?:number;
+  axisOffset?:number;
+  rimRadius?:number;
   cornerPoint?:XY;
   cornerTolerance?:number;
   corner?:ProfileCornerLocation;
@@ -287,6 +291,7 @@ export interface LoftSection {readonly profile:Profile;readonly placement:Placem
 
 type FaceSelector = { kind: "floor"; feature: string } | { kind: "cap"; end: End };
 type SolidNode =
+  | {kind:"sphericalCap";radius:number;height:number;placement:Placement}
   | {kind:"throughBore";base:Solid;point:XYZ;direction:XYZ;radius:number;separation:number;feature?:string}
   | { kind:"sweep"; profile:Profile; path:CurvePath; placement:Placement }
   | { kind:"loft"; sections:readonly LoftSection[]; placement:Placement }
@@ -318,6 +323,13 @@ export class Solid {
   /** Revolves profile X as positive radius and profile Y as height, about local +Y. */
   static revolve(profile: Profile, options: { angle?: number; placement?: Placement } = {}): Solid {
     return new Solid({ kind: "revolve", profile, angle: finite(options.angle ?? 2*Math.PI,"angle"), placement: placement(options.placement) });
+  }
+  /** Exact full-turn spherical cap, from a planar base at local Y=0 toward +Y.
+   * Height may reach twice the radius for a full sphere. Rust builds the canonical
+   * profile revolution and refuses dimensions that lose their rim or height in f64.
+   */
+  static sphericalCap(options:{radius:number;height:number;placement?:Placement}):Solid {
+    return new Solid({kind:"sphericalCap",radius:finite(options.radius,"sphere radius"),height:finite(options.height,"cap height"),placement:placement(options.placement)});
   }
   /** Smooth open line/arc sweep; the native constructor checks supported section geometry. */
   static sweep(profile:Profile,path:CurvePath,options:{placement?:Placement}={}):Solid {
@@ -356,6 +368,7 @@ export class Solid {
 }
 export const extrude = Solid.extrude;
 export const revolve = Solid.revolve;
+export const sphericalCap = Solid.sphericalCap;
 export const sweep = Solid.sweep;
 export const loft = Solid.loft;
 /** Authored selection resolved against the native extrusion during build. */
@@ -547,6 +560,7 @@ function graph(parts: Record<string, Solid>, units: LengthUnit, separation: numb
     const source = solidNodes.get(solid); if (!source) fail("graph.solid", "Expected an Exedra Solid");
     let wire:unknown;
     switch(source.kind){
+      case "sphericalCap":wire=source;break;
       case "loft":wire={...source,sections:source.sections.map(s=>({...s,profile:visitProfile(s.profile)}))};break;
       case "throughBore":wire={...source,base:visit(source.base)};break;
       case "axialFinish":wire={...source,base:visit(source.base)};break;
