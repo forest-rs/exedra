@@ -667,3 +667,105 @@ fn charted_torus_delivered_vertex_budget_witness() {
         );
     }
 }
+
+#[test]
+fn welded_native_poles_keep_corner_parameters_normals_and_render_correspondence() {
+    for spherical in [true, false] {
+        let segments = if spherical {
+            vec![Segment::line([0.0, -2.0]), Segment::arc([0.0, 2.0], 1.0)]
+        } else {
+            vec![
+                Segment::line([2.0, 0.0]),
+                Segment::line([0.0, 3.0]),
+                Segment::line([0.0, 0.0]),
+            ]
+        };
+        let source: NativeSource = Revolution::new(
+            Profile::new(
+                Loop::new(segments).unwrap(),
+                vec![],
+                &ProfilePolicy::new(1e-9),
+            )
+            .unwrap(),
+            Placement3::IDENTITY,
+            core::f64::consts::TAU,
+        )
+        .unwrap()
+        .into();
+        let prepared = PreparedSource::new(PartSource::Native(source.clone()));
+        let selected = source.select_face(FaceId(0)).unwrap();
+        let policy = CompilePolicy {
+            normals: NormalsSource::CustomOrDerived,
+            native_chart: Some(chart()),
+            native: exedra_analytic::realize::RealizationPolicy {
+                tolerance: 0.025,
+                ..Default::default()
+            },
+            ..Default::default()
+        };
+        let mut compiler = PartCompiler::new();
+        let inputs = [PartInput::prepared("pole", &prepared)];
+        let snapshot = compiler.compile_snapshot(&inputs, &policy).unwrap();
+        let body = snapshot.body(PartId(0), 0).unwrap();
+        assert_eq!(
+            body.native().unwrap().resolve_face(&selected),
+            Ok(FaceId(0))
+        );
+        let native = body.native_realization().unwrap();
+        assert!(!native.pole_corners.is_empty());
+        let compiled = &snapshot.compiled().part(PartId(0)).unwrap().bodies[0];
+        let mut expected = expected_triangles(&source.realize(&policy.native).unwrap());
+        for (ordinal, indices) in compiled.tri.indices.as_chunks::<3>().0.iter().enumerate() {
+            let points = indices.map(|i| compiled.tri.positions[i as usize]);
+            assert!(
+                expected.remove(&(native.render_face(ordinal).unwrap().0, triangle_key(points)))
+            );
+        }
+        assert!(expected.is_empty());
+        let mut count = 0;
+        for (p, n) in compiled.tri.positions.iter().zip(&compiled.tri.normals) {
+            let apex = if spherical { 2.0 } else { 3.0 };
+            if *p == [0.0, apex, 0.0] {
+                count += 1;
+                let n = n.map(f64::from);
+                let length = n.into_iter().map(|v| v * v).sum::<f64>();
+                assert!((length - 1.0).abs() < 1e-6);
+                if spherical {
+                    assert!(n[1] > 0.99999);
+                } else {
+                    assert!(
+                        n[1] > 0.4 && n[1] < 0.9,
+                        "cone apex uses directional side limits"
+                    );
+                }
+            }
+        }
+        assert!(
+            count > 2,
+            "UV sectors split display vertices, while native pole stays welded"
+        );
+        let attempts = compiler.counters().native_realizations;
+        let hit = compiler.compile_snapshot(&inputs, &policy).unwrap();
+        assert_eq!(compiler.counters().native_realizations, attempts);
+        assert!(core::ptr::eq(
+            native.pole_corners.as_slice(),
+            hit.body(PartId(0), 0)
+                .unwrap()
+                .native_realization()
+                .unwrap()
+                .pole_corners
+                .as_slice()
+        ));
+        let maximum = u32::try_from(compiled.tri.positions.len() - 1).unwrap();
+        assert!(matches!(
+            compiler.compile_snapshot(
+                &inputs,
+                &CompilePolicy {
+                    max_render_vertices: Some(maximum),
+                    ..policy
+                }
+            ),
+            Err(CompileError::RenderVertices { .. })
+        ));
+    }
+}

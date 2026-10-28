@@ -57,7 +57,7 @@ fn turn(rounded: bool) -> Result<Mesh> {
     let output = solid.realize_with_uvs(
         &REALIZE,
         |_, face| u32::from(matches!(face.role, TurnFace::Cap { .. })),
-        |role, p| match role {
+        |_, role, p| match role {
             TurnFace::Wall { .. } => chart.map_revolve_wall_triangle(p),
             TurnFace::Cap { .. } => chart.map_cap_triangle(p),
         },

@@ -150,7 +150,7 @@ impl core::error::Error for NativeMeasureError {}
 pub struct NativeBoundaryStorage {
     /// Authoritative f64 vertices.
     pub vertices: usize,
-    /// Bounded shared curves.
+    /// Shared native edges, including collapsed pole boundaries.
     pub edges: usize,
     /// Oriented boundary loops.
     pub loops: usize,
@@ -177,6 +177,8 @@ pub struct NativeRealization {
     pub mesh_vertices: Vec<(exedra_mesh::VertexId, VertexSource)>,
     /// Shared sampled edge chains.
     pub edge_chains: EdgeChains,
+    /// Sparse forward face parameters at welded pole corners.
+    pub pole_corners: exedra_analytic::realize::PoleCorners,
     /// Original realization accuracy and sampling evidence, including f32 emission.
     pub report: RealizationReport,
     render_faces: Vec<FaceId>,
@@ -213,6 +215,7 @@ impl NativeRealization {
             mesh_faces,
             mesh_vertices,
             edge_chains,
+            pole_corners,
             report,
         } = realized;
         (
@@ -221,6 +224,7 @@ impl NativeRealization {
                 mesh_faces,
                 mesh_vertices,
                 edge_chains,
+                pole_corners,
                 report,
                 render_faces,
                 chart: chart.map(Box::new),

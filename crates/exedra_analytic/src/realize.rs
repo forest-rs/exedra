@@ -12,14 +12,16 @@
 
 use crate::body::{Body, BodyError, Coedge, EdgeId, Face, FaceId, ValidationPolicy, VertexId};
 use crate::geometry::{Curve, GeometryError, Surface};
-use alloc::vec::Vec;
+use alloc::{boxed::Box, vec::Vec};
 use exedra_math::{Placement3, narrow};
 use exedra_mesh::{BuildParams, Mesh};
 use exedra_profile::{CircularEdgeConstraints, CircularSamplingError, circular_edge_count};
 use exedra_triangulate::{PolygonInput, TriError, TriParams, triangulate_preserving_boundary};
 
 mod grid;
+mod poles;
 use grid::GridPatch;
+use poles::PolePatch;
 
 /// Explicit accuracy and storage bounds for one body realization.
 ///
@@ -27,6 +29,10 @@ use grid::GridPatch;
 /// It improves interior diagonals without adding vertices; a minimum triangle
 /// angle is not guaranteed. Geometric deviation is controlled by
 /// [`Self::tolerance`] independently of triangle shape.
+/// Full spheres can use aligned latitude rings with fewer longitudes near the
+/// poles when a directed radial-deviation bound certifies the schedule. Other
+/// supported pole patches retain their rectangular/fan sampling. Pole positions
+/// stay welded; face-varying normal limits and chart coordinates remain distinct.
 #[derive(Copy, Clone, Debug, PartialEq)]
 pub struct RealizationPolicy {
     /// Requested geometric deviation in model units, including emitted precision.
@@ -161,7 +167,8 @@ pub struct RealizationReport {
     /// Conservative geometric deviation bound: maximum curve/surface error, emitted and ruling
     /// displacement, and two native gaps (endpoint-to-curve and curve-to-support).
     pub max_deviation: f64,
-    /// Segment counts indexed by native edge; zero for detached edges.
+    /// Physical curve-segment counts indexed by native edge; zero for detached
+    /// edges and explicit collapsed boundaries, whose chain has one vertex.
     pub edge_segments: Vec<u32>,
     /// Attempt and completed-output work, including any discarded output.
     pub work: RealizationWork,
@@ -176,6 +183,56 @@ impl RealizationReport {
     }
 }
 
+/// Forward face parameters at an emitted corner whose authoritative native
+/// vertex is a surface pole. These are supporting-surface coordinates, not
+/// texture UVs or fictitious parameters of a collapsed edge.
+#[derive(Copy, Clone, Debug, PartialEq)]
+pub struct PoleCorner {
+    /// Mesh-local corner in this realization.
+    pub corner: exedra_mesh::CornerId,
+    /// Owning native face.
+    pub face: FaceId,
+    /// Authoritative native pole vertex; also retained in [`VertexSource::Vertex`].
+    pub vertex: VertexId,
+    /// Face-local U/V. Cone U selects a one-sided limiting normal; sphere normals
+    /// are unique at their coordinate poles. Parameter units follow the surface.
+    pub uv: [f64; 2],
+}
+
+/// Sparse immutable pole-corner correspondence, sorted by mesh corner index.
+/// The empty default allocates nothing; mesh IDs remain realization-local.
+#[derive(Clone, Debug, Default)]
+pub struct PoleCorners {
+    records: Box<[PoleCorner]>,
+}
+impl PoleCorners {
+    /// Borrow all records without cloning geometry or correspondence.
+    #[must_use]
+    pub fn as_slice(&self) -> &[PoleCorner] {
+        &self.records
+    }
+    /// Number of pole-corner records.
+    #[must_use]
+    pub fn len(&self) -> usize {
+        self.records.len()
+    }
+    /// Whether this realization has no pole-corner records.
+    #[must_use]
+    pub fn is_empty(&self) -> bool {
+        self.records.is_empty()
+    }
+    /// A mesh-local corner's forward pole parameters. Unknown/stale local IDs
+    /// return `None`; IDs from a different realization must not be reused.
+    #[must_use]
+    pub fn get(&self, corner: exedra_mesh::CornerId) -> Option<&PoleCorner> {
+        let i = self
+            .records
+            .binary_search_by_key(&corner.index(), |r| r.corner.index())
+            .ok()?;
+        (self.records[i].corner == corner).then_some(&self.records[i])
+    }
+}
+
 /// A realized mesh with native geometry correspondence and accuracy evidence.
 #[derive(Clone, Debug)]
 pub struct RealizedBody {
@@ -187,6 +244,8 @@ pub struct RealizedBody {
     pub mesh_vertices: Vec<(exedra_mesh::VertexId, VertexSource)>,
     /// Shared sampled boundary chains in edge parameter order.
     pub edge_chains: EdgeChains,
+    /// Forward face parameters for corners at coordinate singularities.
+    pub pole_corners: PoleCorners,
     /// Geometric error and work evidence.
     pub report: RealizationReport,
 }
@@ -202,8 +261,8 @@ pub enum RealizationError {
     Boundary(BodyError),
     /// No faces were supplied.
     EmptyBoundary,
-    /// A curved trim is not a supported rotational strip, toroidal rectangle
-    /// or complete ruled unit patch.
+    /// A curved trim is not a supported rotational strip, pole-bounded full-turn
+    /// sphere/cone patch, toroidal rectangle or complete ruled unit patch.
     UnsupportedSurfaceTrim {
         /// Offending native face.
         face: FaceId,
@@ -228,10 +287,15 @@ pub enum RealizationError {
     Budget {
         /// Budgeted storage unit.
         storage: &'static str,
-        /// Required entries.
+        /// Required entries, or a lower bound when counting stopped early.
         required: usize,
         /// Allowed entries.
         maximum: u32,
+    },
+    /// A counted output table cannot fit the platform's container address space.
+    AddressSpace {
+        /// Output storage unit that cannot be addressed.
+        storage: &'static str,
     },
     /// More than two face occurrences use an edge.
     NonManifold {
@@ -256,6 +320,14 @@ pub enum RealizationError {
     NonFiniteVertex {
         /// Offending native vertex.
         vertex: VertexId,
+    },
+    /// A generated surface sample is non-finite after placement and f32 storage.
+    /// This is a numeric representation refusal, before triangle construction.
+    NonFiniteFaceSample {
+        /// Supporting native face.
+        face: FaceId,
+        /// Forward supporting-surface parameters of the sample.
+        uv: [f64; 2],
     },
     /// Planar boundary triangulation was refused in emitted coordinates.
     Arrangement {
@@ -298,6 +370,17 @@ enum Patch {
     Planar,
     Strip(Strip),
     Grid(GridPatch),
+    Pole(PolePatch),
+}
+
+fn check_table_capacity<T>(storage: &'static str, count: usize) -> Result<(), RealizationError> {
+    if (isize::MAX as usize)
+        .checked_div(size_of::<T>())
+        .is_some_and(|maximum| count > maximum)
+    {
+        return Err(RealizationError::AddressSpace { storage });
+    }
+    Ok(())
 }
 
 struct Chains {
@@ -492,13 +575,13 @@ impl<F, E> Body<F, E> {
         let mut incidence = alloc::vec![Incidence::default();self.edges().len()];
         let mut patches = Vec::with_capacity(self.faces().len());
         let mut groups = Groups::new(self.edges().len());
+        let mut pole_output = false;
         for (i, face) in self.faces().iter().enumerate() {
             let id = FaceId(crate::usize_to_u32(i));
+            let mut has_pole = false;
             for &loop_id in &face.loops {
                 for coedge in &self.boundary_loop(loop_id).expect("validated loop").coedges {
-                    if self.edges()[coedge.edge.index()].is_collapsed() {
-                        return Err(RealizationError::UnsupportedSurfaceTrim { face: id });
-                    }
+                    has_pole |= self.edges()[coedge.edge.index()].is_collapsed();
                     let item = &mut incidence[coedge.edge.index()];
                     if item.count == 2 {
                         return Err(RealizationError::NonManifold {
@@ -510,10 +593,12 @@ impl<F, E> Body<F, E> {
                     item.count += 1;
                 }
             }
-            if matches!(face.surface, Surface::Sphere(_)) {
+            let patch = if has_pole {
+                pole_output = true;
+                Patch::Pole(PolePatch::prepare(self, id, policy)?)
+            } else if matches!(face.surface, Surface::Sphere(_)) {
                 return Err(RealizationError::UnsupportedSurfaceTrim { face: id });
-            }
-            let patch = if matches!(face.surface, Surface::Torus(_) | Surface::Ruled(_)) {
+            } else if matches!(face.surface, Surface::Torus(_) | Surface::Ruled(_)) {
                 Patch::Grid(GridPatch::prepare(self, id)?)
             } else if matches!(face.surface, Surface::Plane(_)) {
                 // Coaxial annuli/sectors retain angular rulings, which are
@@ -526,7 +611,7 @@ impl<F, E> Body<F, E> {
             match patch {
                 Patch::Strip(p) => groups.join(p.a.edge.index(), p.b.edge.index()),
                 Patch::Grid(p) => p.join(&mut groups),
-                Patch::Planar => {}
+                Patch::Planar | Patch::Pole(_) => {}
             }
             patches.push(patch);
         }
@@ -535,33 +620,55 @@ impl<F, E> Body<F, E> {
             let n = if incidence[i].count == 0 {
                 0
             } else {
-                let (curve, range) = edge.regular().expect("used collapsed trims refused above");
-                match curve {
-                    Curve::Line(_) => 1,
-                    curve => circular_edge_count(
-                        curve.sampling_radius().expect("periodic curve"),
-                        range.span(),
-                        curve_tolerance,
-                        CircularEdgeConstraints::new(
-                            policy.min_arc_segments,
-                            policy.max_edge_segments,
-                        ),
-                    )
-                    .map_err(|error| RealizationError::Sampling {
-                        edge: EdgeId(crate::usize_to_u32(i)),
-                        error,
-                    })?,
+                if let Some((curve, range)) = edge.regular() {
+                    match curve {
+                        Curve::Line(_) => 1,
+                        curve => circular_edge_count(
+                            curve.sampling_radius().expect("periodic curve"),
+                            range.span(),
+                            curve_tolerance,
+                            CircularEdgeConstraints::new(
+                                policy.min_arc_segments,
+                                policy.max_edge_segments,
+                            ),
+                        )
+                        .map_err(|error| RealizationError::Sampling {
+                            edge: EdgeId(crate::usize_to_u32(i)),
+                            error,
+                        })?,
+                    }
+                } else {
+                    0
                 }
             };
             counts.push(n);
         }
+        for patch in &patches {
+            if let Patch::Pole(patch) = patch {
+                patch.synchronize(&mut counts);
+            }
+        }
         groups.synchronize(&mut counts);
         grid::refine(self, &patches, &mut counts, &mut groups, policy)?;
+        for (patch, face) in patches.iter_mut().zip(self.faces()) {
+            if let Patch::Pole(patch) = patch {
+                patch.prepare_radial_sampling(face, &counts, policy)?;
+            }
+        }
         let mut active_vertices = alloc::vec![false;self.vertices().len()];
         let mut samples = 0_usize;
         let mut interior = 0_usize;
-        for (edge, &n) in self.edges().iter().zip(&counts) {
-            if n == 0 {
+        for (i, (edge, &n)) in self.edges().iter().zip(&counts).enumerate() {
+            if incidence[i].count == 0 {
+                continue;
+            }
+            if edge.is_collapsed() {
+                active_vertices[edge.start.index()] = true;
+                samples = samples.checked_add(1).ok_or(RealizationError::Budget {
+                    storage: "boundary samples",
+                    required: usize::MAX,
+                    maximum: policy.max_boundary_samples,
+                })?;
                 continue;
             }
             active_vertices[edge.start.index()] = true;
@@ -590,12 +697,10 @@ impl<F, E> Body<F, E> {
             .saturating_add(
                 patches
                     .iter()
-                    .filter_map(|p| {
-                        if let Patch::Grid(p) = p {
-                            Some(p.interior_count(&counts))
-                        } else {
-                            None
-                        }
+                    .filter_map(|p| match p {
+                        Patch::Grid(p) => Some(p.interior_count(&counts)),
+                        Patch::Pole(p) => Some(p.interior_count(&counts)),
+                        _ => None,
                     })
                     .fold(0_usize, usize::saturating_add),
             );
@@ -614,6 +719,7 @@ impl<F, E> Body<F, E> {
         // Counts and trims already determine output cardinality. Reserve the
         // three parallel arrays once instead of repeatedly growing each while
         // emitting strips. A planar polygon contributes N + 2H - 2 triangles.
+        let mut pole_corner_count = 0_usize;
         let triangle_count = self
             .faces()
             .iter()
@@ -629,17 +735,45 @@ impl<F, E> Body<F, E> {
                     .saturating_sub(2),
                 Patch::Strip(patch) => (counts[patch.a.edge.index()] as usize).saturating_mul(2),
                 Patch::Grid(patch) => patch.triangle_count(&counts),
+                Patch::Pole(patch) => {
+                    pole_corner_count =
+                        pole_corner_count.saturating_add(patch.pole_corner_count(&counts));
+                    patch.triangle_count(&counts)
+                }
             })
             .try_fold(0_usize, |total, count| {
-                total
+                let required = total
                     .checked_add(count)
-                    .filter(|&n| n <= u32::MAX as usize)
-                    .ok_or(RealizationError::Budget {
+                    .ok_or(RealizationError::AddressSpace {
                         storage: "triangles",
-                        required: total.saturating_add(count),
+                    })?;
+                if required > u32::MAX as usize {
+                    Err(RealizationError::Budget {
+                        storage: "triangles",
+                        required,
                         maximum: u32::MAX,
                     })
+                } else {
+                    Ok(required)
+                }
             })?;
+        // Saturated counts must not equal a caller's u32::MAX budget on a
+        // 32-bit target and then reach Vec::with_capacity. Check every primary
+        // output table even when a pole planner fell back to a regular grid.
+        check_table_capacity::<[f32; 3]>("vertices", vertex_count)?;
+        check_table_capacity::<VertexSource>("vertex sources", vertex_count)?;
+        check_table_capacity::<(exedra_mesh::VertexId, VertexSource)>(
+            "vertex correspondence",
+            vertex_count,
+        )?;
+        check_table_capacity::<[u32; 3]>("triangles", triangle_count)?;
+        check_table_capacity::<(exedra_mesh::FaceId, FaceId)>(
+            "face correspondence",
+            triangle_count,
+        )?;
+        check_table_capacity::<u32>("boundary samples", samples)?;
+        check_table_capacity::<poles::PoleSeed>("pole corner preparation", pole_corner_count)?;
+        check_table_capacity::<PoleCorner>("pole corner correspondence", pole_corner_count)?;
         let mut emitted = Vec::with_capacity(vertex_count);
         let mut sources = Vec::with_capacity(vertex_count);
         let mut vertex_map = alloc::vec![None;self.vertices().len()];
@@ -655,7 +789,14 @@ impl<F, E> Body<F, E> {
                     vertex: VertexId(crate::usize_to_u32(i)),
                 });
             }
-            displacement = displacement.max(distance(p.map(f64::from), exact));
+            displacement = displacement.max(
+                distance(p.map(f64::from), exact)
+                    + if pole_output {
+                        placement_roundoff(placement, point)
+                    } else {
+                        0.0
+                    },
+            );
             vertex_map[i] = Some(crate::usize_to_u32(emitted.len()));
             emitted.push(p);
             sources.push(VertexSource::Vertex(VertexId(crate::usize_to_u32(i))));
@@ -672,6 +813,12 @@ impl<F, E> Body<F, E> {
         let mut phases = Vec::new();
         for (i, (edge, &n)) in self.edges().iter().zip(&counts).enumerate() {
             chains.offsets.push(chains.vertices.len());
+            if edge.is_collapsed() && incidence[i].count > 0 {
+                chains
+                    .vertices
+                    .push(vertex_map[edge.start.index()].expect("active pole vertex"));
+                continue;
+            }
             if n == 0 {
                 continue;
             }
@@ -719,7 +866,14 @@ impl<F, E> Body<F, E> {
                 if !p.iter().all(|v| v.is_finite()) {
                     return Err(RealizationError::CollapsedEdge { edge: id });
                 }
-                displacement = displacement.max(distance(p.map(f64::from), exact));
+                displacement = displacement.max(
+                    distance(p.map(f64::from), exact)
+                        + if pole_output {
+                            placement_roundoff(placement, point)
+                        } else {
+                            0.0
+                        },
+                );
                 chains.vertices.push(crate::usize_to_u32(emitted.len()));
                 emitted.push(p);
                 sources.push(VertexSource::Edge {
@@ -742,7 +896,13 @@ impl<F, E> Body<F, E> {
                 // round differently. Bound the intervals actually evaluated.
                 max_parameter_step = max_parameter_step.max((max - previous_parameter).abs());
                 let sin = libm::sin(max_parameter_step / 4.0);
-                curve_deviation = curve_deviation.max(2.0 * radius * sin * sin);
+                let deviation = 2.0 * radius * sin * sin;
+                let deviation = if pole_output {
+                    (deviation * (1.0 + 4.0 * crate::geometry::FRAME_TOLERANCE).next_up()).next_up()
+                } else {
+                    deviation
+                };
+                curve_deviation = curve_deviation.max(deviation);
             }
         }
         chains.offsets.push(chains.vertices.len());
@@ -793,10 +953,30 @@ impl<F, E> Body<F, E> {
         let mut ruling_displacement = 0.0_f64;
         let mut surface_deviation = 0.0_f64;
         let mut grid_scratch = grid::GridScratch::default();
+        let mut pole_scratch = poles::Scratch::default();
+        let mut pole_corners = Vec::with_capacity(pole_corner_count);
         for (i, face) in self.faces().iter().enumerate() {
             let id = FaceId(crate::usize_to_u32(i));
             let face_region = region(id, face);
-            if let Patch::Grid(patch) = patches[i] {
+            if let Patch::Pole(patch) = patches[i] {
+                surface_deviation = surface_deviation.max(patch.deviation(face, &counts));
+                patch.emit(
+                    self,
+                    id,
+                    placement,
+                    &counts,
+                    &chains,
+                    &mut pole_scratch,
+                    &mut emitted,
+                    &mut sources,
+                    &mut displacement,
+                    face_region,
+                    &mut triangles,
+                    &mut regions,
+                    &mut native_faces,
+                    &mut pole_corners,
+                )?;
+            } else if let Patch::Grid(patch) = patches[i] {
                 surface_deviation = surface_deviation.max(patch.deviation(face, &counts));
                 patch.emit(
                     self,
@@ -974,6 +1154,23 @@ impl<F, E> Body<F, E> {
             .map_err(RealizationError::Build)?;
         let vertex_ids: Vec<_> = mesh.vertices().collect();
         let face_ids: Vec<_> = mesh.faces().collect();
+        let mut pole_records = Vec::with_capacity(pole_corners.len());
+        for seed in pole_corners {
+            let face = face_ids[seed.triangle];
+            let vertex = vertex_ids[seed.vertex as usize];
+            let corner = mesh
+                .face_loop(face)
+                .find(|c| mesh.to_vertex(*c) == Some(vertex))
+                .ok_or(RealizationError::DegenerateFace { face: seed.face })?;
+            pole_records.push(PoleCorner {
+                corner,
+                face: seed.face,
+                vertex: seed.native_vertex,
+                uv: seed.uv,
+            });
+        }
+        pole_records.sort_unstable_by_key(|record| record.corner.index());
+
         let edge_updates: Vec<_> = mesh
             .half_edges()
             .filter_map(|edge| {
@@ -998,6 +1195,17 @@ impl<F, E> Body<F, E> {
             exedra_mesh::op::set_edge_sharpness(&mut edit, edge, value)
                 .expect("newly emitted edge and twin are live");
         }
+        for record in &pole_records {
+            let normal =
+                poles::limit_normal(&self.faces()[record.face.index()], record.uv, placement)
+                    .ok_or(RealizationError::DegenerateFace { face: record.face })?;
+            exedra_mesh::op::set_corner_normal_override(
+                &mut edit,
+                record.corner,
+                Some(narrow(normal)),
+            )
+            .expect("newly emitted pole corner is live");
+        }
         let _: () = edit.finish();
         let edge_chains = EdgeChains {
             vertices: chains
@@ -1017,6 +1225,9 @@ impl<F, E> Body<F, E> {
             mesh_faces: face_ids.into_iter().zip(native_faces).collect(),
             mesh_vertices: vertex_ids.into_iter().zip(sources).collect(),
             edge_chains,
+            pole_corners: PoleCorners {
+                records: pole_records.into_boxed_slice(),
+            },
             report: RealizationReport {
                 tolerance: policy.tolerance,
                 geometry_gap: validation.max_gap,
@@ -1297,6 +1508,21 @@ impl Chains {
         &self.vertices[self.offsets[i]..]
     }
 }
+fn placement_roundoff(frame: Placement3, point: [f64; 3]) -> f64 {
+    frame
+        .rows
+        .into_iter()
+        .map(|r| {
+            32.0 * f64::EPSILON
+                * (r[3].abs()
+                    + r[0].abs() * point[0].abs()
+                    + r[1].abs() * point[1].abs()
+                    + r[2].abs() * point[2].abs())
+                + 32.0 * f64::from_bits(1)
+        })
+        .fold(0.0, f64::max)
+}
+
 fn ordered(a: u32, b: u32) -> (u32, u32) {
     if a < b { (a, b) } else { (b, a) }
 }

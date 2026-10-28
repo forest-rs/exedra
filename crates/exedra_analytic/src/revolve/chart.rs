@@ -71,8 +71,11 @@ struct RestPoint {
 impl Revolution {
     /// Realizes with caller regions and checked construction-coordinate mapping.
     ///
-    /// `map` receives one triangle's native face role and corner coordinates:
-    /// walls use `(theta, profile_distance)` and caps `(radius, height)`. Each
+    /// `map` receives one triangle's native face ID, role and corner coordinates:
+    /// curved walls use `(theta, profile_distance)`, radial disks use
+    /// their supporting plane's local X/Y, and angular caps `(radius, height)`.
+    /// The face ID permits choosing a planar mapping without changing source
+    /// roles: a radial BASE segment remains a wall, not an angular cap. Each
     /// loop's distance starts at its authored seam. Full-turn angular corners
     /// retain both zero and `TAU` on the shared seam, without duplicating geometry.
     /// Placement does not change these rest coordinates.
@@ -91,7 +94,7 @@ impl Revolution {
         &self,
         policy: &RealizationPolicy,
         region: impl Fn(FaceId, &crate::body::Face<FaceRole>) -> u32,
-        mut map: impl FnMut(FaceRole, [[f64; 2]; 3]) -> Result<[[f32; 2]; 3], E>,
+        mut map: impl FnMut(FaceId, FaceRole, [[f64; 2]; 3]) -> Result<[[f32; 2]; 3], E>,
     ) -> Result<RealizedBody, RevolutionUvError<E>> {
         let mut result = self
             .realize_with_regions(policy, region)
@@ -192,17 +195,25 @@ impl Revolution {
             .collect::<Result<_, _>>()?;
         let mut mapped = Vec::with_capacity(result.mesh.half_edge_count());
         for &(mesh_face, face) in &result.mesh_faces {
-            let role = self.body.faces()[face.index()].role;
+            let native_face = &self.body.faces()[face.index()];
+            let role = native_face.role;
+            let planar_wall = matches!(role, FaceRole::Wall { .. })
+                && matches!(native_face.surface, crate::geometry::Surface::Plane(_))
+                && native_face.loops.len() == 1;
             let mut corners = result.mesh.face_loop(mesh_face);
             let corners = core::array::from_fn::<_, 3, _>(|_| {
                 corners.next().expect("realization emits triangles")
             });
             let points = corners.map(|corner| {
-                rest[result
+                let mut point = rest[result
                     .mesh
                     .to_vertex(corner)
                     .expect("live mesh corner")
-                    .index() as usize]
+                    .index() as usize];
+                if let Some(pole) = result.pole_corners.get(corner) {
+                    point.theta = pole.uv[0];
+                }
+                point
             });
             let mut coordinates = [[0.0; 2]; 3];
             for i in 0..3 {
@@ -244,11 +255,24 @@ impl Revolution {
                         } else {
                             return Err(RevolutionUvError::Coordinates { face });
                         };
-                        [point.theta, distance]
+                        if planar_wall {
+                            let radius = from[0]
+                                + point.fraction
+                                    * (ring.segments()[point.vertex.segment].to[0] - from[0]);
+                            [
+                                radius * libm::cos(point.theta),
+                                radius * libm::sin(point.theta),
+                            ]
+                        } else {
+                            [point.theta, distance]
+                        }
                     }
                 };
             }
-            if matches!(role, FaceRole::Wall { .. }) && self.sweep == core::f64::consts::TAU {
+            if matches!(role, FaceRole::Wall { .. })
+                && !planar_wall
+                && self.sweep == core::f64::consts::TAU
+            {
                 let min = coordinates
                     .iter()
                     .map(|p| p[0])
@@ -265,7 +289,9 @@ impl Revolution {
                     }
                 }
             }
-            let expected = if matches!(role, FaceRole::Cap { end: End::End }) {
+            let expected = if matches!(role, FaceRole::Cap { end: End::End })
+                || (planar_wall && native_face.sense == crate::body::Sense::Reverse)
+            {
                 Orientation::Cw
             } else {
                 Orientation::Ccw
@@ -278,7 +304,7 @@ impl Revolution {
             {
                 return Err(RevolutionUvError::Coordinates { face });
             }
-            let uv = map(role, coordinates)
+            let uv = map(face, role, coordinates)
                 .map_err(|error| RevolutionUvError::Mapping { face, error })?;
             if !uv.iter().flatten().all(|v| v.is_finite()) {
                 return Err(RevolutionUvError::NonFiniteUv { face });
@@ -332,7 +358,7 @@ mod tests {
                 .realize_with_uvs(
                     &policy,
                     |id, _| id.0,
-                    |_, points| -> Result<_, core::convert::Infallible> {
+                    |_, _, points| -> Result<_, core::convert::Infallible> {
                         Ok(points.map(|p| {
                             let p = exedra_math::narrow([p[0], p[1], 0.0]);
                             [p[0], p[1]]
@@ -379,7 +405,7 @@ mod tests {
             .realize_with_uvs(
                 &RealizationPolicy::default(),
                 |_, _| 0,
-                |_, _| Err::<[[f32; 2]; 3], _>("invalid texture scale"),
+                |_, _, _| Err::<[[f32; 2]; 3], _>("invalid texture scale"),
             )
             .unwrap_err();
         assert!(matches!(
@@ -393,7 +419,7 @@ mod tests {
             .realize_with_uvs(
                 &RealizationPolicy::default(),
                 |_, _| 0,
-                |_, _| Ok::<_, core::convert::Infallible>([[f32::NAN; 2]; 3]),
+                |_, _, _| Ok::<_, core::convert::Infallible>([[f32::NAN; 2]; 3]),
             )
             .unwrap_err();
         assert!(matches!(error, RevolutionUvError::NonFiniteUv { .. }));
@@ -421,7 +447,7 @@ mod tests {
                 .realize_with_uvs(
                     &policy,
                     |_, _| 0,
-                    |_, p| -> Result<_, core::convert::Infallible> {
+                    |_, _, p| -> Result<_, core::convert::Infallible> {
                         Ok(p.map(|v| {
                             let n = exedra_math::narrow([v[0], v[1], 0.0]);
                             [n[0], n[1]]

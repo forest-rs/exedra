@@ -102,11 +102,17 @@ impl NativeSource {
                 .realize_with_uvs(
                     policy,
                     |_, _| 0,
-                    |role, p| match role {
-                        exedra_analytic::revolve::FaceRole::Wall { .. } => {
+                    |face, role, p| {
+                        if matches!(
+                            v.body().faces()[face.index()].surface,
+                            exedra_analytic::geometry::Surface::Plane(_)
+                        ) && (matches!(role, exedra_analytic::revolve::FaceRole::Cap { .. })
+                            || v.body().faces()[face.index()].loops.len() == 1)
+                        {
+                            chart.map_cap_triangle(p)
+                        } else {
                             chart.map_revolve_wall_triangle(p)
                         }
-                        exedra_analytic::revolve::FaceRole::Cap { .. } => chart.map_cap_triangle(p),
                     },
                 )
                 .map_err(NativeChartError::Revolution),

@@ -155,7 +155,7 @@ fn main() -> Result<(), Box<dyn Error>> {
                             Ok(solid.realize_with_uvs(
                                 &native_policy,
                                 |_, _| 0,
-                                |role, p| match role {
+                                |_, role, p| match role {
                                     FaceRole::Wall { .. } => chart.map_revolve_wall_triangle(p),
                                     FaceRole::Cap { .. } => chart.map_cap_triangle(p),
                                 },
@@ -215,7 +215,7 @@ fn allocation_profile(
                 black_box(solid.realize_with_uvs(
                     &native_policy,
                     |_, _| 0,
-                    |role, p| match role {
+                    |_, role, p| match role {
                         FaceRole::Wall { .. } => chart.map_revolve_wall_triangle(p),
                         FaceRole::Cap { .. } => chart.map_cap_triangle(p),
                     },

@@ -1055,15 +1055,27 @@ mod tests {
             max_boundary_samples: u32::MAX,
             geometry_gap: 1e-9,
         };
+        let error = full.realize(&huge).unwrap_err();
+        #[cfg(target_pointer_width = "64")]
         assert!(
             matches!(
-                full.realize(&huge),
-                Err(RealizationError::Budget {
+                error,
+                RealizationError::Budget {
                     storage: "triangles",
                     ..
-                })
+                }
             ),
-            "triangle cardinality must be refused before allocating billions of vertices"
+            "triangle cardinality must be refused before allocating billions of vertices: {error:?}"
+        );
+        #[cfg(target_pointer_width = "32")]
+        assert!(
+            matches!(
+                error,
+                RealizationError::AddressSpace {
+                    storage: "triangles"
+                }
+            ),
+            "the full triangle count cannot be represented before allocation: {error:?}"
         );
         let mut parts = solid.body().clone().into_parts();
         parts.faces[0].domain.u = ParameterRange::new(0.1, 1.9).unwrap();

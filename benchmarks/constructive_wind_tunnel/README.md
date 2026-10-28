@@ -468,3 +468,51 @@ not imply a bound on normal/tangent scratch or whole-source work. The limit is
 per body and successful counters match uncapped extraction. Refused output is
 absent, and the reported requirement is a lower bound. Timing excludes returned
 buffer destruction; allocation checkpoints include its release.
+
+## Native coordinate poles
+
+```sh
+cargo run --release -p constructive_wind_tunnel --bin native_poles -- 9
+cargo run -p constructive_wind_tunnel --bin native_poles -- 0
+python3 benchmarks/constructive_wind_tunnel/profile_authoring.py --repo /path/to/checkout --output /tmp/pole-alloc --workload native_poles
+```
+
+`native_poles` checks closed sphere and pointed-cone realizations at three chord
+budgets before timing them. It reports native measures, certified deviation,
+triangle count, minimum/first-percentile angle and longest-edge/altitude aspect
+ratio. Zero repetitions performs deterministic quality inspection without timing.
+Construction includes the retained source-profile clone. Realization uses a fixed
+constructor; geometry diagnostics, output destruction, STEP and Wasm/JS/GPU work
+are excluded from timings. The isolated allocation window retains the source
+outside capture and includes one realization, correspondence, corner normals and
+returned-output release. It does not measure total source or process residency.
+
+Pass `sample` to the release executable, attach
+`sample <pid> 4 1 -file native-poles.sample.txt`, then press Enter. The 15-second
+window repeatedly realizes the retained R20 sphere at tolerance 0.025, including
+output destruction. Construction, quality inspection and allocation logging
+remain outside that CPU sampling window.
+
+On arm64 with Rust 1.99, four interleaved baseline/candidate release rounds of
+31 timed realizations per quality measured the full R20 sphere as follows.
+These are medians of round medians, excluding output destruction.
+
+| Tolerance | Before | Aligned radial rings | Before triangles | After triangles |
+| --- | --- | --- | --- | --- |
+| 0.4 | 0.286 ms | 0.188 ms | 1,920 | 800 |
+| 0.1 | 1.190 ms | 0.620 ms | 7,936 | 3,168 |
+| 0.025 | 5.053 ms | 2.264 ms | 32,256 | 12,768 |
+
+The fine sphere's minimum emitted triangle angle improved from 1.405 to 19.590
+degrees, with longest-edge/altitude aspect falling from 40.81 to 3.755. Its
+certified deviation increased from 0.01355 to 0.01530, remaining below the
+requested 0.025; the scheduler uses that tolerance rather than preserving an
+incidental smaller prior error. Cone geometry and timings were neutral. This
+optimization applies to certified full spheres; cones and trimmed spherical
+caps retain their existing fan/grid schedule and have no minimum-angle guarantee.
+
+The matched fine-sphere DHAT window fell from 102 to 87 allocation events and
+10,621,945 to 4,304,609 allocated bytes. Peak tracked heap fell from 8,550,397 to
+3,400,261 bytes; retained output fell from 5,512,932 to 2,194,788 bytes, returning
+to zero after release. These counts cover realization and returned ownership,
+not the retained source constructor or total process residency.

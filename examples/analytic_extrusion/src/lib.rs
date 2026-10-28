@@ -305,7 +305,7 @@ mod native_revolve_chart_tests {
             .realize_with_uvs(
                 &RealizationPolicy::default(),
                 |_, _| 0,
-                |role, points| match role {
+                |_, role, points| match role {
                     FaceRole::Wall { .. } => chart.map_revolve_wall_triangle(points),
                     FaceRole::Cap { .. } => chart.map_cap_triangle(points),
                 },
