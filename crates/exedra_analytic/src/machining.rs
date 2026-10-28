@@ -126,6 +126,34 @@ pub struct MachiningResult<F = (), E = ()> {
     /// Source correspondence, created topology and numerical evidence.
     pub report: MachiningReport,
 }
+/// One transactional cylinder pattern with intermediate per-tool correspondence.
+#[derive(Clone, Debug, PartialEq)]
+pub struct MachiningBatchResult<F = (), E = ()> {
+    /// Final retained native boundary; original input is unchanged.
+    pub body: Body<F, E>,
+    /// One report per tool, in request order. Source IDs in each report refer to
+    /// the preceding intermediate body; table identities survive every step.
+    pub operations: Vec<MachiningReport>,
+}
+/// An indexed pattern refusal; no partial output is published.
+#[derive(Clone, Debug, PartialEq)]
+pub struct MachiningBatchError {
+    /// Failing tool index, or `None` for global policy/empty-pattern validation.
+    pub tool: Option<usize>,
+    /// The same structured cause used by a single-cylinder edit.
+    pub error: MachiningError,
+}
+impl core::fmt::Display for MachiningBatchError {
+    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+        write!(
+            f,
+            "analytic cylinder pattern at {:?}: {}",
+            self.tool, self.error
+        )
+    }
+}
+impl core::error::Error for MachiningBatchError {}
+
 /// Explicit refusal; no partial output or healed geometry is returned.
 #[derive(Clone, Debug, PartialEq)]
 pub enum MachiningError {
@@ -195,6 +223,70 @@ pub fn subtract_through_cylinder_with_roles<F: Clone, E: Clone>(
     face_role: F,
     edge_role: E,
 ) -> Result<MachiningResult<F, E>, MachiningError> {
+    check_policy(policy)?;
+    subtract_owned(body.clone(), tool, policy, face_role, edge_role)
+}
+
+/// Subtracts an ordered cylinder pattern with default generated metadata.
+///
+/// Copies the source boundary once, then transfers owned intermediate tables
+/// between the same certified single-cut operations. Empty patterns validate and
+/// return an unchanged copy. All tools succeed or the original input survives
+/// unchanged with an indexed error; no partial pattern is returned.
+/// # Errors
+/// Returns the global policy/input refusal or the first failing tool and cause.
+pub fn subtract_through_cylinders<F: Clone + Default, E: Clone + Default>(
+    body: &Body<F, E>,
+    tools: &[CylinderTool],
+    policy: &MachiningPolicy,
+) -> Result<MachiningBatchResult<F, E>, MachiningBatchError> {
+    subtract_through_cylinders_with_roles(body, tools, policy, F::default(), E::default())
+}
+/// Subtracts a transactional cylinder pattern with common generated roles.
+///
+/// Uses the identical geometry, input/output validation and per-tool reports as
+/// repeated [`subtract_through_cylinder_with_roles`] calls, while cloning source
+/// geometry only once. Each pattern can carry one feature role; use individual
+/// calls when generated roles differ by tool. Failed patterns leave the borrowed
+/// input untouched and discard every intermediate result.
+/// # Errors
+/// Returns the first failing tool index and [`MachiningError`], or a global
+/// policy/empty-pattern input error with no tool index.
+pub fn subtract_through_cylinders_with_roles<F: Clone, E: Clone>(
+    body: &Body<F, E>,
+    tools: &[CylinderTool],
+    policy: &MachiningPolicy,
+    face_role: F,
+    edge_role: E,
+) -> Result<MachiningBatchResult<F, E>, MachiningBatchError> {
+    let global = |error| MachiningBatchError { tool: None, error };
+    check_policy(policy).map_err(global)?;
+    if tools.is_empty() {
+        body.validate(&ValidationPolicy {
+            max_gap: policy.geometry_gap,
+        })
+        .map_err(|e| global(MachiningError::Boundary(e)))?;
+        if !body.is_closed() {
+            return Err(global(MachiningError::OpenBoundary));
+        }
+    }
+    let mut owned = body.clone();
+    let mut operations = Vec::with_capacity(tools.len());
+    for (index, tool) in tools.iter().enumerate() {
+        let result = subtract_owned(owned, tool, policy, face_role.clone(), edge_role.clone())
+            .map_err(|error| MachiningBatchError {
+                tool: Some(index),
+                error,
+            })?;
+        operations.push(result.report);
+        owned = result.body;
+    }
+    Ok(MachiningBatchResult {
+        body: owned,
+        operations,
+    })
+}
+fn check_policy(policy: &MachiningPolicy) -> Result<(), MachiningError> {
     if !policy.separation.is_finite()
         || policy.separation <= 0.0
         || !policy.geometry_gap.is_finite()
@@ -205,6 +297,16 @@ pub fn subtract_through_cylinder_with_roles<F: Clone, E: Clone>(
     {
         return Err(MachiningError::InvalidPolicy);
     }
+    Ok(())
+}
+fn subtract_owned<F: Clone, E: Clone>(
+    body: Body<F, E>,
+    tool: &CylinderTool,
+    policy: &MachiningPolicy,
+    face_role: F,
+    edge_role: E,
+) -> Result<MachiningResult<F, E>, MachiningError> {
+    check_policy(policy)?;
     let validation = ValidationPolicy {
         max_gap: policy.geometry_gap,
     };
@@ -237,7 +339,7 @@ pub fn subtract_through_cylinder_with_roles<F: Clone, E: Clone>(
     for (index, face) in body.faces().iter().enumerate() {
         let id = FaceId(crate::usize_to_u32(index));
         let separated = match &face.surface {
-            Surface::Plane(_) => planar_radial_clearance(body, id, origin, axis, radius)?,
+            Surface::Plane(_) => planar_radial_clearance(&body, id, origin, axis, radius)?,
             Surface::Cylinder(other) => {
                 let of = other.frame();
                 let oa = col(of, 2);
@@ -276,7 +378,7 @@ pub fn subtract_through_cylinder_with_roles<F: Clone, E: Clone>(
             },
         )
         .map_err(MachiningError::Section)?;
-        let bound = section_clearance(body, id, &section)? - roundoff - section.max_gap();
+        let bound = section_clearance(&body, id, &section)? - roundoff - section.max_gap();
         if bound < policy.separation {
             return Err(MachiningError::Clearance {
                 face: id,
@@ -311,11 +413,31 @@ pub fn subtract_through_cylinder_with_roles<F: Clone, E: Clone>(
     if !height.is_finite() || height <= policy.separation {
         return Err(MachiningError::NumericLimit);
     }
-    let outward = |i: usize| scale(normals[i], body.faces()[exits[i].0.index()].sense.sign());
-    if dot(outward(0), axis) >= 0.0 || dot(outward(1), axis) <= 0.0 {
+    let outward = core::array::from_fn::<_, 2, _>(|i| {
+        scale(normals[i], body.faces()[exits[i].0.index()].sense.sign())
+    });
+    if dot(outward[0], axis) >= 0.0 || dot(outward[1], axis) <= 0.0 {
         return Err(MachiningError::OpenBoundary);
     }
-    let mut parts = body.clone().into_parts();
+    let source_face_count = body.faces().len();
+    let source_edge_count = body.edges().len();
+    for (table, count, extra) in [
+        ("vertices", body.vertices().len(), 2),
+        ("edges", source_edge_count, 3),
+        ("loops", body.loops().len(), 3),
+        ("faces", source_face_count, 1),
+    ] {
+        let count = count
+            .checked_add(extra)
+            .ok_or(MachiningError::NumericLimit)?;
+        if u32::try_from(count).is_err() {
+            return Err(MachiningError::Boundary(BodyError::TooLarge {
+                table,
+                count,
+            }));
+        }
+    }
+    let mut parts = body.into_parts();
     let range =
         ParameterRange::new(0.0, core::f64::consts::TAU).map_err(MachiningError::Geometry)?;
     let rims = core::array::from_fn(|i| EdgeId(crate::usize_to_u32(parts.edges.len() + i)));
@@ -338,7 +460,7 @@ pub fn subtract_through_cylinder_with_roles<F: Clone, E: Clone>(
             vertices[i],
             edge_role.clone(),
         ));
-        reversed[i] = dot(col(exits[i].1.ellipse().frame(), 2), outward(i)) > 0.0;
+        reversed[i] = dot(col(exits[i].1.ellipse().frame(), 2), outward[i]) > 0.0;
         let loop_id = LoopId(crate::usize_to_u32(parts.loops.len()));
         parts.loops.push(BoundaryLoop {
             coedges: alloc::vec![Coedge {
@@ -455,11 +577,8 @@ pub fn subtract_through_cylinder_with_roles<F: Clone, E: Clone>(
     Ok(MachiningResult {
         body: output,
         report: MachiningReport {
-            faces: body
-                .faces()
-                .iter()
-                .enumerate()
-                .map(|(i, _)| {
+            faces: (0..source_face_count)
+                .map(|i| {
                     let id = FaceId(crate::usize_to_u32(i));
                     FaceChange {
                         source: id,
@@ -472,7 +591,7 @@ pub fn subtract_through_cylinder_with_roles<F: Clone, E: Clone>(
                     }
                 })
                 .collect(),
-            retained_edges: (0..body.edges().len())
+            retained_edges: (0..source_edge_count)
                 .map(|i| EdgeId(crate::usize_to_u32(i)))
                 .collect(),
             trimmed_faces: [exits[0].0, exits[1].0],
@@ -851,6 +970,79 @@ mod tests {
         assert!(realized.mesh.validate_deep().is_empty());
         assert!(realized.mesh.boundary_loops().unwrap().is_empty());
         assert!(realized.report.within_tolerance());
+    }
+    #[test]
+    fn owned_pattern_matches_individual_geometry_metadata_and_history() {
+        let source = stock().map_roles(|_| alloc::vec![7_u32], |_| alloc::vec![9_u32]);
+        let original = source.clone();
+        let tools = [-15.0, 0.0, 15.0]
+            .map(|x| CylinderTool::new([x, 0.0, 0.0], [0.1, 0.0, 1.0], 2.0).unwrap());
+        let mut expected = source.clone();
+        let mut history = Vec::new();
+        for tool in &tools {
+            let result = subtract_through_cylinder_with_roles(
+                &expected,
+                tool,
+                &MachiningPolicy::default(),
+                alloc::vec![20],
+                alloc::vec![30],
+            )
+            .unwrap();
+            history.push(result.report);
+            expected = result.body;
+        }
+        let batch = subtract_through_cylinders_with_roles(
+            &source,
+            &tools,
+            &MachiningPolicy::default(),
+            alloc::vec![20],
+            alloc::vec![30],
+        )
+        .unwrap();
+        assert_eq!(source, original);
+        assert_eq!(batch.body, expected);
+        assert_eq!(batch.operations, history);
+        for report in &batch.operations {
+            assert_eq!(
+                batch.body.faces()[report.wall.index()].role,
+                alloc::vec![20]
+            );
+        }
+    }
+    #[test]
+    fn pattern_failure_is_indexed_and_discards_all_intermediate_edits() {
+        let source = stock();
+        let original = source.clone();
+        let tools = [-15.0, 15.0, -14.0]
+            .map(|x| CylinderTool::new([x, 0.0, 0.0], [0.0, 0.0, 1.0], 2.0).unwrap());
+        let error =
+            subtract_through_cylinders(&source, &tools, &MachiningPolicy::default()).unwrap_err();
+        assert_eq!(error.tool, Some(2));
+        assert!(matches!(error.error, MachiningError::Clearance { .. }));
+        assert_eq!(source, original);
+        let unchanged =
+            subtract_through_cylinders(&source, &[], &MachiningPolicy::default()).unwrap();
+        assert_eq!(unchanged.body, source);
+        assert!(unchanged.operations.is_empty());
+        let error = subtract_through_cylinders(
+            &source,
+            &[],
+            &MachiningPolicy {
+                separation: 0.0,
+                ..Default::default()
+            },
+        )
+        .unwrap_err();
+        assert_eq!(error.tool, None);
+        assert_eq!(error.error, MachiningError::InvalidPolicy);
+        let error = subtract_through_cylinders(
+            &Body::<(), ()>::default(),
+            &[],
+            &MachiningPolicy::default(),
+        )
+        .unwrap_err();
+        assert_eq!(error.tool, None);
+        assert_eq!(error.error, MachiningError::OpenBoundary);
     }
     #[test]
     fn repeated_cuts_preserve_ids_and_exact_measures() {
