@@ -28,8 +28,11 @@ impl HalfSpace {
     /// Refuses nonfinite inputs or a zero normal.
     pub fn new(origin: [f64; 3], outward_normal: [f64; 3]) -> Result<Self, GeometryError> {
         let n = norm(outward_normal);
-        if !n.is_finite() || n == 0.0 {
+        if !n.is_finite() {
             return Err(GeometryError::NonFinite);
+        }
+        if n == 0.0 {
+            return Err(GeometryError::ZeroDirection);
         }
         let z = scale(outward_normal, 1.0 / n);
         let seed = if z[0].abs() < 0.8 {
@@ -567,6 +570,7 @@ pub fn intersect_half_space_with_roles<F: Clone, E: Clone>(
         loops: alloc::vec![loop_id],
         role: face_role,
     });
+    crate::operation_trims::append_all_planar(&mut parts).map_err(ClipError::Geometry)?;
     let body = Body::try_from_parts(parts, &validation).map_err(ClipError::Boundary)?;
     if !body.is_closed() {
         return Err(ClipError::OpenBoundary);
@@ -684,6 +688,11 @@ mod tests {
             assert_eq!(source.body(), &original);
             assert_eq!(result.report.outcome, ClipOutcome::Clipped);
             assert!(result.body.is_closed());
+            assert!((0..result.body.faces().len()).all(|i| {
+                result
+                    .body
+                    .has_explicit_trims(FaceId(crate::usize_to_u32(i)))
+            }));
             assert_eq!(result.report.splits.len(), 4);
             assert_eq!(result.report.cap_edges.len(), 4);
             assert!((volume(&result.body) - expected).abs() < 1e-9);

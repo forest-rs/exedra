@@ -539,6 +539,7 @@ pub fn boolean_rectilinear<LF, LE, RF, RE>(
             face_sources.push(source_set.into_iter().collect());
         }
     }
+    crate::operation_trims::append_all_planar(&mut parts).map_err(RectilinearError::Geometry)?;
     let body =
         Body::try_from_parts(parts, &validation).map_err(|error| RectilinearError::Boundary {
             operand: None,
@@ -1193,6 +1194,11 @@ mod tests {
         );
         if volume > 0.0 {
             assert!(result.body.is_closed());
+            assert!((0..result.body.faces().len()).all(|i| {
+                result
+                    .body
+                    .has_explicit_trims(FaceId(crate::usize_to_u32(i)))
+            }));
             let mesh = result
                 .body
                 .realize(
