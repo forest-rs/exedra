@@ -18,7 +18,10 @@ mod ruled;
 mod sphere;
 pub use ruled::{CurveSpan, Ruled};
 pub use sphere::Sphere;
-pub(crate) use sphere::harmonic_gap as sphere_harmonic_gap;
+pub(crate) use sphere::{
+    cone_generator_gap, cone_pole_bounds, cone_pole_gap, harmonic_gap as sphere_harmonic_gap,
+    pole_gap as sphere_pole_gap,
+};
 
 /// Absolute tolerance for rigid frame axis lengths and dot products.
 pub const FRAME_TOLERANCE: f64 = 1e-12;
@@ -376,9 +379,29 @@ impl Cone {
     pub fn semi_angle(&self) -> f64 {
         libm::atan(self.slope)
     }
+    /// Canonical finite axial parameter of the apex, when this is not a cylinder.
+    /// This is a position-only limit; [`Self::radius_at`] remains restricted to
+    /// the regular positive-radius nappe. Division rounding is included in body
+    /// collapsed-boundary agreement checks.
+    #[must_use]
+    pub fn apex_parameter(&self) -> Option<f64> {
+        let v = -self.radius / self.slope;
+        (self.slope != 0.0 && v.is_finite()).then_some(v)
+    }
+    /// Finite apex position without inventing a unique apex normal.
+    #[must_use]
+    pub fn apex_point(&self) -> Option<[f64; 3]> {
+        let point = self
+            .frame
+            .transform_point([0.0, 0.0, self.apex_parameter()?]);
+        finite(point).then_some(point)
+    }
     /// Radius at a height, or `None` at/past the apex or on overflow.
     #[must_use]
     pub fn radius_at(&self, height: f64) -> Option<f64> {
+        if Some(height) == self.apex_parameter() {
+            return None;
+        }
         let radius = self.radius + self.slope * height;
         (radius.is_finite() && radius > 0.0).then_some(radius)
     }

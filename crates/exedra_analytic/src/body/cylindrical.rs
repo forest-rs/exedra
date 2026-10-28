@@ -156,7 +156,7 @@ impl<F, E> Body<F, E> {
             .iter()
             .position(|c| {
                 self.edge(c.edge)
-                    .is_some_and(|e| e.curve.harmonic().is_some())
+                    .is_some_and(|e| e.regular().is_some_and(|(c, _)| c.harmonic().is_some()))
             })
             .ok_or_else(refuse)?;
         let pair = [coedges[first], coedges[(first + 2) % 4]];
@@ -164,8 +164,8 @@ impl<F, E> Body<F, E> {
         if seams[0].edge != seams[1].edge
             || seams[0].reversed == seams[1].reversed
             || !matches!(
-                self.edge(seams[0].edge).ok_or_else(refuse)?.curve,
-                crate::geometry::Curve::Line(_)
+                self.edge(seams[0].edge).and_then(|e| e.regular()),
+                Some((crate::geometry::Curve::Line(_), _))
             )
         {
             return Err(refuse());
@@ -173,9 +173,10 @@ impl<F, E> Body<F, E> {
         let mut endpoint_gap = 0.0_f64;
         for id in [pair[0].edge, pair[1].edge, seams[0].edge] {
             let edge = self.edge(id).ok_or_else(refuse)?;
-            for (vertex, parameter) in [edge.start, edge.end].into_iter().zip(edge.range.bounds()) {
+            let (curve, range) = edge.regular().ok_or_else(refuse)?;
+            for (vertex, parameter) in [edge.start, edge.end].into_iter().zip(range.bounds()) {
                 let stored = *self.vertices().get(vertex.index()).ok_or_else(refuse)?;
-                let evaluated = edge.curve.evaluate(parameter).ok_or_else(refuse)?.point;
+                let evaluated = curve.evaluate(parameter).ok_or_else(refuse)?.point;
                 endpoint_gap = endpoint_gap.max(norm(sub(stored, evaluated)));
             }
         }
@@ -188,13 +189,14 @@ impl<F, E> Body<F, E> {
         );
         let rim = |coedge: Coedge| -> Option<Rim> {
             let edge = self.edge(coedge.edge)?;
+            let (curve, range) = edge.regular()?;
             if edge.start != edge.end
-                || (edge.range.span() - core::f64::consts::TAU).abs()
+                || (range.span() - core::f64::consts::TAU).abs()
                     > 64.0 * f64::EPSILON * core::f64::consts::TAU
             {
                 return None;
             }
-            let (frame, [major, minor]) = edge.curve.harmonic()?;
+            let (frame, [major, minor]) = curve.harmonic()?;
             let center = frame.rows.map(|r| r[3]);
             let world_a = frame.rows.map(|r| r[0] * major);
             let world_b = frame.rows.map(|r| r[1] * minor);
@@ -251,7 +253,9 @@ impl<F, E> Body<F, E> {
         let translation = scale(cf.rows.map(|r| r[2]), native_delta[2]);
         let lower = self.edge(pair[0].edge).ok_or_else(refuse)?;
         let upper = self.edge(pair[1].edge).ok_or_else(refuse)?;
-        let lower = CurveSpan::new(lower.curve.clone(), lower.range, pair[0].reversed)
+        let (lower_curve, lower_range) = lower.regular().ok_or_else(refuse)?;
+        let (upper_curve, upper_range) = upper.regular().ok_or_else(refuse)?;
+        let lower = CurveSpan::new(lower_curve.clone(), lower_range, pair[0].reversed)
             .map_err(|_| refuse())?
             .transformed(Placement3::translate(
                 translation[0],
@@ -259,7 +263,7 @@ impl<F, E> Body<F, E> {
                 translation[2],
             ))
             .map_err(|_| refuse())?;
-        let upper = CurveSpan::new(upper.curve.clone(), upper.range, !pair[1].reversed)
+        let upper = CurveSpan::new(upper_curve.clone(), upper_range, !pair[1].reversed)
             .map_err(|_| refuse())?;
         let gap = a.gap.max(b.gap) + lower.alignment(&upper) + endpoint_gap;
         if !gap.is_finite() || gap > policy.max_gap {

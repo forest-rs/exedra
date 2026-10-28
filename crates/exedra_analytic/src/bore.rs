@@ -401,8 +401,7 @@ impl Extrusion {
                 .into_iter()
                 .enumerate()
                 .map(|(i, e)| Edge {
-                    curve: e.curve,
-                    range: e.range,
+                    geometry: e.geometry,
                     start: e.start,
                     end: e.end,
                     role: EdgeRole::Plate {
@@ -439,8 +438,7 @@ impl Extrusion {
             let point = curve.evaluate(0.0).ok_or(BoreError::NumericLimit)?.point;
             parts.vertices.push(point);
             parts.edges.push(Edge {
-                curve,
-                range,
+                geometry: crate::body::EdgeGeometry::Curve { curve, range },
                 start: vertices[i],
                 end: vertices[i],
                 role: EdgeRole::Rim { end, tag: bore.tag },
@@ -458,8 +456,10 @@ impl Extrusion {
         let a = parts.vertices[vertices[0].index()];
         let b = parts.vertices[vertices[1].index()];
         parts.edges.push(Edge {
-            curve: Curve::line(a, sub(b, a)).map_err(BoreError::Geometry)?,
-            range: ParameterRange::UNIT,
+            geometry: crate::body::EdgeGeometry::Curve {
+                curve: Curve::line(a, sub(b, a)).map_err(BoreError::Geometry)?,
+                range: ParameterRange::UNIT,
+            },
             start: vertices[0],
             end: vertices[1],
             role: EdgeRole::Seam { tag: bore.tag },
@@ -589,7 +589,7 @@ mod tests {
         );
         for edge in result.report().rims {
             assert!(matches!(
-                result.body().edge(edge).unwrap().curve,
+                result.body().edge(edge).unwrap().regular().unwrap().0,
                 Curve::Ellipse(_)
             ));
         }
@@ -658,11 +658,12 @@ mod tests {
         let wall = result.report().wall;
         let seam = result.report().seam;
         let mut parts = result.body().clone().into_parts();
-        let Curve::Line(line) = parts.edges[seam.index()].curve.clone() else {
+        let Curve::Line(line) = parts.edges[seam.index()].regular().unwrap().0.clone() else {
             unreachable!()
         };
         let shifted = exedra_math::add(line.origin(), [0.25, 0.0, 0.0]);
-        parts.edges[seam.index()].curve = Curve::line(shifted, line.direction()).unwrap();
+        *parts.edges[seam.index()].regular_mut().unwrap().0 =
+            Curve::line(shifted, line.direction()).unwrap();
         let loose = Body::try_from_parts(parts, &ValidationPolicy { max_gap: 5.0 }).unwrap();
         assert!(
             matches!(loose.cylindrical_band(wall,&validation),Err(crate::body::CylindricalBandError::Agreement{bound,..}) if bound>=0.25)
@@ -670,17 +671,19 @@ mod tests {
         let mut parts = result.body().clone().into_parts();
         let upper = result.report().rims[1];
         let vertex = parts.edges[upper.index()].start;
-        parts.edges[upper.index()].range =
+        *parts.edges[upper.index()].regular_mut().unwrap().1 =
             ParameterRange::new(core::f64::consts::PI, 3.0 * core::f64::consts::PI).unwrap();
         parts.vertices[vertex.index()] = parts.edges[upper.index()]
-            .curve
+            .regular()
+            .unwrap()
+            .0
             .evaluate(core::f64::consts::PI)
             .unwrap()
             .point;
         let edge = &parts.edges[seam.index()];
         let a = parts.vertices[edge.start.index()];
         let b = parts.vertices[edge.end.index()];
-        parts.edges[seam.index()].curve = Curve::line(a, sub(b, a)).unwrap();
+        *parts.edges[seam.index()].regular_mut().unwrap().0 = Curve::line(a, sub(b, a)).unwrap();
         let loose = Body::try_from_parts(parts, &ValidationPolicy { max_gap: 5.0 }).unwrap();
         assert!(
             matches!(loose.cylindrical_band(wall,&validation),Err(crate::body::CylindricalBandError::Agreement{bound,..}) if bound>1.0)

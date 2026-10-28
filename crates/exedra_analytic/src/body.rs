@@ -60,19 +60,87 @@ impl Sense {
     }
 }
 
-/// One bounded curve, with authoritative endpoint vertex identities.
+/// Geometry of a topological edge. A collapsed parameter boundary has one
+/// authoritative vertex and no ordinary supporting curve or curve interval.
+#[derive(Clone, Debug, PartialEq)]
+pub enum EdgeGeometry {
+    /// A regular bounded curve; equal endpoint IDs represent a closed edge.
+    Curve {
+        /// Untrimmed 3D supporting curve.
+        curve: Curve,
+        /// Increasing curve-parameter interval, independent of face traversal.
+        range: ParameterRange,
+    },
+    /// A surface-coordinate boundary collapsed to the edge's sole vertex.
+    /// Body validation permits a used collapsed edge only at a certified surface
+    /// pole on a face-domain boundary, with explicit collapsed incidence.
+    Collapsed,
+}
+
+/// One topological edge, with authoritative endpoint vertex identities.
 #[derive(Clone, Debug, PartialEq)]
 pub struct Edge<E = ()> {
-    /// Untrimmed 3D supporting curve.
-    pub curve: Curve,
-    /// Increasing curve-parameter interval, independent of face traversal.
-    pub range: ParameterRange,
-    /// Vertex at the interval's minimum; equal endpoints represent a closed edge.
+    /// Regular curve or explicit collapsed parameter boundary.
+    pub geometry: EdgeGeometry,
+    /// First authoritative endpoint; collapsed edges require the same end ID.
     pub start: VertexId,
-    /// Vertex at the interval's maximum.
+    /// Second authoritative endpoint.
     pub end: VertexId,
     /// Caller metadata; independent of the edge's geometric definition.
     pub role: E,
+}
+impl<E> Edge<E> {
+    /// Constructs a regular bounded edge; body validation checks its references
+    /// and agreement. Equal endpoints remain an ordinary closed curve edge.
+    pub fn new(
+        curve: Curve,
+        range: ParameterRange,
+        start: VertexId,
+        end: VertexId,
+        role: E,
+    ) -> Self {
+        Self {
+            geometry: EdgeGeometry::Curve { curve, range },
+            start,
+            end,
+            role,
+        }
+    }
+    /// Constructs a collapsed boundary from its sole authoritative vertex.
+    /// No duplicate point, zero-length curve or fictitious interval is stored.
+    /// Body validation still certifies the supported pole use and incidence.
+    pub fn collapsed(vertex: VertexId, role: E) -> Self {
+        Self {
+            geometry: EdgeGeometry::Collapsed,
+            start: vertex,
+            end: vertex,
+            role,
+        }
+    }
+    /// Borrows a regular supporting curve and its range; collapsed boundaries
+    /// explicitly return `None`.
+    #[must_use]
+    pub fn regular(&self) -> Option<(&Curve, ParameterRange)> {
+        match &self.geometry {
+            EdgeGeometry::Curve { curve, range } => Some((curve, *range)),
+            EdgeGeometry::Collapsed => None,
+        }
+    }
+    /// Mutably borrows regular geometry in an owned edge record. Collapsed
+    /// boundaries return `None`. Revalidate edited [`BodyParts`] before use.
+    #[must_use]
+    pub fn regular_mut(&mut self) -> Option<(&mut Curve, &mut ParameterRange)> {
+        match &mut self.geometry {
+            EdgeGeometry::Curve { curve, range } => Some((curve, range)),
+            EdgeGeometry::Collapsed => None,
+        }
+    }
+    /// Whether this is an explicit collapsed parameter boundary, independently
+    /// of closed regular curves whose endpoint IDs also happen to be equal.
+    #[must_use]
+    pub const fn is_collapsed(&self) -> bool {
+        matches!(self.geometry, EdgeGeometry::Collapsed)
+    }
 }
 
 /// One occurrence of an edge in a face boundary.
@@ -232,32 +300,43 @@ impl<F, E> Body<F, E> {
         Some(result)
     }
 
-    /// Evaluates a bounded edge by a fraction, preserving authored endpoints.
+    /// Queries an edge by normalized traversal fraction, preserving authored
+    /// endpoints. A collapsed boundary returns its sole authoritative point;
+    /// it has no ordinary supporting curve or curve parameter.
     /// Returns `None` for an unknown edge or a fraction outside `[0,1]`.
     #[must_use]
     pub fn edge_point(&self, edge: EdgeId, fraction: f64) -> Option<[f64; 3]> {
         let edge = self.edge(edge)?;
-        let t = edge.range.at(fraction)?;
+        if !(0.0..=1.0).contains(&fraction) {
+            return None;
+        }
+        let Some((curve, range)) = edge.regular() else {
+            return self.parts.vertices.get(edge.start.index()).copied();
+        };
+        let t = range.at(fraction)?;
         if fraction == 0.0 {
             return self.parts.vertices.get(edge.start.index()).copied();
         }
         if fraction == 1.0 {
             return self.parts.vertices.get(edge.end.index()).copied();
         }
-        Some(edge.curve.evaluate(t)?.point)
+        Some(curve.evaluate(t)?.point)
     }
 
-    /// Exact length of a line or circular edge, in model units.
-    /// Ellipse lengths require an elliptic integral and currently return `None`.
+    /// Exact length of a line or circular edge, in model units; collapsed
+    /// boundaries have zero length. Ellipse lengths require an elliptic integral and currently return `None`.
     #[must_use]
     pub fn edge_length(&self, edge: EdgeId) -> Option<f64> {
         let edge = self.edge(edge)?;
-        let speed = match &edge.curve {
+        let Some((curve, range)) = edge.regular() else {
+            return Some(0.0);
+        };
+        let speed = match curve {
             Curve::Line(line) => length(line.direction()),
             Curve::Circle(circle) => circle.radius(),
             Curve::Ellipse(_) => return None,
         };
-        let result = speed * edge.range.span();
+        let result = speed * range.span();
         result.is_finite().then_some(result)
     }
 
@@ -282,9 +361,9 @@ impl<F, E> Body<F, E> {
         ))
     }
 
-    /// Whether every used edge occurs once in each direction in closed loops.
-    ///
-    /// Detached table entries are ignored. This tests oriented incidence;
+    /// Whether regular used edges occur once in each direction in closed loops.
+    /// A certified collapsed parameter boundary occurs once; it represents no
+    /// physical 3D edge to pair. Detached table entries are ignored. This tests oriented incidence;
     /// it does not prove geometric non-intersection or positive enclosed volume.
     #[must_use]
     pub fn is_closed(&self) -> bool {
@@ -317,7 +396,14 @@ impl<F, E> Body<F, E> {
                 }
             }
         }
-        uses.iter().all(|v| *v == [0, 0] || *v == [1, 1])
+        uses.iter().zip(self.edges()).all(|(uses, edge)| {
+            *uses == [0, 0]
+                || if edge.is_collapsed() {
+                    uses[0] + uses[1] == 1
+                } else {
+                    *uses == [1, 1]
+                }
+        })
     }
 
     /// Ordered endpoint vertex identities of a boundary occurrence.
@@ -366,26 +452,35 @@ impl<F, E> Body<F, E> {
                 });
             }
         }
+        let mut collapsed_uses: Option<Vec<usize>> = None;
         for (i, edge) in self.parts.edges.iter().enumerate() {
             let id = EdgeId(crate::usize_to_u32(i));
-            if edge
-                .curve
-                .period()
-                .is_some_and(|period| edge.range.span() > period)
-            {
+            let Some((curve, range)) = edge.regular() else {
+                collapsed_uses.get_or_insert_with(|| alloc::vec![0;self.edges().len()]);
+                if edge.start != edge.end {
+                    return Err(BodyError::CollapsedEndpoints { edge: id });
+                }
+                if self.parts.vertices.get(edge.start.index()).is_none() {
+                    return Err(BodyError::MissingVertex {
+                        edge: id,
+                        vertex: edge.start,
+                    });
+                }
+                continue;
+            };
+            if curve.period().is_some_and(|period| range.span() > period) {
                 return Err(BodyError::RepeatedCurve { edge: id });
             }
             for (vertex, t) in [
-                (edge.start, edge.range.bounds()[0]),
-                (edge.end, edge.range.bounds()[1]),
+                (edge.start, range.bounds()[0]),
+                (edge.end, range.bounds()[1]),
             ] {
                 let point = self
                     .parts
                     .vertices
                     .get(vertex.index())
                     .ok_or(BodyError::MissingVertex { edge: id, vertex })?;
-                let curve = edge
-                    .curve
+                let curve = curve
                     .evaluate(t)
                     .ok_or(BodyError::NonFiniteCurve { edge: id })?;
                 let gap = length(sub(*point, curve.point));
@@ -452,13 +547,33 @@ impl<F, E> Body<F, E> {
             {
                 return Err(BodyError::NonRegularSurface { face: id });
             }
-            if let Surface::Cone(cone) = &face.surface
-                && face
-                    .domain
-                    .v
-                    .bounds()
+            let cone_pole = if collapsed_uses.is_some() && matches!(face.surface, Surface::Cone(_))
+            {
+                face.loops
                     .iter()
-                    .any(|&v| cone.radius_at(v).is_none())
+                    .filter_map(|id| self.boundary_loop(*id))
+                    .flat_map(|ring| &ring.coedges)
+                    .find_map(|coedge| {
+                        self.edge(coedge.edge)
+                            .filter(|e| e.is_collapsed())
+                            .map(|e| e.start)
+                    })
+            } else {
+                None
+            };
+            if let Surface::Cone(cone) = &face.surface
+                && face.domain.v.bounds().iter().any(|&v| {
+                    cone.radius_at(v).is_none()
+                        && !(Some(v) == cone.apex_parameter()
+                            && cone_pole.is_some_and(|vertex| {
+                                crate::geometry::cone_pole_gap(
+                                    cone,
+                                    v,
+                                    self.vertices()[vertex.index()],
+                                )
+                                .is_some_and(|gap| gap <= policy.max_gap)
+                            }))
+                })
             {
                 return Err(BodyError::NonRegularSurface { face: id });
             }
@@ -479,7 +594,36 @@ impl<F, E> Body<F, E> {
                     .ok_or(BodyError::MissingLoop { face: id, loop_id })?;
                 for &coedge in &loop_.coedges {
                     let edge = &self.parts.edges[coedge.edge.index()];
-                    let bound = support_gap(&edge.curve, edge.range, &face.surface);
+                    let bound = if let Some((curve, range)) = edge.regular() {
+                        if let (Surface::Cone(cone), Curve::Line(line)) = (&face.surface, curve) {
+                            let poles =
+                                [Some(edge.start) == cone_pole, Some(edge.end) == cone_pole];
+                            if poles.into_iter().any(|p| p) {
+                                crate::geometry::cone_generator_gap(cone, line, range, poles)
+                            } else {
+                                support_gap(curve, range, &face.surface)
+                            }
+                        } else {
+                            support_gap(curve, range, &face.surface)
+                        }
+                    } else {
+                        let uses = &mut collapsed_uses.as_mut().expect("collapsed edge surveyed")
+                            [coedge.edge.index()];
+                        *uses += 1;
+                        if *uses > 1 {
+                            return Err(BodyError::CollapsedIncidence {
+                                edge: coedge.edge,
+                                uses: *uses,
+                            });
+                        }
+                        let point = self.parts.vertices[edge.start.index()];
+                        collapsed_gap(&face.surface, face.domain, point).ok_or(
+                            BodyError::UnsupportedCollapsedBoundary {
+                                face: id,
+                                edge: coedge.edge,
+                            },
+                        )?
+                    };
                     if !bound.is_finite() || bound > policy.max_gap {
                         return Err(BodyError::SurfaceGap {
                             face: id,
@@ -495,6 +639,22 @@ impl<F, E> Body<F, E> {
         }
         Ok(report)
     }
+}
+
+fn collapsed_gap(surface: &Surface, domain: ParameterDomain, point: [f64; 3]) -> Option<f64> {
+    if domain.u.span() > core::f64::consts::TAU {
+        return None;
+    }
+    domain
+        .v
+        .bounds()
+        .into_iter()
+        .filter_map(|v| match surface {
+            Surface::Sphere(s) => crate::geometry::sphere_pole_gap(s, v, point),
+            Surface::Cone(c) => crate::geometry::cone_pole_gap(c, v, point),
+            _ => None,
+        })
+        .reduce(f64::min)
 }
 
 /// A boundary-table, incidence or geometric-support violation.
@@ -516,6 +676,25 @@ pub enum BodyError {
     NonFiniteVertex {
         /// Offending vertex.
         vertex: VertexId,
+    },
+    /// A collapsed boundary names two distinct vertex identities.
+    CollapsedEndpoints {
+        /// Offending edge.
+        edge: EdgeId,
+    },
+    /// A collapsed edge is not a certified permitted surface-pole boundary.
+    UnsupportedCollapsedBoundary {
+        /// Owning face.
+        face: FaceId,
+        /// Offending collapsed edge.
+        edge: EdgeId,
+    },
+    /// A used collapsed edge must occur on exactly one parameter boundary.
+    CollapsedIncidence {
+        /// Offending edge.
+        edge: EdgeId,
+        /// Number of occurrences.
+        uses: usize,
     },
     /// An edge endpoint is outside the vertex table.
     MissingVertex {
@@ -815,22 +994,28 @@ pub(crate) mod tests {
             vertices: vec![[2.0, 0.0, 0.0], [2.0, 0.0, 3.0]],
             edges: vec![
                 Edge {
-                    curve: circle(0.0),
-                    range: full,
+                    geometry: EdgeGeometry::Curve {
+                        curve: circle(0.0),
+                        range: full,
+                    },
                     start: VertexId(0),
                     end: VertexId(0),
                     role: (),
                 },
                 Edge {
-                    curve: circle(3.0),
-                    range: full,
+                    geometry: EdgeGeometry::Curve {
+                        curve: circle(3.0),
+                        range: full,
+                    },
                     start: VertexId(1),
                     end: VertexId(1),
                     role: (),
                 },
                 Edge {
-                    curve: Curve::line([2.0, 0.0, 0.0], [0.0, 0.0, 3.0]).unwrap(),
-                    range: ParameterRange::UNIT,
+                    geometry: EdgeGeometry::Curve {
+                        curve: Curve::line([2.0, 0.0, 0.0], [0.0, 0.0, 3.0]).unwrap(),
+                        range: ParameterRange::UNIT,
+                    },
                     start: VertexId(0),
                     end: VertexId(1),
                     role: (),
@@ -966,8 +1151,10 @@ pub(crate) mod tests {
         let mut parts = cylinder_parts();
         parts.vertices = vec![[2.0, 0.0, 0.0], [-2.0, 0.0, 0.0]];
         parts.edges = vec![Edge {
-            curve: Curve::line([2.0, 0.0, 0.0], [-4.0, 0.0, 0.0]).unwrap(),
-            range: ParameterRange::UNIT,
+            geometry: EdgeGeometry::Curve {
+                curve: Curve::line([2.0, 0.0, 0.0], [-4.0, 0.0, 0.0]).unwrap(),
+                range: ParameterRange::UNIT,
+            },
             start: VertexId(0),
             end: VertexId(1),
             role: (),
@@ -991,3 +1178,6 @@ pub(crate) mod tests {
         ));
     }
 }
+
+#[cfg(test)]
+mod pole_tests;

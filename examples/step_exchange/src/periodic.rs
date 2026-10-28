@@ -17,22 +17,28 @@ pub(super) fn cylinder() -> Body {
     let angular = ParameterRange::new(0.0, std::f64::consts::TAU).unwrap();
     let edges = vec![
         Edge {
-            curve: Curve::circle(bottom, 2.0).unwrap(),
-            range: angular,
+            geometry: exedra_analytic::body::EdgeGeometry::Curve {
+                curve: Curve::circle(bottom, 2.0).unwrap(),
+                range: angular,
+            },
             start: VertexId(0),
             end: VertexId(0),
             role: (),
         },
         Edge {
-            curve: Curve::circle(top, 2.0).unwrap(),
-            range: angular,
+            geometry: exedra_analytic::body::EdgeGeometry::Curve {
+                curve: Curve::circle(top, 2.0).unwrap(),
+                range: angular,
+            },
             start: VertexId(1),
             end: VertexId(1),
             role: (),
         },
         Edge {
-            curve: Curve::line([2.0, 0.0, 0.0], [0.0, 0.0, 5.0]).unwrap(),
-            range: ParameterRange::UNIT,
+            geometry: exedra_analytic::body::EdgeGeometry::Curve {
+                curve: Curve::line([2.0, 0.0, 0.0], [0.0, 0.0, 5.0]).unwrap(),
+                range: ParameterRange::UNIT,
+            },
             start: VertexId(0),
             end: VertexId(1),
             role: (),
@@ -109,13 +115,7 @@ pub(super) fn torus() -> Body {
         Curve::circle(Placement3::IDENTITY, 12.0).unwrap(),
         Curve::circle(meridian, 2.0).unwrap(),
     ]
-    .map(|curve| Edge {
-        curve,
-        range: angular,
-        start: VertexId(0),
-        end: VertexId(0),
-        role: (),
-    })
+    .map(|curve| Edge::new(curve, angular, VertexId(0), VertexId(0), ()))
     .to_vec();
     Body::try_from_parts(
         BodyParts {
@@ -164,7 +164,8 @@ mod tests {
             (3, 3, 2, 6)
         );
         let mut parts = body.clone().into_parts();
-        parts.edges[0].range = ParameterRange::new(0.0, 2.0 * std::f64::consts::TAU).unwrap();
+        *parts.edges[0].regular_mut().unwrap().1 =
+            ParameterRange::new(0.0, 2.0 * std::f64::consts::TAU).unwrap();
         assert!(matches!(
             Body::try_from_parts(parts, &ValidationPolicy { max_gap: 1e-12 }),
             Err(exedra_analytic::body::BodyError::RepeatedCurve { edge: EdgeId(0) })

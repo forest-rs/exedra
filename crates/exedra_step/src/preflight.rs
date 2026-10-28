@@ -173,9 +173,11 @@ pub(super) fn prepare<F, E>(
                 for &loop_id in &face.loops {
                     for coedge in &body.loops()[loop_id.index()].coedges {
                         let edge = &body.edges()[coedge.edge.index()];
-                        let bounds = edge
-                            .curve
-                            .conservative_bounds(edge.range)
+                        let (curve, range) = edge
+                            .regular()
+                            .ok_or(StepError::UnsupportedCollapsedEdge { edge: coedge.edge })?;
+                        let bounds = curve
+                            .conservative_bounds(range)
                             .map_err(|_| StepError::Numeric)?;
                         let mut curve_height = 0.0;
                         for (axis, row) in frame.rows.into_iter().enumerate() {
@@ -264,7 +266,10 @@ pub(super) fn prepare<F, E>(
         }
         vertices[edge.start.index()] = true;
         vertices[edge.end.index()] = true;
-        match &edge.curve {
+        let (curve, range) = edge
+            .regular()
+            .ok_or(StepError::UnsupportedCollapsedEdge { edge: id })?;
+        match curve {
             Curve::Line(l) => {
                 if !norm(l.direction()).is_finite() || norm(l.direction()) == 0.0 {
                     return Err(StepError::Numeric);
@@ -277,7 +282,7 @@ pub(super) fn prepare<F, E>(
                     Curve::Ellipse(e) => (e.frame(), e.semi_major()),
                     Curve::Line(_) => unreachable!(),
                 };
-                let span = edge.range.span();
+                let span = range.span();
                 let full = (span - core::f64::consts::TAU).abs()
                     <= 64.0 * f64::EPSILON * core::f64::consts::TAU;
                 if span > core::f64::consts::TAU * (1.0 + 64.0 * f64::EPSILON)
@@ -285,7 +290,7 @@ pub(super) fn prepare<F, E>(
                 {
                     return Err(StepError::PeriodicCurveRange {
                         edge: id,
-                        range: edge.range.bounds(),
+                        range: range.bounds(),
                     });
                 }
                 scale = scale.max(magnitude(frame.rows.map(|r| r[3])) + radius);

@@ -188,6 +188,11 @@ impl Surface {
             }
             Self::Cone(c) => {
                 for z in domain.v.bounds() {
+                    if Some(z) == c.apex_parameter() {
+                        bounds
+                            .include(crate::geometry::cone_pole_bounds(c).ok_or_else(numeric)?)?;
+                        continue;
+                    }
                     c.radius_at(z).ok_or_else(numeric)?;
                     let radius = linear(c.radius(), c.slope(), z)?;
                     bounds.include(circle(c.frame(), radius[0].abs().max(radius[1].abs()), z)?)?;
@@ -272,6 +277,25 @@ impl<F, E> Body<F, E> {
                     face: Some(FaceId(u32::try_from(i).expect("body IDs fit u32"))),
                 }
             })?)?;
+            if let Surface::Cone(cone) = &face.surface
+                && face
+                    .domain
+                    .v
+                    .bounds()
+                    .iter()
+                    .any(|v| Some(*v) == cone.apex_parameter())
+            {
+                // The authoritative boundary vertex and the enclosed analytic
+                // apex can differ by division rounding. Both belong in bounds.
+                for &id in &face.loops {
+                    for coedge in &self.boundary_loop(id).expect("validated loop").coedges {
+                        let edge = self.edge(coedge.edge).expect("validated edge");
+                        if edge.is_collapsed() {
+                            bounds.point(self.vertices()[edge.start.index()])?;
+                        }
+                    }
+                }
+            }
         }
         bounds.finish()
     }

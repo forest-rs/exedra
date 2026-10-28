@@ -143,8 +143,10 @@ pub(super) fn construct<P: IntoProfile>(
                     error,
                 };
                 parts.edges.push(Edge {
-                    curve: curve.map_err(failure)?,
-                    range: range.map_err(failure)?,
+                    geometry: crate::body::EdgeGeometry::Curve {
+                        curve: curve.map_err(failure)?,
+                        range: range.map_err(failure)?,
+                    },
                     start: VertexId(crate::usize_to_u32(section * n + base + i)),
                     end: VertexId(crate::usize_to_u32(section * n + next[base + i])),
                     role: EdgeRole::Section {
@@ -176,8 +178,10 @@ pub(super) fn construct<P: IntoProfile>(
                 error,
             })?;
             parts.edges.push(Edge {
-                curve,
-                range: ParameterRange::UNIT,
+                geometry: crate::body::EdgeGeometry::Curve {
+                    curve,
+                    range: ParameterRange::UNIT,
+                },
                 start: VertexId(crate::usize_to_u32(band * n + k)),
                 end: VertexId(crate::usize_to_u32((band + 1) * n + k)),
                 role: EdgeRole::Rail { band, vertex },
@@ -191,8 +195,12 @@ pub(super) fn construct<P: IntoProfile>(
                 segment,
                 error,
             };
-            let span =
-                |edge: &Edge<EdgeRole>| CurveSpan::new(edge.curve.clone(), edge.range, false);
+            let span = |edge: &Edge<EdgeRole>| {
+                let (curve, range) = edge
+                    .regular()
+                    .expect("constructed loft section edge is regular");
+                CurveSpan::new(curve.clone(), range, false)
+            };
             let surface = Surface::ruled(
                 span(&parts.edges[band * n + k]).map_err(failure)?,
                 span(&parts.edges[(band + 1) * n + k]).map_err(failure)?,

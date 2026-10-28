@@ -160,7 +160,10 @@ pub(super) fn export<F, E>(
         if !active {
             continue;
         }
-        let curve = match &edge.curve {
+        let (geometry, _) = edge.regular().ok_or(StepError::UnsupportedCollapsedEdge {
+            edge: exedra_analytic::body::EdgeId(u32::try_from(i).map_err(|_| StepError::Numeric)?),
+        })?;
+        let curve = match geometry {
             Curve::Line(line) => {
                 let origin = out.point(placement.transform_point(line.origin()))?;
                 let direction = placement.transform_vector(line.direction());

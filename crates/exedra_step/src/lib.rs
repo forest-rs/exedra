@@ -177,6 +177,11 @@ pub struct StepDocument {
 #[derive(Clone, Debug, PartialEq)]
 #[non_exhaustive]
 pub enum StepError {
+    /// Collapsed parameter boundaries are not yet serialized by this exporter.
+    UnsupportedCollapsedEdge {
+        /// Native edge requiring collapsed-boundary exchange support.
+        edge: EdgeId,
+    },
     /// Positive finite tolerance and nonzero output budgets are required.
     InvalidOptions,
     /// Creation timestamp is not a supported ISO 8601 date/time spelling.
@@ -263,6 +268,9 @@ pub enum StepError {
 impl core::fmt::Display for StepError {
     fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
         match self {
+            Self::UnsupportedCollapsedEdge { edge } => {
+                write!(f, "STEP does not support collapsed edge {edge:?}")
+            }
             Self::InvalidOptions => write!(
                 f,
                 "STEP options require positive finite tolerance and nonzero budgets"
@@ -334,7 +342,7 @@ impl core::error::Error for StepError {
 }
 /// Checks structural STEP support without allocating output or realizing a mesh.
 ///
-/// This checks supported native geometry families only. A successful result
+/// This checks supported native geometry and boundary kinds. A successful result
 /// does not validate incidence, trims, placement, requested tolerance, timestamp
 /// or output budgets; [`export_body`] checks those independently. The same
 /// geometry policy is used by the exporter's full preflight. Zero-slope cones
@@ -344,12 +352,30 @@ impl core::error::Error for StepError {
 /// Returns [`StepError::UnsupportedSurface`] with the native face and family,
 /// or [`StepError::ConeAngle`] with a slope outside the current exact-interchange
 /// policy, including the observed reader's small-angle clamp range.
+/// Collapsed boundaries return [`StepError::UnsupportedCollapsedEdge`].
 pub fn check_geometry_support<F, E>(body: &Body<F, E>) -> Result<(), StepError> {
     for (index, face) in body.faces().iter().enumerate() {
         preflight::surface_support(
             &face.surface,
             FaceId(u32::try_from(index).expect("native face IDs fit u32")),
         )?;
+    }
+    for face in body.faces() {
+        for &loop_id in &face.loops {
+            for coedge in &body
+                .boundary_loop(loop_id)
+                .expect("validated native loop")
+                .coedges
+            {
+                if body
+                    .edge(coedge.edge)
+                    .expect("validated native edge")
+                    .is_collapsed()
+                {
+                    return Err(StepError::UnsupportedCollapsedEdge { edge: coedge.edge });
+                }
+            }
+        }
     }
     Ok(())
 }

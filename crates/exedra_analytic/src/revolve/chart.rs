@@ -151,7 +151,12 @@ impl Revolution {
                             EdgeRole::Orbit { vertex } => RestPoint {
                                 vertex,
                                 fraction: 0.0,
-                                theta: edge.range.at(parameter).expect("bounded native sample"),
+                                theta: edge
+                                    .regular()
+                                    .expect("interior edge sample is regular")
+                                    .1
+                                    .at(parameter)
+                                    .expect("bounded native sample"),
                             },
                             EdgeRole::Meridian { segment, end } => RestPoint {
                                 vertex: segment,

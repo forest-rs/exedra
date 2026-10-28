@@ -10,7 +10,7 @@
 //! realization. Region materials and native correspondence remain available.
 
 use exedra::analytic::body::{
-    Body, BodyParts, BoundaryLoop, Coedge, Edge, EdgeId, Face, FaceId, LoopId, Sense,
+    Body, BodyParts, BoundaryLoop, Coedge, Edge, EdgeGeometry, EdgeId, Face, FaceId, LoopId, Sense,
     ValidationPolicy, VertexId,
 };
 use exedra::analytic::extrusion::{End, Extrusion, Pocket};
@@ -34,22 +34,28 @@ fn cylinder() -> Result<Body, Box<dyn std::error::Error>> {
         vertices: vec![[13.0, 0.0, 0.0], [13.0, 0.0, 24.0]],
         edges: vec![
             Edge {
-                curve: circle(0.0),
-                range: full,
+                geometry: EdgeGeometry::Curve {
+                    curve: circle(0.0),
+                    range: full,
+                },
                 start: VertexId(0),
                 end: VertexId(0),
                 role: (),
             },
             Edge {
-                curve: circle(24.0),
-                range: full,
+                geometry: EdgeGeometry::Curve {
+                    curve: circle(24.0),
+                    range: full,
+                },
                 start: VertexId(1),
                 end: VertexId(1),
                 role: (),
             },
             Edge {
-                curve: Curve::line([13.0, 0.0, 0.0], [0.0, 0.0, 24.0]).unwrap(),
-                range: ParameterRange::UNIT,
+                geometry: EdgeGeometry::Curve {
+                    curve: Curve::line([13.0, 0.0, 0.0], [0.0, 0.0, 24.0]).unwrap(),
+                    range: ParameterRange::UNIT,
+                },
                 start: VertexId(0),
                 end: VertexId(1),
                 role: (),
@@ -143,8 +149,7 @@ fn plate() -> Result<Body<u32>, Box<dyn std::error::Error>> {
         .edges
         .into_iter()
         .map(|edge| Edge {
-            curve: edge.curve,
-            range: edge.range,
+            geometry: edge.geometry,
             start: edge.start,
             end: edge.end,
             role: (),
