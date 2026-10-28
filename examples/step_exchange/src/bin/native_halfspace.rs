@@ -47,6 +47,14 @@ fn main() -> Result<(), Box<dyn Error>> {
             320.0 + 6.0 * (36.0 + 16.0 * 2.0_f64.sqrt()),
             [[-10.0, -8.0, 0.0], [8.0, 8.0, 6.0]],
         ),
+        (
+            "native-trihedral-clip",
+            [0.0, 0.0, 3.0],
+            [1.0, 1.0, 1.0],
+            960.0,
+            536.0 + 95.0 * 3.0_f64.sqrt(),
+            [[-10.0, -8.0, 0.0], [10.0, 8.0, 6.0]],
+        ),
     ] {
         let result = intersect_half_space_with_roles(
             source.body(),
@@ -75,7 +83,7 @@ fn main() -> Result<(), Box<dyn Error>> {
         let doc = export_body(&body, Placement3::IDENTITY, &options)?;
         let file = format!("{name}.step");
         std::fs::write(output.join(&file), doc.text)?;
-        fixtures.push(json!({"file":file,"product_name":name,"faces":body.faces().len(),"edges":edges.len(),"vertices":vertices.len(),"metres_per_unit":0.001,"native_volume":volume,"native_area":area,"bounds":bounds,"uncertainty":options.tolerance,"max_deviation":options.tolerance,"witnesses":[{"point":[-9.0,0.0,3.0],"state":"inside"},{"point":[9.0,0.0,3.0],"state":"outside"}]}));
+        fixtures.push(json!({"file":file,"product_name":name,"faces":body.faces().len(),"edges":edges.len(),"vertices":vertices.len(),"metres_per_unit":0.001,"native_volume":volume,"native_area":area,"bounds":bounds,"uncertainty":options.tolerance,"max_deviation":doc.report.max_deviation,"max_native_support_gap":doc.report.max_native_support_gap,"frame_roundoff_bound":doc.report.frame_roundoff_bound,"parameter_roundoff_bound":doc.report.parameter_roundoff_bound,"witnesses":[{"point":[-9.0,0.0,3.0],"state":"inside"},{"point":[9.0,0.0,3.0],"state":"outside"}]}));
     }
     std::fs::write(
         output.join("expected.json"),
