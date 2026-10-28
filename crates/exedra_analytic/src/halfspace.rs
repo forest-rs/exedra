@@ -672,9 +672,10 @@ mod tests {
     #[test]
     fn axis_and_oblique_cuts_share_splits_preserve_roles_and_close() {
         let source = stock();
-        for (point, normal, expected) in [
-            ([3.0, 0.0, 0.0], [1.0, 0.0, 0.0], 1248.0),
-            ([0.0; 3], [1.0, 1.0, 0.0], 960.0),
+        for (point, normal, expected, intersections) in [
+            ([3.0, 0.0, 0.0], [1.0, 0.0, 0.0], 1248.0, 4),
+            ([0.0; 3], [1.0, 1.0, 0.0], 960.0, 4),
+            ([0.0, 0.0, 3.0], [1.0, 1.0, 1.0], 960.0, 6),
         ] {
             let original = source.body().clone();
             let result = intersect_half_space_with_roles(
@@ -693,8 +694,8 @@ mod tests {
                     .body
                     .has_explicit_trims(FaceId(crate::usize_to_u32(i)))
             }));
-            assert_eq!(result.report.splits.len(), 4);
-            assert_eq!(result.report.cap_edges.len(), 4);
+            assert_eq!(result.report.splits.len(), intersections);
+            assert_eq!(result.report.cap_edges.len(), intersections);
             assert!((volume(&result.body) - expected).abs() < 1e-9);
             let realized = result
                 .body
