@@ -27,6 +27,8 @@ extern crate alloc;
 mod error;
 mod generator;
 mod geometry;
+/// Exact native-body archives and caller-owned stage persistence.
+pub mod native;
 mod primitive;
 mod runtime;
 

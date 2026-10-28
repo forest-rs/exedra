@@ -62,3 +62,20 @@ failed checks fail. It does not install tooling or claim general conformance.
 
 `cargo run -p native_scene --bin primitives` retains the smaller built-in
 box/cylinder authoring, regeneration, native bounds and undo example.
+
+## Native archive save and reopen
+
+```sh
+cargo run -p native_scene --bin native_archive -- /tmp/native-archive-output
+cargo test -p native_scene --bin native_archive
+```
+
+The example writes `housing.usda` containing a machined body with explicit UV
+trim correspondence and four additional valid sources covering cone, sphere,
+torus and ruled supports. It drops the original store, parses the saved file into
+a fresh store and compares exact topology/tag words and every f64 bit, including
+negative zero, an awkward occurrence datum and a next-representable radius.
+After reopening, it machines a second bore and writes `housing-second-bore.step`.
+Display realization stays in body-local coordinates; the exact large-datum
+occurrence frame remains separate and is applied by the f64 STEP exporter.
+The archive uses Exedra's versioned ordinary attributes, not the USD-BRep schema.
