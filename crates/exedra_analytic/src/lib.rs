@@ -26,6 +26,7 @@ pub mod bore;
 pub mod bounds;
 pub mod extrusion;
 pub mod geometry;
+pub mod halfspace;
 pub mod loft;
 pub mod machining;
 mod planar;
