@@ -189,3 +189,34 @@ matching native types.
 ## License
 
 Apache-2.0 OR MIT
+
+`native::define_native_body` prepares an ordinary caller-owned transaction storing
+native f64 geometry, topology, face feature-tag IDs, explicit face-local trims and
+occurrence placement. `native::read_native_body` restores composed default-time
+values, validates them and installs a fresh generic source. Layer export/reopen
+continues through the existing Layerstack client. The payload is Exedra's
+versioned native archive (`uint[]` topology plus `double[]` geometry), not the
+USD-BRep schema. It contains no display mesh. Constructor history, constructor
+roles, exact-integral provenance and feature-name strings are not persisted;
+applications own tag-to-name registries. Capture checks limits against borrowed
+records before allocating exact-sized output streams; restore bounds streams and
+decoded entries and refuses malformed stronger opinions without a mesh fallback.
+
+The archive reader selects composed authored defaults without type-conversion
+fallback, checks native array kinds and lengths, and decodes borrowed slices
+without cloning either input stream. Direct deferred arrays are explicit
+refusals: the storage interface exposes no pre-materialization length. Callers
+own file-loader, composition and adapter decode budgets, including sparse array
+composition. `ArchiveLimits` bounds native codec streams and decoded table work.
+Invalid support/range errors include the owning record/index and both stream
+cursors; malformed stronger opinions remain errors until the caller repairs or
+undoes them.
+
+`cargo run -p native_scene --bin native_archive -- /tmp/native-archive-output`
+saves a genuinely machined body with explicit trim curves plus cone, sphere,
+torus and ruled sources, drops the old store, reads the USDA into a fresh store
+and compares every encoded geometry value with `to_bits`. The fixtures include
+negative zero, a next-representable radius and a `1_000_000.03` occurrence datum.
+The reopened body accepts another native bore, realizes locally and exports STEP
+with its retained f64 occurrence frame. This verifies this Exedra-specific
+archive path; it is not a USD-BRep schema conformance claim.

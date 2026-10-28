@@ -532,6 +532,7 @@ dependencies = [
  "exedra_compile",
  "exedra_constructive",
  "exedra_mesh",
+ "exedra_profile",
  "layerstack",
  "layerstack_schemas",
 ]
@@ -1122,6 +1123,7 @@ dependencies = [
  "exedra_math",
  "exedra_profile",
  "exedra_scene",
+ "exedra_step",
  "layerstack_usda",
  "serde_json",
 ]
