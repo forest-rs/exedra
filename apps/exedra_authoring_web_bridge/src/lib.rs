@@ -493,7 +493,10 @@ impl Session {
         "entities":file.report.counts.entities,"faces":file.report.counts.faces,"edges":file.report.counts.edges,
         "correspondence":{
             "vertices":file.report.correspondence.vertices.iter().map(|id|id.map(|v|v.0)).collect::<Vec<_>>(),
-            "edges":file.report.correspondence.edges.iter().map(|id|id.map(|v|v.0)).collect::<Vec<_>>(),
+            "edges":file.report.correspondence.edges.iter().map(|entry|entry.map(|edge|match edge {
+                exedra_step::StepEdgeEntity::Curve(id)=>serde_json::json!({"kind":"curve","entity":id.0}),
+                exedra_step::StepEdgeEntity::CollapsedVertex(id)=>serde_json::json!({"kind":"collapsedVertex","entity":id.0})
+            })).collect::<Vec<_>>(),
             "loops":file.report.correspondence.loops.iter().map(|id|id.map(|v|v.0)).collect::<Vec<_>>(),
             "faces":file.report.correspondence.faces.iter().map(|id|id.map(|v|v.0)).collect::<Vec<_>>()
         }});

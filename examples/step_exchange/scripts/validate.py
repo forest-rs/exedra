@@ -6,16 +6,19 @@ import json
 import importlib.metadata
 import math
 import pathlib
+import re
 import sys
 
 try:
     from OCP.BRepAdaptor import BRepAdaptor_Surface
-    from OCP.GeomAbs import GeomAbs_Plane, GeomAbs_Cylinder, GeomAbs_Cone, GeomAbs_Torus
+    from OCP.GeomAbs import GeomAbs_Plane, GeomAbs_Cylinder, GeomAbs_Cone, GeomAbs_Torus, GeomAbs_Sphere
     from OCP.TopoDS import TopoDS
     from OCP.Precision import Precision
     from OCP.BRepClass3d import BRepClass3d_SolidClassifier
     from OCP.gp import gp_Pnt
     from OCP.BRepBndLib import BRepBndLib
+    from OCP.BndLib import BndLib_AddSurface
+    from OCP.BRepTools import BRepTools
     from OCP.BRepCheck import BRepCheck_Analyzer
     from OCP.BRepGProp import BRepGProp
     from OCP.Bnd import Bnd_Box
@@ -59,6 +62,16 @@ def close(actual, expected, absolute=1e-7):
 
 
 def validate(folder, fixture):
+    text = (folder / fixture["file"]).read_text()
+    serialized = {
+        "edges":len(re.findall(r"#\d+\s*=\s*EDGE_CURVE\(",text)),
+        "vertices":len(re.findall(r"#\d+\s*=\s*VERTEX_POINT\(",text)),
+        "coedges":len(re.findall(r"#\d+\s*=\s*ORIENTED_EDGE\(",text)),
+        "loops":len(re.findall(r"#\d+\s*=\s*(?:EDGE_LOOP|VERTEX_LOOP)\(",text)),
+    }
+    for key,value in serialized.items():
+        if "serialized_"+key in fixture:
+            assert value == fixture["serialized_"+key], (key,value,fixture["serialized_"+key])
     reader = STEPControl_Reader()
     assert reader.ReadFile(str(folder / fixture["file"])) == IFSelect_RetDone
     reader.SetSystemLengthUnit(1.0)
@@ -85,14 +98,47 @@ def validate(folder, fixture):
     volume = GProp_GProps()
     BRepGProp.VolumeProperties_s(shape, volume)
     expected_volume = fixture["native_volume"] * scale**3
-    close(volume.Mass(), expected_volume, absolute=max(1e-18, abs(expected_volume)*1e-12))
+    close(volume.Mass(), expected_volume, absolute=0.0)
     area = GProp_GProps()
     BRepGProp.SurfaceProperties_s(shape, area)
     expected_area = fixture["native_area"] * scale**2
-    close(area.Mass(), expected_area, absolute=max(1e-16, abs(expected_area)*1e-12))
+    close(area.Mass(), expected_area, absolute=0.0)
+    centroid = volume.CentreOfMass().Coord()
+    centroid_error = None
+    if "centroid" in fixture:
+        centroid_error = max(abs(actual-source*scale) for actual,source in zip(centroid,fixture["centroid"]))
+        assert centroid_error <= fixture["max_deviation"]*scale, ("centroid",centroid,fixture["centroid"],centroid_error,fixture["max_deviation"]*scale)
     box = Bnd_Box()
     BRepBndLib.AddOptimal_s(shape, box, False, False)
     actual_bounds = [[p.X(), p.Y(), p.Z()] for p in [box.CornerMin(), box.CornerMax()]]
+    shape_bounds = actual_bounds
+    bounds_method = fixture.get("bounds_method", "shape")
+    if bounds_method == "analytic_cap_domains":
+        assert fixture["authoring"]["constructor"] == "Revolution::spherical_cap"
+        assert fixture["authoring"]["frame"] == [[1,0,0,0],[0,1,0,0],[0,0,1,0]]
+        # The whole-shape bounding path can expand a large meridian by a
+        # fixed parameter allowance. Bound these canonical cap faces directly
+        # from the actual reader support and trim-domain limits, at zero added
+        # tolerance; retain the raw whole-shape box as separate evidence.
+        box = Bnd_Box()
+        surfaces = TopExp_Explorer(shape, TopAbs_FACE)
+        cast_face = getattr(TopoDS, "Face_s", None) or TopoDS.Face
+        kinds = []
+        while surfaces.More():
+            face = cast_face(surfaces.Current())
+            support = BRepAdaptor_Surface(face)
+            kinds.append(support.GetType())
+            assert support.GetType() in (GeomAbs_Plane, GeomAbs_Sphere)
+            uv = BRepTools.UVBounds_s(face)
+            if support.GetType() == GeomAbs_Sphere:
+                assert abs(uv[1]-uv[0]-math.tau) <= 1e-10
+                assert 0.0 <= uv[2] < uv[3] <= math.pi/2 + 1e-12
+            BndLib_AddSurface.AddOptimal_s(support, *uv, 0.0, box)
+            surfaces.Next()
+        assert sorted(map(str, kinds)) == sorted(map(str, [GeomAbs_Plane, GeomAbs_Sphere]))
+        actual_bounds = [[p.X(), p.Y(), p.Z()] for p in [box.CornerMin(), box.CornerMax()]]
+    else:
+        assert bounds_method == "shape"
     # AddOptimal uses OCCT's own confusion floor for extrema. Allow its
     # outward box padding plus comparison rounding, separately from geometry.
     confusion = Precision.Confusion() if hasattr(Precision, "Confusion") else Precision.Confusion_s()
@@ -105,7 +151,7 @@ def validate(folder, fixture):
     cast_face = getattr(TopoDS, "Face_s", None) or TopoDS.Face
     while surfaces.More():
         support = BRepAdaptor_Surface(cast_face(surfaces.Current()))
-        name = {GeomAbs_Plane:"plane", GeomAbs_Cylinder:"cylinder", GeomAbs_Cone:"cone", GeomAbs_Torus:"torus"}.get(support.GetType(),"other")
+        name = {GeomAbs_Plane:"plane", GeomAbs_Cylinder:"cylinder", GeomAbs_Cone:"cone", GeomAbs_Torus:"torus", GeomAbs_Sphere:"sphere"}.get(support.GetType(),"other")
         surface_counts[name] = surface_counts.get(name, 0) + 1
         if name == "cone":
             assert 0.0 < support.Cone().SemiAngle() < math.pi/2, "canonical cone angle survives transfer"
@@ -122,8 +168,10 @@ def validate(folder, fixture):
     assert fixture["max_deviation"] <= fixture["uncertainty"]
     return {"file": fixture["file"], "valid": True, "solids": 1, "shells": 1,
             "faces": fixture["faces"], "edges": fixture["edges"], "vertices": fixture["vertices"],
-            "volume_mm3": volume.Mass(), "area_mm2": area.Mass(), "bounds_mm": actual_bounds,
-            "product_name": product_name, "surface_counts":surface_counts, "bounds_comparison_tolerance_mm":bounds_comparison_tolerance, "model_checks": model_checks, "transfer_checks": transfer_checks, "material_witnesses": witnesses}
+            "volume_mm3": volume.Mass(), "area_mm2": area.Mass(),
+            "volume_relative_error":abs(volume.Mass()/expected_volume-1.0),"area_relative_error":abs(area.Mass()/expected_area-1.0),
+            "centroid_mm":list(centroid),"centroid_error_mm":centroid_error,"export_deviation_mm":fixture["max_deviation"]*scale,"native_support_gap_mm":(fixture["max_native_support_gap"]*scale if "max_native_support_gap" in fixture else None),"frame_roundoff_bound_mm":(fixture["frame_roundoff_bound"]*scale if "frame_roundoff_bound" in fixture else None),"parameter_roundoff_bound_mm":(fixture["parameter_roundoff_bound"]*scale if "parameter_roundoff_bound" in fixture else None),"bounds_mm": actual_bounds,"bounds_method":bounds_method,"raw_shape_bounds_mm":shape_bounds,
+            "product_name": product_name, "serialized_topology":serialized, "surface_counts":surface_counts, "bounds_comparison_tolerance_mm":bounds_comparison_tolerance, "model_checks": model_checks, "transfer_checks": transfer_checks, "material_witnesses": witnesses}
 
 
 folder = pathlib.Path(sys.argv[1] if len(sys.argv) > 1 else "step-fixtures")

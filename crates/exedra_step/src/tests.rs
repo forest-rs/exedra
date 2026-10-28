@@ -403,3 +403,131 @@ fn structural_support_is_separate_from_final_options_and_budget_validation() {
         Err(StepError::Budget { .. })
     ));
 }
+
+fn sphere_with_poles(seam: bool) -> Body {
+    let radius = 2.0;
+    let mut edges = vec![
+        Edge::collapsed(VertexId(0), ()),
+        Edge::collapsed(VertexId(1), ()),
+    ];
+    let coedges = if seam {
+        edges.push(Edge::new(
+            Curve::circle(
+                Placement3::from_axes(
+                    [0.0, 0.0, -1.0],
+                    [1.0, 0.0, 0.0],
+                    [0.0, -1.0, 0.0],
+                    [0.0; 3],
+                ),
+                radius,
+            )
+            .unwrap(),
+            ParameterRange::new(0.0, core::f64::consts::PI).unwrap(),
+            VertexId(0),
+            VertexId(1),
+            (),
+        ));
+        vec![
+            Coedge {
+                edge: EdgeId(0),
+                reversed: false,
+            },
+            Coedge {
+                edge: EdgeId(2),
+                reversed: false,
+            },
+            Coedge {
+                edge: EdgeId(1),
+                reversed: true,
+            },
+            Coedge {
+                edge: EdgeId(2),
+                reversed: true,
+            },
+        ]
+    } else {
+        vec![Coedge {
+            edge: EdgeId(0),
+            reversed: false,
+        }]
+    };
+    Body::try_from_parts(
+        BodyParts {
+            vertices: vec![[0.0, 0.0, -radius], [0.0, 0.0, radius]],
+            edges,
+            loops: vec![BoundaryLoop { coedges }],
+            faces: vec![Face {
+                surface: Surface::sphere(Placement3::IDENTITY, radius).unwrap(),
+                domain: ParameterDomain {
+                    u: ParameterRange::new(0.0, core::f64::consts::TAU).unwrap(),
+                    v: ParameterRange::new(
+                        -core::f64::consts::FRAC_PI_2,
+                        core::f64::consts::FRAC_PI_2,
+                    )
+                    .unwrap(),
+                },
+                sense: Sense::Forward,
+                loops: vec![LoopId(0)],
+                role: (),
+            }],
+        },
+        &exedra_analytic::body::ValidationPolicy { max_gap: 1e-10 },
+    )
+    .unwrap()
+}
+#[test]
+fn certified_poles_map_to_vertices_and_regular_meridian_identity_survives() {
+    for seam in [false, true] {
+        let body = sphere_with_poles(seam);
+        assert_eq!(check_geometry_support(&body), Ok(()));
+        let file = export_body(&body, Placement3::IDENTITY, &StepOptions::default()).unwrap();
+        for options in [
+            StepOptions {
+                max_bytes: file.text.len() - 1,
+                ..StepOptions::default()
+            },
+            StepOptions {
+                max_entities: file.report.counts.entities - 1,
+                ..StepOptions::default()
+            },
+        ] {
+            assert!(matches!(
+                export_body(&body, Placement3::IDENTITY, &options),
+                Err(StepError::Budget { .. })
+            ));
+        }
+        let map = &file.report.correspondence;
+        assert!(file.text.contains("SPHERICAL_SURFACE("));
+        assert!(!file.text.contains("UNSUPPORTED"));
+        assert_eq!(
+            map.edge(EdgeId(0)),
+            Some(StepEdgeEntity::CollapsedVertex(
+                map.vertex(VertexId(0)).unwrap()
+            ))
+        );
+        assert_eq!(file.report.counts.edges, u32::from(seam));
+        assert_eq!(file.report.counts.coedges, 2 * u32::from(seam));
+        if seam {
+            assert_eq!(
+                map.edge(EdgeId(1)),
+                Some(StepEdgeEntity::CollapsedVertex(
+                    map.vertex(VertexId(1)).unwrap()
+                ))
+            );
+            let Some(StepEdgeEntity::Curve(curve)) = map.edge(EdgeId(2)) else {
+                panic!("ordinary meridian must remain an edge")
+            };
+            assert!(file.text.contains(&format!("#{}=EDGE_CURVE(", curve.0)));
+            assert!(file.text.contains("EDGE_LOOP("));
+            assert!(!file.text.contains("VERTEX_LOOP("));
+        } else {
+            assert_eq!(
+                map.edge(EdgeId(1)),
+                None,
+                "detached pole stays explicitly unused"
+            );
+            assert!(file.text.contains("VERTEX_LOOP("));
+            assert!(!file.text.contains("EDGE_CURVE("));
+        }
+    }
+}

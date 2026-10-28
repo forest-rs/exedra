@@ -6,7 +6,7 @@
 //! The exporter owns serialization, explicit exchange units and bounded output.
 //! The analytic head owns geometry and incidence; callers own scene hierarchy,
 //! feature metadata and occurrence placement. This first family exports one
-//! connected closed shell of planes, cylinders, cones and regular ring tori,
+//! connected closed shell of planes, cylinders, cones, spheres and regular ring tori,
 //! bounded by lines, circles and ellipses.
 //!
 //! Input incidence and conservative support agreement are checked. Those checks
@@ -83,15 +83,25 @@ impl Default for StepOptions<'_> {
 #[derive(Copy, Clone, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub struct StepEntityId(pub u32);
 
+/// Exact STEP representation of one used native boundary edge.
+#[derive(Copy, Clone, Debug, PartialEq, Eq)]
+pub enum StepEdgeEntity {
+    /// A regular shared `EDGE_CURVE` entity.
+    Curve(StepEntityId),
+    /// A certified collapsed boundary represented by its authoritative
+    /// `VERTEX_POINT`; no fictitious three-dimensional curve is emitted.
+    CollapsedVertex(StepEntityId),
+}
+
 /// Native table indices mapped to exported topological entity IDs.
 /// Unused native entries are `None`; identities are local to this source/document.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct StepCorrespondence {
     /// Native vertices to `VERTEX_POINT` entities.
     pub vertices: Vec<Option<StepEntityId>>,
-    /// Native edges to shared `EDGE_CURVE` entities.
-    pub edges: Vec<Option<StepEntityId>>,
-    /// Native loops to `EDGE_LOOP` entities.
+    /// Native edges to regular curves or explicitly collapsed vertices.
+    pub edges: Vec<Option<StepEdgeEntity>>,
+    /// Native loops to `EDGE_LOOP` or pole-only `VERTEX_LOOP` entities.
     pub loops: Vec<Option<StepEntityId>>,
     /// Native faces to `ADVANCED_FACE` entities.
     pub faces: Vec<Option<StepEntityId>>,
@@ -102,9 +112,9 @@ impl StepCorrespondence {
     pub fn vertex(&self, id: VertexId) -> Option<StepEntityId> {
         self.vertices.get(id.index()).copied().flatten()
     }
-    /// Exported shared curve edge for a native edge, if used.
+    /// Exported regular curve or collapsed vertex for a native edge, if used.
     #[must_use]
-    pub fn edge(&self, id: EdgeId) -> Option<StepEntityId> {
+    pub fn edge(&self, id: EdgeId) -> Option<StepEdgeEntity> {
         self.edges.get(id.index()).copied().flatten()
     }
     /// Exported loop for a native loop, if used.
@@ -126,9 +136,9 @@ pub struct StepCounts {
     pub entities: u32,
     /// Used authoritative native vertices.
     pub vertices: u32,
-    /// Shared bounded native edges.
+    /// Emitted regular `EDGE_CURVE` entities; collapsed boundaries map to vertices.
     pub edges: u32,
-    /// Oriented edge occurrences across face loops.
+    /// Emitted `ORIENTED_EDGE` occurrences; collapsed coedges are omitted.
     pub coedges: u32,
     /// Used native loops.
     pub loops: u32,
@@ -177,11 +187,6 @@ pub struct StepDocument {
 #[derive(Clone, Debug, PartialEq)]
 #[non_exhaustive]
 pub enum StepError {
-    /// Collapsed parameter boundaries are not yet serialized by this exporter.
-    UnsupportedCollapsedEdge {
-        /// Native edge requiring collapsed-boundary exchange support.
-        edge: EdgeId,
-    },
     /// Positive finite tolerance and nonzero output budgets are required.
     InvalidOptions,
     /// Creation timestamp is not a supported ISO 8601 date/time spelling.
@@ -192,7 +197,7 @@ pub enum StepError {
     Boundary(BodyError),
     /// A solid export requires at least one face.
     EmptyBody,
-    /// Every used edge must occur once in each direction.
+    /// Every used regular edge must occur once in each direction.
     EdgeIncidence {
         /// Refused native edge.
         edge: EdgeId,
@@ -268,9 +273,6 @@ pub enum StepError {
 impl core::fmt::Display for StepError {
     fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
         match self {
-            Self::UnsupportedCollapsedEdge { edge } => {
-                write!(f, "STEP does not support collapsed edge {edge:?}")
-            }
             Self::InvalidOptions => write!(
                 f,
                 "STEP options require positive finite tolerance and nonzero budgets"
@@ -352,30 +354,12 @@ impl core::error::Error for StepError {
 /// Returns [`StepError::UnsupportedSurface`] with the native face and family,
 /// or [`StepError::ConeAngle`] with a slope outside the current exact-interchange
 /// policy, including the observed reader's small-angle clamp range.
-/// Collapsed boundaries return [`StepError::UnsupportedCollapsedEdge`].
 pub fn check_geometry_support<F, E>(body: &Body<F, E>) -> Result<(), StepError> {
     for (index, face) in body.faces().iter().enumerate() {
         preflight::surface_support(
             &face.surface,
             FaceId(u32::try_from(index).expect("native face IDs fit u32")),
         )?;
-    }
-    for face in body.faces() {
-        for &loop_id in &face.loops {
-            for coedge in &body
-                .boundary_loop(loop_id)
-                .expect("validated native loop")
-                .coedges
-            {
-                if body
-                    .edge(coedge.edge)
-                    .expect("validated native edge")
-                    .is_collapsed()
-                {
-                    return Err(StepError::UnsupportedCollapsedEdge { edge: coedge.edge });
-                }
-            }
-        }
     }
     Ok(())
 }
