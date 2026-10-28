@@ -148,3 +148,105 @@ fn collapsed_boundary_refuses_repeated_uses_and_support_disagreement() {
         })
     ));
 }
+
+#[test]
+fn explicit_sphere_trims_keep_distinct_pole_parameters_and_seam_uses() {
+    let mut parts = sphere_parts();
+    let line = |start, end| TrimCurve::Line { start, end };
+    parts.trims = vec![LoopTrims {
+        loop_id: LoopId(0),
+        curves: vec![
+            line([0.0, -FRAC_PI_2], [TAU, -FRAC_PI_2]),
+            line([TAU, -FRAC_PI_2], [TAU, FRAC_PI_2]),
+            line([0.0, FRAC_PI_2], [TAU, FRAC_PI_2]),
+            line([0.0, -FRAC_PI_2], [0.0, FRAC_PI_2]),
+        ],
+    }];
+    let body = Body::try_from_parts(parts, &POLICY).unwrap();
+    let report = body.validate(&POLICY).unwrap();
+    assert_eq!(report.trimmed_coedges, 4);
+    assert!(report.max_trim_gap <= POLICY.max_gap);
+    assert!(body.is_closed());
+    let output = body
+        .realize(
+            Placement3::IDENTITY,
+            &crate::realize::RealizationPolicy::default(),
+        )
+        .unwrap();
+    assert!(output.report.within_tolerance());
+    assert!(output.mesh.boundary_loops().unwrap().is_empty());
+    assert!(!output.pole_corners.is_empty());
+}
+
+#[test]
+fn cone_apex_trim_is_a_collapsed_position_not_a_fictitious_curve() {
+    let range = ParameterRange::new(0.0, TAU).unwrap();
+    let line = |start, end| TrimCurve::Line { start, end };
+    let mut parts = BodyParts {
+        vertices: vec![[2.0, 0.0, 0.0], [0.0, 0.0, 3.0]],
+        edges: vec![
+            Edge::new(
+                Curve::circle(Placement3::IDENTITY, 2.0).unwrap(),
+                range,
+                VertexId(0),
+                VertexId(0),
+                (),
+            ),
+            Edge::new(
+                Curve::line([2.0, 0.0, 0.0], [-2.0, 0.0, 3.0]).unwrap(),
+                ParameterRange::UNIT,
+                VertexId(0),
+                VertexId(1),
+                (),
+            ),
+            Edge::collapsed(VertexId(1), ()),
+        ],
+        loops: vec![BoundaryLoop {
+            coedges: vec![
+                Coedge {
+                    edge: EdgeId(0),
+                    reversed: false,
+                },
+                Coedge {
+                    edge: EdgeId(1),
+                    reversed: false,
+                },
+                Coedge {
+                    edge: EdgeId(2),
+                    reversed: true,
+                },
+                Coedge {
+                    edge: EdgeId(1),
+                    reversed: true,
+                },
+            ],
+        }],
+        faces: vec![Face {
+            surface: Surface::cone(Placement3::IDENTITY, 2.0, -2.0 / 3.0).unwrap(),
+            domain: ParameterDomain {
+                u: range,
+                v: ParameterRange::new(0.0, 3.0).unwrap(),
+            },
+            sense: Sense::Forward,
+            loops: vec![LoopId(0)],
+            role: (),
+        }],
+        trims: vec![LoopTrims {
+            loop_id: LoopId(0),
+            curves: vec![
+                line([0.0, 0.0], [TAU, 0.0]),
+                line([TAU, 0.0], [TAU, 3.0]),
+                line([0.0, 3.0], [TAU, 3.0]),
+                line([0.0, 0.0], [0.0, 3.0]),
+            ],
+        }],
+    };
+    let body = Body::try_from_parts(parts.clone(), &POLICY).unwrap();
+    assert_eq!(body.validate(&POLICY).unwrap().trimmed_coedges, 4);
+    assert!(body.evaluate_support(FaceId(0), [1.0, 3.0]).is_none());
+    parts.trims[0].curves[2] = line([0.0, 2.99], [TAU, 2.99]);
+    assert!(matches!(
+        Body::try_from_parts(parts, &POLICY),
+        Err(BodyError::TrimCorrespondence { coedge: 2, .. }) | Err(BodyError::TrimClosure { .. })
+    ));
+}

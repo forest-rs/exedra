@@ -127,7 +127,15 @@ impl TrimCurve {
                             }
                         }
                     }
-                    bounds
+                    let scale = origin[i].abs()
+                        + linear[i].abs() * lo.abs().max(hi.abs())
+                        + cosine[i].abs()
+                        + sine[i].abs();
+                    let padding = 32.0 * f64::EPSILON * scale;
+                    [
+                        (bounds[0] - padding).next_down(),
+                        (bounds[1] + padding).next_up(),
+                    ]
                 })
             }
         };

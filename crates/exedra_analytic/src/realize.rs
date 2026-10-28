@@ -1,14 +1,16 @@
 // Copyright 2026 the Exedra Authors
 // SPDX-License-Identifier: Apache-2.0 OR MIT
 
-//! Construction-independent realization of planar, rotational strip and toroidal faces.
+//! Construction-independent realization of retained analytic faces.
 //!
-//! Shared edges are sampled once. Planar trims are checked in emitted coordinates;
-//! cylindrical and conical faces use paired boundary strips, so a generic planar
-//! triangulation cannot introduce long chords across a curved face. Other
-//! toroidal rectangles use two-dimensional grids with shared boundary chains.
-//! Other curved trims are explicit refusals. Tighten sampling when an emitted
-//! arrangement is refused; this path does not heal or refine trim contacts.
+//! Shared edges are sampled once. Recognized strips, rectangular grids and pole
+//! patches keep their specialized bounded paths. Other elementary curved faces
+//! require explicit face-local parameter trims: their chart polygons are
+//! triangulated and refined by conforming interior-edge splits, preserving every
+//! shared boundary chain. Surface Hessian bounds govern that refinement.
+//! Planar trims are checked in emitted coordinates. Unsupported correspondence,
+//! multi-period charts and invalid emitted arrangements are explicit refusals.
+//! This path never heals geometry or certifies global solid validity.
 
 use crate::body::{Body, BodyError, Coedge, EdgeId, Face, FaceId, ValidationPolicy, VertexId};
 use crate::geometry::{Curve, GeometryError, Surface};
@@ -20,6 +22,7 @@ use exedra_triangulate::{PolygonInput, TriError, TriParams, triangulate_preservi
 
 mod grid;
 mod poles;
+mod trimmed;
 use grid::GridPatch;
 use poles::PolePatch;
 
@@ -155,8 +158,9 @@ pub struct RealizationReport {
     /// Largest conservative curve chord bound from actual sampled parameter
     /// intervals, before placement and narrowing.
     pub max_curve_deviation: f64,
-    /// Largest bound for a doubly curved grid, including whole-curve boundary
-    /// alignment and parameter arithmetic, before narrowing.
+    /// Largest conservative supporting-surface interpolation bound, including
+    /// explicit-chart Hessian bounds or specialized grid alignment arithmetic,
+    /// before placement and narrowing.
     pub max_surface_deviation: f64,
     /// Largest emitted vertex displacement, including placement and narrowing.
     pub max_vertex_displacement: f64,
@@ -261,8 +265,8 @@ pub enum RealizationError {
     Boundary(BodyError),
     /// No faces were supplied.
     EmptyBoundary,
-    /// A curved trim is not a supported rotational strip, pole-bounded full-turn
-    /// sphere/cone patch, toroidal rectangle or complete ruled unit patch.
+    /// A curved trim lacks a recognized bounded patch or complete supported
+    /// explicit parameter correspondence, or its chart spans multiple periods.
     UnsupportedSurfaceTrim {
         /// Offending native face.
         face: FaceId,
@@ -368,6 +372,7 @@ struct Strip {
 #[derive(Copy, Clone)]
 enum Patch {
     Planar,
+    Trimmed,
     Strip(Strip),
     Grid(GridPatch),
     Pole(PolePatch),
@@ -593,25 +598,38 @@ impl<F, E> Body<F, E> {
                     item.count += 1;
                 }
             }
+            let explicit = self.has_explicit_trims(id);
             let patch = if has_pole {
                 pole_output = true;
                 Patch::Pole(PolePatch::prepare(self, id, policy)?)
             } else if matches!(face.surface, Surface::Sphere(_)) {
-                return Err(RealizationError::UnsupportedSurfaceTrim { face: id });
+                if explicit {
+                    Patch::Trimmed
+                } else {
+                    return Err(RealizationError::UnsupportedSurfaceTrim { face: id });
+                }
             } else if matches!(face.surface, Surface::Torus(_) | Surface::Ruled(_)) {
-                Patch::Grid(GridPatch::prepare(self, id)?)
+                match GridPatch::prepare(self, id) {
+                    Ok(patch) => Patch::Grid(patch),
+                    Err(_) if explicit => Patch::Trimmed,
+                    Err(error) => return Err(error),
+                }
             } else if matches!(face.surface, Surface::Plane(_)) {
                 // Coaxial annuli/sectors retain angular rulings, which are
                 // also the construction chart's nondegenerate coordinate net.
                 self.rotational_patch(id, policy.geometry_gap)
                     .map_or(Patch::Planar, Patch::Strip)
             } else {
-                Patch::Strip(self.rotational_patch(id, policy.geometry_gap)?)
+                match self.rotational_patch(id, policy.geometry_gap) {
+                    Ok(patch) => Patch::Strip(patch),
+                    Err(_) if explicit => Patch::Trimmed,
+                    Err(error) => return Err(error),
+                }
             };
             match patch {
                 Patch::Strip(p) => groups.join(p.a.edge.index(), p.b.edge.index()),
                 Patch::Grid(p) => p.join(&mut groups),
-                Patch::Planar | Patch::Pole(_) => {}
+                Patch::Planar | Patch::Trimmed | Patch::Pole(_) => {}
             }
             patches.push(patch);
         }
@@ -643,6 +661,7 @@ impl<F, E> Body<F, E> {
             };
             counts.push(n);
         }
+        trimmed::prepare_counts(self, &patches, &mut counts, policy)?;
         for patch in &patches {
             if let Patch::Pole(patch) = patch {
                 patch.synchronize(&mut counts);
@@ -725,7 +744,7 @@ impl<F, E> Body<F, E> {
             .iter()
             .enumerate()
             .map(|(i, face)| match patches[i] {
-                Patch::Planar => face
+                Patch::Planar | Patch::Trimmed => face
                     .loops
                     .iter()
                     .flat_map(|id| &self.boundary_loop(*id).expect("validated loop").coedges)
@@ -993,6 +1012,21 @@ impl<F, E> Body<F, E> {
                     &mut regions,
                     &mut native_faces,
                 )?;
+            } else if matches!(patches[i], Patch::Trimmed) {
+                surface_deviation = surface_deviation.max(trimmed::emit_face(
+                    self,
+                    id,
+                    placement,
+                    policy,
+                    &chains,
+                    &mut emitted,
+                    &mut sources,
+                    &mut displacement,
+                    face_region,
+                    &mut triangles,
+                    &mut regions,
+                    &mut native_faces,
+                )?);
             } else if matches!(patches[i], Patch::Planar) {
                 let frame = placement * self.planar_frame(id, [0.0; 2]).expect("planar support");
                 let mut rings = Vec::with_capacity(face.loops.len());
@@ -1180,7 +1214,13 @@ impl<F, E> Body<F, E> {
                 let a = mesh.from_vertex(edge)?.index();
                 let b = mesh.to_vertex(edge)?.index();
                 let (a, b) = ordered(a, b);
-                let row = &sharp[sharp_offsets[a as usize]..sharp_offsets[a as usize + 1]];
+                // Generic chart refinement appends interior vertices after
+                // native boundary sharpness was indexed; they carry no sharp edge.
+                let (&start, &end) = (
+                    sharp_offsets.get(a as usize)?,
+                    sharp_offsets.get(a as usize + 1)?,
+                );
+                let row = &sharp[start..end];
                 row.binary_search_by_key(&b, |&(_, b, _, _)| b)
                     .ok()
                     .map(|i| (edge, row[i].2))
