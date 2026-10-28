@@ -20,7 +20,7 @@ pub use ruled::{CurveSpan, Ruled};
 pub use sphere::Sphere;
 pub(crate) use sphere::{
     cone_generator_gap, cone_pole_bounds, cone_pole_gap, harmonic_gap as sphere_harmonic_gap,
-    pole_gap as sphere_pole_gap,
+    pole_gap as sphere_pole_gap, transformed_normal, unit_sphere_triangle_gap,
 };
 
 /// Absolute tolerance for rigid frame axis lengths and dot products.
@@ -644,6 +644,36 @@ impl Surface {
                 Some([libm::atan2(local[1], local[0]), height])
             }
         }
+    }
+
+    /// Unit geometric normal limit at a coordinate pole, without trim classification.
+    ///
+    /// A sphere has the same normal for every finite U at either exact pole
+    /// latitude. At a cone's canonical apex V, U selects the one-sided limit
+    /// along that generator; there is no unique apex normal. Ordinary support
+    /// evaluation remains strict at a conical apex. Returns `None` away from a
+    /// pole, for another surface kind, or for non-finite parameters/results.
+    /// The actual stored frame's inverse transpose determines the normal.
+    #[must_use]
+    pub fn pole_limit_normal(&self, uv: [f64; 2]) -> Option<[f64; 3]> {
+        if !uv.into_iter().all(f64::is_finite) {
+            return None;
+        }
+        let normal = match self {
+            Self::Sphere(_) if uv[1].abs() == core::f64::consts::FRAC_PI_2 => {
+                [0.0, 0.0, uv[1].signum()]
+            }
+            Self::Cone(cone) if Some(uv[1]) == cone.apex_parameter() => {
+                let length = libm::hypot(1.0, cone.slope());
+                [
+                    libm::cos(uv[0]) / length,
+                    libm::sin(uv[0]) / length,
+                    -cone.slope() / length,
+                ]
+            }
+            _ => return None,
+        };
+        transformed_normal(self.frame(), normal)
     }
 
     /// Evaluates without face-trim classification or parameter clamping.

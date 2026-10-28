@@ -102,7 +102,7 @@ impl Sphere {
 // A checked right-handed frame can still differ from exact orthogonality.
 // Cofactors give the actual inverse-transpose direction; its positive
 // determinant cancels when normalizing. This also works at a coordinate pole.
-fn transformed_normal(frame: Placement3, normal: [f64; 3]) -> Option<[f64; 3]> {
+pub(crate) fn transformed_normal(frame: Placement3, normal: [f64; 3]) -> Option<[f64; 3]> {
     let axis = |i| frame.rows.map(|r| r[i]);
     let dual = [
         exedra_math::cross(axis(1), axis(2)),
@@ -213,6 +213,105 @@ fn enclosure_cross(a: [Enclosure; 3], b: [Enclosure; 3]) -> [Enclosure; 3] {
             .mul(b[(i + 2) % 3])
             .sub(a[(i + 2) % 3].mul(b[(i + 1) % 3]))
     })
+}
+
+// Small-angle Taylor enclosures avoid assuming a libm rounding direction when
+// certifying a plane distance. All callers stay inside [-2,2]; the next term
+// bounds the alternating tail after twelve terms, including interval arithmetic.
+fn sin_cos_enclosure(x: Enclosure) -> Option<(Enclosure, Enclosure)> {
+    if !x.finite() || x.magnitude() > 2.0 {
+        return None;
+    }
+    let square = x.mul(x);
+    let mut sine_term = x;
+    let mut cosine_term = Enclosure::exact(1.0);
+    let mut sine = sine_term;
+    let mut cosine = cosine_term;
+    for k in 1..=12_u32 {
+        let n = f64::from(2 * k);
+        sine_term = sine_term.mul(square).div(Enclosure::exact(n * (n + 1.0)))?;
+        cosine_term = cosine_term
+            .mul(square)
+            .div(Enclosure::exact((n - 1.0) * n))?;
+        if k == 12 {
+            sine = sine.add(Enclosure::checked(
+                -sine_term.magnitude(),
+                sine_term.magnitude(),
+            ));
+            cosine = cosine.add(Enclosure::checked(
+                -cosine_term.magnitude(),
+                cosine_term.magnitude(),
+            ));
+        } else if k.is_multiple_of(2) {
+            sine = sine.add(sine_term);
+            cosine = cosine.add(cosine_term);
+        } else {
+            sine = sine.sub(sine_term);
+            cosine = cosine.sub(cosine_term);
+        }
+    }
+    (sine.finite() && cosine.finite()).then_some((sine, cosine))
+}
+
+/// Upper unit-sphere radial sagitta for a positively oriented triangle.
+/// The caller proves a degree-one radial cover separately. Canonical U is a
+/// short angular sector; `angle_error` encloses constant/parameter arithmetic.
+/// No absolute world-coordinate allowance or nearest-rounded plane distance is
+/// used. An uncertifiable positive offset returns None, permitting the original
+/// rectangular sampler to remain authoritative.
+pub(crate) fn unit_sphere_triangle_gap(uv: [[f64; 2]; 3], angle_error: f64) -> Option<f64> {
+    if !angle_error.is_finite() || angle_error < 0.0 {
+        return None;
+    }
+    let mut points = [[Enclosure::exact(0.0); 3]; 3];
+    for (point, [u, v]) in points.iter_mut().zip(uv) {
+        if !u.is_finite() || !v.is_finite() {
+            return None;
+        }
+        if v.abs() == core::f64::consts::FRAC_PI_2 {
+            *point = [
+                Enclosure::exact(0.0),
+                Enclosure::exact(0.0),
+                Enclosure::exact(v.signum()),
+            ];
+            continue;
+        }
+        let angle =
+            |x: f64| Enclosure::checked((x - angle_error).next_down(), (x + angle_error).next_up());
+        let (su, cu) = sin_cos_enclosure(angle(u))?;
+        let (sv, cv) = sin_cos_enclosure(angle(v))?;
+        *point = [cv.mul(cu), cv.mul(su), sv];
+    }
+    let a = core::array::from_fn(|k| points[1][k].sub(points[0][k]));
+    let b = core::array::from_fn(|k| points[2][k].sub(points[0][k]));
+    let normal = enclosure_cross(a, b);
+    let numerator = enclosure_dot(normal, points[0]);
+    if numerator.lo <= 0.0 || !numerator.finite() {
+        return None;
+    }
+    let square = normal.into_iter().fold(Enclosure::exact(0.0), |sum, n| {
+        let bound = Enclosure::exact(n.magnitude());
+        sum.add(bound.mul(bound))
+    });
+    if !square.finite() || square.hi <= 0.0 {
+        return None;
+    }
+    // sqrt is only a starting estimate. Outward multiplication independently
+    // certifies its upper endpoint; an unexpected approximation falls back.
+    let mut length = libm::sqrt(square.hi);
+    let mut certified = false;
+    for _ in 0..4 {
+        length = length.next_up();
+        if Enclosure::exact(length).mul(Enclosure::exact(length)).lo >= square.hi {
+            certified = true;
+            break;
+        }
+    }
+    if !certified || !length.is_finite() {
+        return None;
+    }
+    let distance = (numerator.lo / length).next_down();
+    (distance.is_finite() && distance > 0.0 && distance <= 1.0).then(|| (1.0 - distance).next_up())
 }
 
 /// Encloses the complete affine pole position against an authoritative vertex.
@@ -505,6 +604,66 @@ mod tests {
                 assert!(dot(e.normal, exedra_math::cross(e.du, e.dv)) > 0.0);
             }
         }
+    }
+
+    #[test]
+    fn radial_triangle_bound_certifies_positive_plane_offsets_without_abs_healing() {
+        let octant = [
+            [0.0, 0.0],
+            [core::f64::consts::FRAC_PI_2, 0.0],
+            [0.0, core::f64::consts::FRAC_PI_2],
+        ];
+        let gap = unit_sphere_triangle_gap(octant, 16.0 * f64::EPSILON).unwrap();
+        assert!(gap > 0.422649 && gap < 0.422650);
+        let mut reversed = octant;
+        reversed.swap(1, 2);
+        assert!(unit_sphere_triangle_gap(reversed, 16.0 * f64::EPSILON).is_none());
+        assert!(unit_sphere_triangle_gap([[0.0, 0.0]; 3], 0.0).is_none());
+        assert!(unit_sphere_triangle_gap([[f64::NAN, 0.0]; 3], 0.0).is_none());
+        assert!(unit_sphere_triangle_gap(octant, -1.0).is_none());
+        for i in -64..=64 {
+            let x = f64::from(i) / 32.0;
+            let (s, c) = sin_cos_enclosure(Enclosure::exact(x)).unwrap();
+            assert!(s.lo <= libm::sin(x) && s.hi >= libm::sin(x));
+            assert!(c.lo <= libm::cos(x) && c.hi >= libm::cos(x));
+        }
+    }
+
+    #[test]
+    fn pole_normal_query_is_unique_on_sphere_and_directional_on_cone() {
+        use crate::geometry::Surface;
+        let mut frame = Placement3::IDENTITY;
+        frame.rows[0][1] = 3e-13;
+        frame.rows[2][2] = 1.0 + 2e-13;
+        let sphere = Surface::sphere(frame, 2.0).unwrap();
+        for latitude in [-core::f64::consts::FRAC_PI_2, core::f64::consts::FRAC_PI_2] {
+            assert_eq!(
+                sphere.pole_limit_normal([0.0, latitude]),
+                sphere.pole_limit_normal([2.5, latitude])
+            );
+        }
+        assert!(sphere.pole_limit_normal([0.0, 0.0]).is_none());
+        let cone = Surface::cone(frame, 2.0, -2.0 / 3.0).unwrap();
+        let Surface::Cone(c) = &cone else {
+            unreachable!()
+        };
+        let apex = c.apex_parameter().unwrap();
+        assert!(cone.evaluate([0.0, apex]).is_none());
+        assert!(cone.pole_limit_normal([f64::INFINITY, apex]).is_none());
+        assert!(cone.pole_limit_normal([0.0, apex.next_down()]).is_none());
+        for u in [0.0, 0.7, 2.0] {
+            let n = cone.pole_limit_normal([u, apex]).unwrap();
+            let radial = [libm::cos(u), libm::sin(u), 0.0];
+            let generator = vector(frame, [c.slope() * radial[0], c.slope() * radial[1], 1.0]);
+            let azimuth = vector(frame, [-radial[1], radial[0], 0.0]);
+            assert!(exedra_math::dot(n, generator).abs() < 2e-15);
+            assert!(exedra_math::dot(n, azimuth).abs() < 2e-15);
+            assert!(exedra_math::dot(n, vector(frame, radial)) > 0.0);
+        }
+        assert_ne!(
+            cone.pole_limit_normal([0.0, apex]),
+            cone.pole_limit_normal([2.0, apex])
+        );
     }
 
     #[test]

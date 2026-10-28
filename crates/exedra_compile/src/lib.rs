@@ -39,6 +39,7 @@ pub use compile::{
     SnapshotSurfaceInventory, SnapshotWorkplane, StaleSelection, VolumeError, part_fingerprint,
     policy_fingerprint,
 };
+pub use exedra_mesh::NormalsSource;
 pub use native::{
     NativeBoundaryStorage, NativeChartError, NativeFaceSelection, NativeFamily, NativeGeometryRef,
     NativeMeasure, NativeMeasureError, NativeRealization, NativeSelectionError, NativeSource,

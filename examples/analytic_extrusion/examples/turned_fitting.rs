@@ -136,7 +136,7 @@ fn main() -> Result<(), Box<dyn Error>> {
             solid.realize_with_uvs(
                 &policy,
                 |_, f| region(f.role),
-                |role, points| match role {
+                |_, role, points| match role {
                     FaceRole::Wall { .. } => chart.map_revolve_wall_triangle(points),
                     FaceRole::Cap { .. } => chart.map_cap_triangle(points),
                 },
@@ -291,7 +291,7 @@ fn comparison(out: &str, profile: &Profile2, chart: SurfaceChart) -> Result<(), 
             ..RealizationPolicy::default()
         },
         |_, _| 0,
-        |role, p| match role {
+        |_, role, p| match role {
             FaceRole::Wall { .. } => chart.map_revolve_wall_triangle(p),
             FaceRole::Cap { .. } => chart.map_cap_triangle(p),
         },

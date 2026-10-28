@@ -181,7 +181,7 @@ pub struct Face<F = ()> {
 pub struct BodyParts<F = (), E = ()> {
     /// Authoritative body-local vertex positions.
     pub vertices: Vec<[f64; 3]>,
-    /// Bounded shared curves.
+    /// Shared native edges, including collapsed pole boundaries.
     pub edges: Vec<Edge<E>>,
     /// Boundary occurrence chains.
     pub loops: Vec<BoundaryLoop>,
@@ -298,6 +298,21 @@ impl<F, E> Body<F, E> {
         let mut result = face.surface.evaluate(uv)?;
         result.normal = result.normal.map(|n| face.sense.sign() * n);
         Some(result)
+    }
+
+    /// One-sided supporting normal at a coordinate pole, applying face sense.
+    ///
+    /// Uses [`Surface::pole_limit_normal`]; cone U selects its generator limit.
+    /// This does not classify the face domain/trim or assign a unique apex
+    /// normal. Returns `None` for an unknown face, non-pole or numeric refusal.
+    #[must_use]
+    pub fn pole_limit_normal(&self, face: FaceId, uv: [f64; 2]) -> Option<[f64; 3]> {
+        let face = self.face(face)?;
+        Some(
+            face.surface
+                .pole_limit_normal(uv)?
+                .map(|n| face.sense.sign() * n),
+        )
     }
 
     /// Queries an edge by normalized traversal fraction, preserving authored

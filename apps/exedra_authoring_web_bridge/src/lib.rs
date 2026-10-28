@@ -305,6 +305,7 @@ impl Session {
             ));
         }
         let policy = CompilePolicy {
+            normals: exedra_compile::NormalsSource::CustomOrDerived,
             max_render_vertices: Some(options.max_vertices),
             native_chart: options.chart.map(Into::into),
             native: exedra_analytic::realize::RealizationPolicy {
@@ -902,6 +903,36 @@ mod tests {
         session.release(19);
         assert_eq!(session.documents.len(), 0);
     }
+    #[test]
+    fn pointed_cone_display_keeps_directional_native_pole_normals() {
+        let request=serde_json::from_value(serde_json::json!({"units":"mm","separation":1e-9,"profiles":[{"kind":"polygon","points":[[0,0],[2,0],[0,3]]}],"nodes":[{"kind":"revolve","profile":0,"angle":core::f64::consts::TAU}],"roots":[{"name":"cone","node":0}]})).unwrap();
+        let mut session = Session::new();
+        session.build(request).unwrap();
+        let output = display(&mut session, 1, 0.01);
+        let mut count = 0;
+        for (position, normal) in output
+            .positions
+            .as_chunks::<3>()
+            .0
+            .iter()
+            .zip(output.normals.as_chunks::<3>().0)
+        {
+            if *position == [0.0, 3.0, 0.0] {
+                count += 1;
+                assert!(
+                    normal[1] > 0.4 && normal[1] < 0.9,
+                    "cone tip must preserve the side's directional limit, not a vertical average"
+                );
+                let length = normal.iter().map(|n| n * n).sum::<f32>();
+                assert!((length - 1.0).abs() < 1e-6);
+            }
+        }
+        assert!(
+            count >= 8,
+            "display vertices must split the native welded apex by corner normal"
+        );
+    }
+
     #[test]
     fn construction_uvs_are_real_typed_buffers_with_native_identity_and_policy_reports() {
         let transform = serde_json::json!({"matrix":[[0.05,0],[0,0.05]],"offset":[0,0]});
