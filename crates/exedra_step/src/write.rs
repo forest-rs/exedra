@@ -2,8 +2,8 @@
 // SPDX-License-Identifier: Apache-2.0 OR MIT
 
 use crate::{
-    LengthUnit, SCHEMA, StepCorrespondence, StepDocument, StepEntityId, StepError, StepOptions,
-    StepReport, preflight::Prepared,
+    LengthUnit, SCHEMA, StepCorrespondence, StepDocument, StepEdgeEntity, StepEntityId, StepError,
+    StepOptions, StepReport, preflight::Prepared,
 };
 use alloc::{string::String, vec, vec::Vec};
 use core::fmt::{self, Write};
@@ -160,9 +160,12 @@ pub(super) fn export<F, E>(
         if !active {
             continue;
         }
-        let (geometry, _) = edge.regular().ok_or(StepError::UnsupportedCollapsedEdge {
-            edge: exedra_analytic::body::EdgeId(u32::try_from(i).map_err(|_| StepError::Numeric)?),
-        })?;
+        let Some((geometry, _)) = edge.regular() else {
+            map.edges[i] = Some(StepEdgeEntity::CollapsedVertex(
+                map.vertices[edge.start.index()].expect("used"),
+            ));
+            continue;
+        };
         let curve = match geometry {
             Curve::Line(line) => {
                 let origin = out.point(placement.transform_point(line.origin()))?;
@@ -197,12 +200,12 @@ pub(super) fn export<F, E>(
                 ))?
             }
         };
-        map.edges[i] = Some(out.entity(format_args!(
+        map.edges[i] = Some(StepEdgeEntity::Curve(out.entity(format_args!(
             "EDGE_CURVE('',{},{},{},.T.)",
             Id(map.vertices[edge.start.index()].expect("used")),
             Id(map.vertices[edge.end.index()].expect("used")),
             Id(curve)
-        ))?);
+        ))?));
     }
     let mut refs = Vec::new();
     for (i, (&active, ring)) in prepared.loops.iter().zip(body.loops()).enumerate() {
@@ -212,13 +215,24 @@ pub(super) fn export<F, E>(
         refs.clear();
         refs.reserve(ring.coedges.len());
         for c in &ring.coedges {
+            let StepEdgeEntity::Curve(curve) = map.edges[c.edge.index()].expect("used") else {
+                continue;
+            };
             refs.push(out.entity(format_args!(
                 "ORIENTED_EDGE('',*,*,{},{})",
-                Id(map.edges[c.edge.index()].expect("used")),
+                Id(curve),
                 boolean(!c.reversed)
             ))?);
         }
-        map.loops[i] = Some(out.entity(format_args!("EDGE_LOOP('',{})", Refs(&refs)))?);
+        map.loops[i] = Some(if refs.is_empty() {
+            let edge = &body.edges()[ring.coedges[0].edge.index()];
+            out.entity(format_args!(
+                "VERTEX_LOOP('',{})",
+                Id(map.vertices[edge.start.index()].expect("used"))
+            ))?
+        } else {
+            out.entity(format_args!("EDGE_LOOP('',{})", Refs(&refs)))?
+        });
     }
     for (i, face) in body.faces().iter().enumerate() {
         let native_frame = face.surface.frame();
@@ -254,6 +268,11 @@ pub(super) fn export<F, E>(
                 Real(c.radius()),
                 Real(c.semi_angle().abs())
             ))?,
+            Surface::Sphere(s) => out.entity(format_args!(
+                "SPHERICAL_SURFACE('',{},{})",
+                Id(frame),
+                Real(s.radius())
+            ))?,
             Surface::Torus(t) => out.entity(format_args!(
                 "TOROIDAL_SURFACE('',{},{},{})",
                 Id(frame),
@@ -265,7 +284,13 @@ pub(super) fn export<F, E>(
         refs.clear();
         refs.reserve(face.loops.len());
         for (j, &loop_id) in face.loops.iter().enumerate() {
-            let kind = if j == 0 {
+            let kind = if j == 0
+                && !matches!(face.surface, Surface::Sphere(_))
+                && body.loops()[loop_id.index()]
+                    .coedges
+                    .iter()
+                    .any(|c| !body.edges()[c.edge.index()].is_collapsed())
+            {
                 "FACE_OUTER_BOUND"
             } else {
                 "FACE_BOUND"

@@ -456,6 +456,10 @@ export interface RealizationReport {
 export type StepSupport =
   | { readonly status: "supported" }
   | { readonly status: "unsupported"; readonly diagnostic: Readonly<Diagnostic> };
+/** A native edge's exact STEP representation; collapsed boundaries have no 3D curve. */
+export type StepEdgeEntity =
+  | {readonly kind:"curve"; readonly entity:number}
+  | {readonly kind:"collapsedVertex"; readonly entity:number};
 export interface StepReport {
   schema: string;
   units: LengthUnit;
@@ -471,7 +475,7 @@ export interface StepReport {
   /** Entries use native local IDs as indices; unused topology entries are null. */
   correspondence: {
     vertices: readonly (number | null)[];
-    edges: readonly (number | null)[];
+    edges: readonly (StepEdgeEntity | null)[];
     loops: readonly (number | null)[];
     faces: readonly (number | null)[];
   };

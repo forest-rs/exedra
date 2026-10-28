@@ -24,6 +24,9 @@ pub(super) enum SurfaceSupport {
     Cone {
         radius: f64,
     },
+    Sphere {
+        radius: f64,
+    },
     Torus {
         major_radius: f64,
         minor_radius: f64,
@@ -57,10 +60,7 @@ pub(super) fn surface_support(
             major_radius: t.major_radius(),
             minor_radius: t.minor_radius(),
         }),
-        Surface::Sphere(_) => Err(StepError::UnsupportedSurface {
-            face,
-            family: "sphere",
-        }),
+        Surface::Sphere(s) => Ok(SurfaceSupport::Sphere { radius: s.radius() }),
         Surface::Ruled(_) => Err(StepError::UnsupportedSurface {
             face,
             family: "ruled",
@@ -173,12 +173,13 @@ pub(super) fn prepare<F, E>(
                 for &loop_id in &face.loops {
                     for coedge in &body.loops()[loop_id.index()].coedges {
                         let edge = &body.edges()[coedge.edge.index()];
-                        let (curve, range) = edge
-                            .regular()
-                            .ok_or(StepError::UnsupportedCollapsedEdge { edge: coedge.edge })?;
-                        let bounds = curve
-                            .conservative_bounds(range)
-                            .map_err(|_| StepError::Numeric)?;
+                        let bounds = if let Some((curve, range)) = edge.regular() {
+                            curve
+                                .conservative_bounds(range)
+                                .map_err(|_| StepError::Numeric)?
+                        } else {
+                            [body.vertices()[edge.start.index()]; 2]
+                        };
                         let mut curve_height = 0.0;
                         for (axis, row) in frame.rows.into_iter().enumerate() {
                             let extent = (bounds[0][axis] - row[3])
@@ -214,6 +215,16 @@ pub(super) fn prepare<F, E>(
                     .fold(radius, f64::max);
                 outer + height
             }
+            SurfaceSupport::Sphere { radius } => {
+                if face.domain.u.span() > core::f64::consts::TAU * (1.0 + 64.0 * f64::EPSILON) {
+                    return Err(StepError::PeriodicSurfaceDomain {
+                        face: id,
+                        parameter: "u",
+                        range: face.domain.u.bounds(),
+                    });
+                }
+                radius
+            }
             SurfaceSupport::Torus {
                 major_radius,
                 minor_radius,
@@ -234,8 +245,11 @@ pub(super) fn prepare<F, E>(
         for &loop_id in &face.loops {
             loops[loop_id.index()] = true;
             for c in &body.loops()[loop_id.index()].coedges {
-                coedges += 1;
                 edges[c.edge.index()] = true;
+                if body.edges()[c.edge.index()].is_collapsed() {
+                    continue;
+                }
+                coedges += 1;
                 uses[c.edge.index()][usize::from(c.reversed)] += 1;
                 if uses[c.edge.index()][usize::from(c.reversed)] > 1 {
                     return Err(StepError::EdgeIncidence {
@@ -258,17 +272,17 @@ pub(super) fn prepare<F, E>(
             continue;
         }
         let id = EdgeId(u32::try_from(i).expect("input budget"));
+        vertices[edge.start.index()] = true;
+        vertices[edge.end.index()] = true;
+        let Some((curve, range)) = edge.regular() else {
+            continue;
+        };
         if uses[i] != [1, 1] {
             return Err(StepError::EdgeIncidence {
                 edge: id,
                 uses: uses[i],
             });
         }
-        vertices[edge.start.index()] = true;
-        vertices[edge.end.index()] = true;
-        let (curve, range) = edge
-            .regular()
-            .ok_or(StepError::UnsupportedCollapsedEdge { edge: id })?;
         match curve {
             Curve::Line(l) => {
                 if !norm(l.direction()).is_finite() || norm(l.direction()) == 0.0 {
@@ -339,7 +353,14 @@ pub(super) fn prepare<F, E>(
     let counts = StepCounts {
         entities: 0,
         vertices: count(&vertices),
-        edges: count(&edges),
+        edges: u32::try_from(
+            edges
+                .iter()
+                .zip(body.edges())
+                .filter(|(active, edge)| **active && !edge.is_collapsed())
+                .count(),
+        )
+        .expect("input budget"),
         coedges,
         loops: count(&loops),
         faces: u32::try_from(body.faces().len()).expect("input budget"),

@@ -44,6 +44,10 @@ for(const sample of galleryCases) {
         const file=part.exportStep({timestamp}),old=previous.part.exportStep({timestamp});
         assert.equal(file.text,old.text);assert.equal(file.report.units,"mm");assert.equal(file.report.faces,part.measurements.faces);
         for(const entity of file.report.correspondence.faces)if(entity!==null)assert.match(file.text,new RegExp(`#${entity}=ADVANCED_FACE\\(`));
+        for(const edge of file.report.correspondence.edges)if(edge!==null){
+          assert.ok(edge.kind==="curve"||edge.kind==="collapsedVertex");
+          assert.match(file.text,new RegExp(`#${edge.entity}=${edge.kind==="curve"?"EDGE_CURVE":"VERTEX_POINT"}\\(`));
+        }
         assert.equal(file.timing.outcome,"success");
       } else {
         assert.throws(()=>part.exportStep({timestamp}),error=>error instanceof ExedraError&&error.diagnostic.code==="exchange.unsupportedSurface"&&error.diagnostic.face===part.stepSupport.diagnostic.face&&error.diagnostic.geometryFamily===part.stepSupport.diagnostic.geometryFamily&&error.timing.outcome==="refused");

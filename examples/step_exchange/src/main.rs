@@ -13,6 +13,7 @@ use exedra_step::{LengthUnit, StepDocument, StepOptions, export_body};
 use std::{error::Error, path::PathBuf};
 
 mod periodic;
+mod poles;
 mod supports;
 
 const POLICY: ProfilePolicy = ProfilePolicy::new(1e-9);
@@ -251,6 +252,9 @@ fn main() -> Result<(), Box<dyn Error>> {
         [[-12.0, -12.0, -2.0], [12.0, 12.0, 2.0]],
     )?;
     supports::export_cases(&output, &mut expected)?;
+    poles::export_cases(&output, &mut expected)?;
+    poles::export_constructed(&output, &mut expected)?;
+    poles::export_caps(&output, &mut expected)?;
     std::fs::write(
         output.join("expected.json"),
         serde_json::to_vec_pretty(&expected)?,
@@ -315,6 +319,8 @@ fn save(
     std::fs::write(output.join(&file), &document.text)?;
     expected.push(serde_json::json!({"file":file,"native_volume":volume,"native_area":area,"bounds":bounds,
         "metres_per_unit":document.report.units.metres_per_unit(),"faces":document.report.counts.faces,"edges":document.report.counts.edges,
-        "vertices":document.report.counts.vertices,"max_deviation":document.report.max_deviation,"uncertainty":document.report.declared_uncertainty}));
+        "vertices":document.report.counts.vertices,
+        "serialized_edges":document.report.counts.edges,"serialized_vertices":document.report.counts.vertices,
+        "serialized_coedges":document.report.counts.coedges,"serialized_loops":document.report.counts.loops,"max_deviation":document.report.max_deviation,"uncertainty":document.report.declared_uncertainty}));
     Ok(())
 }

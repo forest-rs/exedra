@@ -8,6 +8,18 @@ Additional native revolutions exercise positive/negative conical slopes, inward
 wall sense, full and partial turns, a toroidal cavity joined by partial-turn caps,
 small radii, near-horn regular tori, near-cylinder cones, near-rigid placement and
 near-seam trims. A single-face torus shares both periodic seam curves twice.
+Actual native Revolution constructors also export full spheres and pointed
+cones, both apex directions, placed metre occurrences, and scales from `1e-6`
+to `1e6`. The cap constructor covers shallow, hemispherical, tall and full-sphere
+heights, plus the shallow R25/H0.25, R25/H0.5 and R60/H0.5 sections at scales
+from `1e-6` to `1e6`. Cap measures use independent requested-dimension formulas.
+Constructor inputs and occurrence frames accompany these fixtures.
+Their exact mass centroids are checked against the exporter's deviation
+bound, independently of the CAD reader's bounding-box padding.
+Explicit native boundary fixtures add full spheres with retained meridian seams,
+a sphere with only a point loop, a placed sphere in metre units, a hemisphere,
+and a hollow spherical sector with oppositely oriented spherical walls. Pole
+correspondence maps to vertices while emitted curve counts remain literal.
 Two oblique-bore fixtures retain ellipse rims and include material witnesses,
 including a rotated occurrence in metre units. The periodic cylinder also exercises quote, backslash, BMP and non-BMP text encoding.
 
@@ -37,7 +49,15 @@ one solid and shell, preserved unique face/edge/vertex counts, exact reference
 volume and area within numeric tolerance, retained elementary support families,
 positive canonical cone angles, placed bounds and metre-to-millimetre scaling.
 Bounding-box comparisons report OCCT's separate extrema-padding allowance;
-small-solid measure checks use scale-sensitive absolute floors. No additional shape-repair operation is applied. This is independent
+measure checks use relative error without absolute floors that could mask errors
+in small solids. The nine unplaced shallow-cap regressions use reader-derived
+plane/sphere support-domain boxes at zero added tolerance. This avoids the
+whole-shape bounding path’s observed parameter padding on a large meridian,
+while retaining its raw box and the selected comparison method in the report.
+This box method is restricted to canonical unplaced caps; arbitrary trimmed or
+rotated faces retain the general whole-shape oracle. Pole fixtures
+separately report serialized topology counts and reader-reconstructed natural
+pole/seam topology; the oracle checks both. No additional shape-repair operation is applied. This is independent
 reader evidence for these fixtures, not a general CAD certification claim.
 
 Success prints JSON with reader package version and per-fixture evidence.

@@ -7,9 +7,10 @@ features select the same numeric backends as the analytic head.
 `export_body(&body, placement, &StepOptions)` writes a deterministic ISO 10303-21
 text document declaring AP214 `AUTOMOTIVE_DESIGN`. The first supported solid
 family is one connected, oriented closed shell with planar, cylindrical, conical
-and regular ring-toroidal supporting faces and line/circle/ellipse edges. This
+spherical and regular ring-toroidal supporting faces and line/circle/ellipse edges. This
 covers exact extrusions, through holes, blind pockets, supported axial finishes,
-and line/arc revolutions without axis contact. Other surfaces, multiple shells/cavities,
+and supported line/arc revolutions. Certified spherical pole boundaries
+have explicit point topology. Other surfaces, multiple shells/cavities,
 open incidence and ambiguous multiple-turn circle ranges are typed refusals.
 
 Length units state the physical meaning of one source coordinate: millimetres
@@ -40,7 +41,17 @@ at most one turn; shared seam edges remain ordinary shared topology, including
 a doubly periodic single-face torus. The writer emits 3D defining curves and
 incidence; independent reader checks cover its periodic trim reconstruction.
 
-Native vertex, edge, loop and face IDs map to topological STEP entity IDs. Shared
+Sphere longitude/latitude parameters and radius map directly. A certified
+collapsed boundary maps to its authoritative exported `VERTEX_POINT` through
+`StepEdgeEntity::CollapsedVertex`; a regular edge maps to `Curve(EDGE_CURVE)`.
+Only unused source edges are `None`. Collapsed coedges are omitted from the
+serialized edge loop, retaining ordinary meridian seams. A pole-only loop emits
+`VERTEX_LOOP` rather than a zero-length curve. Counts describe actual emitted
+records; an independent reader may reconstruct natural degenerate edges and
+pole vertices absent from those records. No fake circle or line represents a
+collapsed boundary.
+
+Native vertex, edge, loop and face IDs map to explicit STEP representations. Shared
 edges are emitted once and oriented edge uses preserve their native traversal.
 Detached unused entries stay `None` in correspondence. Caller feature labels
 remain available through that mapping; exchange does not own application scenes
@@ -59,6 +70,8 @@ public STEP entity documentation. No OpenGeometry or usd-brep/SMLib implementati
 source was read or copied for this work. Relevant format references:
 
 - [STEP Tools advanced_face entity](https://www.steptools.com/stds/stp_aim/html/t_advanced_face.html)
+- [STEP Tools vertex_loop entity](https://www.steptools.com/docs/stp_aim/html/t_vertex_loop.html)
+- [STEP Tools spherical_surface entity](https://www.steptools.com/docs/stp_aim/html/t_spherical_surface.html)
 - [STEP Tools edge_curve entity](https://www.steptools.com/stds/stp_aim/html/t_edge_curve.html)
 - [STEP Tools advanced BRep representation](https://www.steptools.com/stds/stp_aim/html/t_advanced_brep_shape_representation.html)
 - [STEP Tools conical_surface entity](https://www.steptools.com/docs/stp_aim/html/t_conical_surface.html)
