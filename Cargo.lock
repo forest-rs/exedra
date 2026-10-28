@@ -192,6 +192,7 @@ dependencies = [
  "exedra_authoring_web_bridge",
  "exedra_compile",
  "exedra_constructive",
+ "exedra_math",
  "exedra_mesh",
  "exedra_mesh_ops",
  "exedra_profile",
