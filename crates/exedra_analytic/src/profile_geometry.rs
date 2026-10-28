@@ -21,6 +21,13 @@ pub(crate) fn circle(a: Arc, frame: Placement3) -> Result<Curve, GeometryError> 
 
 /// Integral of positive radial coordinate along a generating profile arc.
 pub(crate) fn radial_integral(a: Arc) -> f64 {
+    if a.center[0] == 0.0 {
+        // On the positive-radius semicircle, integrating x ds is R times
+        // endpoint height difference. Authored endpoints avoid the ill-
+        // conditioned cos(midpoint) near a spherical pole and preserve the
+        // same source intent used by the profile's stable first moments.
+        return a.radius * (a.to[1] - a.from[1]).abs();
+    }
     let h = 0.5 * a.sweep;
     a.length() * (a.center[0] + a.radius * libm::cos(a.start_angle + h) * (libm::sin(h) / h))
 }
