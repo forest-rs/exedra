@@ -185,3 +185,54 @@ fn cone_apex_requires_explicit_boundary_and_keeps_regular_evaluation_strict() {
         "a loose gap never authorizes crossing the apex"
     );
 }
+
+#[test]
+fn center_authored_domes_keep_exact_spherical_support_and_planar_base() {
+    for height in [0.25_f64, 1.0, 2.0, 3.5] {
+        let radius = 2.0;
+        let base = radius - height;
+        let radial = libm::sqrt(height) * libm::sqrt(2.0 * radius - height);
+        let profile = profile(
+            vec![
+                Segment::line([radial, base]).tagged(BASE),
+                Segment::arc_centered([0.0, radius], [0.0, 0.0], false).tagged(SHELL),
+                Segment::line([0.0, base]).tagged(AXIS),
+            ],
+            radius,
+        );
+        let source = Revolution::new(profile, Placement3::IDENTITY, TAU).unwrap();
+        assert!(source.body().is_closed());
+        assert_eq!(source.body().faces().len(), 2);
+        assert_eq!(
+            source
+                .body()
+                .edges()
+                .iter()
+                .filter(|e| e.is_collapsed())
+                .count(),
+            1
+        );
+        let shell = source.faces_tagged(SHELL).next().unwrap();
+        assert!(matches!(
+            source.body().faces()[shell.index()].surface,
+            Surface::Sphere(_)
+        ));
+        close(
+            source.volume(),
+            PI * height * height * (radius - height / 3.0),
+        );
+        close(
+            source.surface_area(),
+            2.0 * PI * radius * height + PI * height * (2.0 * radius - height),
+        );
+        let mesh = source
+            .realize(&RealizationPolicy {
+                tolerance: 0.005,
+                ..Default::default()
+            })
+            .unwrap();
+        assert!(mesh.mesh.boundary_loops().unwrap().is_empty());
+        assert!(mesh.mesh.validate_deep().is_empty());
+        assert!(mesh.report.within_tolerance(), "{:?}", mesh.report);
+    }
+}

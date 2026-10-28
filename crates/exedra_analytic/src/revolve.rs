@@ -22,6 +22,8 @@ use alloc::vec::Vec;
 use exedra_math::Placement3;
 use exedra_profile::{IntoProfile, Loop, LoopRef, Profile, ProfilePolicy, SegTag, SegmentRef};
 
+mod caps;
+pub use caps::SphericalCapError;
 mod chart;
 pub use chart::RevolutionUvError;
 
@@ -160,6 +162,9 @@ impl Revolution {
     /// refuse explicitly. Only an exactly axis-centered generating circle
     /// becomes a sphere; near-axis toroidal geometry is never fitted or snapped.
     /// Placement is rigid and separate from the body's local geometry.
+    /// Generated boundary agreement uses a numerical allowance derived from
+    /// source coordinates and circular support operands, including radii and
+    /// centers that can exceed a short arc's visible extent.
     ///
     /// # Errors
     /// Returns a typed refusal for invalid sweep/placement, nonregular toroidal arcs,
@@ -174,6 +179,7 @@ impl Revolution {
         let mut start_loops = Vec::new();
         let mut end_loops = Vec::new();
         let mut wall_area = 0.0;
+        let mut roundoff_scale = 1.0_f64;
         let origin = profile.outer().segments()[0].to;
         for (loop_ref, ring) in loops(&profile) {
             let mut axis_starts = 0;
@@ -187,6 +193,15 @@ impl Revolution {
                 };
                 check_axis_vertex(loop_ref, ring, i, full, &mut axis_starts)?;
                 let arc = ring.arc(i);
+                if let Some(arc) = arc {
+                    // A short visible arc can retain a much larger supporting
+                    // radius/center. Their lowering and whole-curve agreement
+                    // arithmetic must be covered independently of rim size.
+                    roundoff_scale = roundoff_scale
+                        .max(arc.radius)
+                        .max(arc.center[0].abs())
+                        .max(arc.center[1].abs());
+                }
                 let min_radius = arc.map_or(from[0], |a| a.bounds()[0][0]);
                 if min_radius < 0.0 || (min_radius == 0.0 && (!full || loop_ref != LoopRef::Outer))
                 {
@@ -433,7 +448,7 @@ impl Revolution {
             .vertices
             .iter()
             .flatten()
-            .fold(1.0_f64, |a, b| a.max(b.abs()));
+            .fold(roundoff_scale, |a, b| a.max(b.abs()));
         let body = Body::try_from_parts(
             parts,
             &ValidationPolicy {
@@ -645,8 +660,19 @@ fn arc_wall(
     a: exedra_profile::Arc,
     sweep: f64,
 ) -> Result<(Surface, ParameterDomain, Sense), GeometryError> {
-    let end = a.start_angle + a.sweep;
+    let mut start = a.start_angle;
+    let mut end = a.start_angle + a.sweep;
     let surface = if a.center[0] == 0.0 {
+        // Exact source axis endpoints identify coordinate poles. Canonicalize
+        // only the face-domain pole parameter, never the authored curve/range
+        // or its endpoint. Whole-curve/support alignment retains the rounding
+        // residual when angle addition differs by an ulp.
+        if a.from[0] == 0.0 {
+            start = (a.from[1] - a.center[1]).signum() * core::f64::consts::FRAC_PI_2;
+        }
+        if a.to[0] == 0.0 {
+            end = (a.to[1] - a.center[1]).signum() * core::f64::consts::FRAC_PI_2;
+        }
         Surface::sphere(orbit_frame(a.center[1]), a.radius)?
     } else {
         Surface::torus(orbit_frame(a.center[1]), a.center[0], a.radius)?
@@ -655,7 +681,7 @@ fn arc_wall(
         surface,
         ParameterDomain {
             u: ParameterRange::new(0.0, sweep)?,
-            v: ParameterRange::new(a.start_angle.min(end), a.start_angle.max(end))?,
+            v: ParameterRange::new(start.min(end), start.max(end))?,
         },
         if a.sweep > 0.0 {
             Sense::Forward
