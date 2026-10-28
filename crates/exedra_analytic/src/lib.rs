@@ -27,6 +27,7 @@ pub mod bounds;
 pub mod extrusion;
 pub mod geometry;
 pub mod loft;
+pub mod machining;
 mod planar;
 mod profile_geometry;
 pub mod realize;
