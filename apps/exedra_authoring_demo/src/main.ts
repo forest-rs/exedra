@@ -5,14 +5,15 @@ import "./style.css";
 import * as THREE from "three";
 import { OrbitControls } from "three/examples/jsm/controls/OrbitControls.js";
 import { createSession, ExedraError, type AuthoringSession, type NativeDocument, type NativePart, type Realization, type FaceSelection, type NativeMeasurement } from "@exedra/authoring";
-import { authorPanel, authorCollar, authorRoundedTurn, authorFlangedSleeve, authorTurnedFitting, authorRail, authorVariableLoft, authorFinishedPlate, authorAngledBore, constructionChart, type PanelParameters, type CollarParameters, type FlangeParameters } from "./sample.js";
+import { authorPanel, authorCollar, authorRoundedTurn, authorFlangedSleeve, authorSphere, authorDome, authorPointedCone, authorTurnedFitting, authorRail, authorVariableLoft, authorFinishedPlate, authorAngledBore, constructionChart, type PanelParameters, type CollarParameters, type FlangeParameters } from "./sample.js";
 import sampleSource from "./sample.ts?raw";
 import { mountViews } from "./views.js";
+import { meshTriangles } from "./mesh-overlay.js";
 
 const app = document.querySelector<HTMLDivElement>("#app")!;
 app.innerHTML = `
 <main class="layout">
- <aside><div class="brand">exedra</div><div class="view-control"><label class="label" for="view">View</label><select id="view" class="quality"><option value="geometry">Geometry</option><option value="scene">Scene</option></select></div><div id="geometry-controls"><label class="label" for="sample">Sample</label><select id="sample" class="quality"><option value="panel">Pocketed plate</option><option value="collar">Collar</option><option value="roundedRing">Rounded ring</option><option value="torus">Solid seal</option><option value="hollowTorus">Hollow seal / cutaway</option><option value="sleeve">Flanged sleeve</option><option value="fitting">Turned fitting</option><option value="rail">Swept rail</option><option value="hollowRail">Hollow swept rail</option><option value="loft">Variable-section loft</option><option value="fillet">Outer axial fillets</option><option value="chamfer">Inner axial chamfers</option><option value="bore">Angled bore</option></select><h1 id="study-title">Inputs</h1><p class="intro" id="study-intro"></p>
+ <aside><div class="brand">exedra</div><div class="view-control"><label class="label" for="view">View</label><select id="view" class="quality"><option value="geometry">Geometry</option><option value="scene">Scene</option></select></div><div id="geometry-controls"><label class="label" for="sample">Sample</label><select id="sample" class="quality"><option value="panel">Pocketed plate</option><option value="collar">Collar</option><option value="roundedRing">Rounded ring</option><option value="torus">Solid seal</option><option value="hollowTorus">Hollow seal / cutaway</option><option value="sleeve">Flanged sleeve</option><option value="fitting">Turned fitting</option><option value="sphere">Sphere</option><option value="dome">Spherical cap</option><option value="cone">Pointed cone</option><option value="rail">Swept rail</option><option value="hollowRail">Hollow swept rail</option><option value="loft">Variable-section loft</option><option value="fillet">Outer axial fillets</option><option value="chamfer">Inner axial chamfers</option><option value="bore">Angled bore</option></select><h1 id="study-title">Inputs</h1><p class="intro" id="study-intro"></p>
   <div id="panel-controls"><div class="control"><label class="label" for="width">Panel width <span class="value" id="width-value"></span></label><input id="width" type="range" min="100" max="160" step="1" value="120"></div>
   <div class="control"><label class="label" for="height">Panel height <span class="value" id="height-value"></span></label><input id="height" type="range" min="70" max="110" step="1" value="80"></div>
   <div class="control"><label class="label" for="thickness">Panel thickness <span class="value" id="thickness-value"></span></label><input id="thickness" type="range" min="8" max="20" step="0.5" value="12"></div>
@@ -52,6 +53,11 @@ app.innerHTML = `
     <div class="control"><label class="label" for="sleeveHeight">Total height <span class="value" id="sleeveHeight-value"></span></label><input id="sleeveHeight" type="range" min="1" max="80" step="0.5" value="35"></div>
     <div class="control"><label class="label" for="flangeAngle">Turn angle <span class="value" id="flangeAngle-value"></span></label><input id="flangeAngle" type="range" min="30" max="360" step="5" value="270"></div>
   </div>
+  <div id="pole-controls" hidden>
+   <div class="control"><label class="label" for="poleRadius"><span id="poleRadius-label">Sphere radius</span> <span class="value" id="poleRadius-value"></span></label><input id="poleRadius" type="range" min="2" max="60" step="0.5" value="25"></div>
+   <div class="control" id="poleHeight-control"><label class="label" for="poleHeight">Height <span class="value" id="poleHeight-value"></span></label><input id="poleHeight" type="range" min="0.5" max="100" step="0.5" value="40"></div>
+   <p class="hint" id="pole-hint">Full revolutions with native poles. Show triangles to inspect the mesh near the tip.</p>
+  </div>
   <div id="bore-controls" hidden>
    <div class="control"><label class="label" for="boreWidth">Plate width <span class="value" id="boreWidth-value"></span></label><input id="boreWidth" type="range" min="60" max="160" step="1" value="100"></div>
    <div class="control"><label class="label" for="boreHeight">Plate height <span class="value" id="boreHeight-value"></span></label><input id="boreHeight" type="range" min="40" max="120" step="1" value="70"></div>
@@ -81,7 +87,7 @@ app.innerHTML = `
  </section>
  <aside id="geometry-inspector" class="geometry-inspector"><h2 style="margin-top:0">Measurements · <span id="source-name">panel</span></h2><div class="stats">
   <div class="stat wide"><small>Volume · mm³</small><b id="volume">—</b></div><div class="stat wide"><small>Surface area · mm²</small><b id="area">—</b></div>
-  <div class="stat"><small>Native faces</small><b id="native-faces">—</b></div><div class="stat"><small>Shared edges</small><b id="native-edges">—</b></div></div>
+  <div class="stat"><small>Native faces</small><b id="native-faces">—</b></div><div class="stat"><small>Native edges</small><b id="native-edges">—</b></div></div>
   <h2>Display data</h2><div class="metrics-line"><span>Triangles</span><code id="triangles">—</code></div><div class="metrics-line"><span>Render vertices</span><code id="vertices">—</code></div><div class="metrics-line"><span>Reported error</span><code id="deviation">—</code></div><div class="metrics-line"><span>CPU display buffers</span><code id="buffers">—</code></div><div class="metrics-line"><span>Compile / cache hits</span><code id="cache">—</code></div>
   <div class="metrics-line"><span>Construction UV vertices</span><code id="uv-vertices">—</code></div><div class="metrics-line"><span>Generation attempts</span><code id="attempts">—</code></div><h2>Timing</h2><div class="metrics-line"><span>Build / validation call</span><code id="build-kernel-time">—</code></div><div class="metrics-line"><span>Realize calls</span><code id="realize-kernel-time">—</code></div><div class="metrics-line"><span>STEP export call</span><code id="step-time">—</code></div><div class="metrics-line"><span>Last refused call</span><code id="refused-time">—</code></div><details><summary>SDK / transfer breakdown</summary><div class="metrics-line"><span>SDK prepare / transfer</span><code id="sdk-transfer-time">—</code></div><div class="metrics-line"><span>Workplane query</span><code id="workplane-time">—</code></div><p class="hint">Host-observed Wasm calls, in ms. SDK/transfer are separate; excludes rendering and GPU presentation.</p></details><h2>Features</h2><div id="features"></div><p class="hint">Pick a face or feature.</p>
   <h2>Selection</h2><div id="selection" class="selection">No selection.</div><p id="selection-notice" class="notice"></p>
@@ -104,6 +110,8 @@ const boreNames=["boreWidth","boreHeight","boreThickness","boreRadius","boreAngl
 const boreParameters=(delta=0)=>({width:value("boreWidth"),height:value("boreHeight"),thickness:value("boreThickness"),radius:value("boreRadius")+delta,angle:value("boreAngle"),separation:value("boreSeparation")});
 const flangeNames=["flangeBore","sleeveOuter","flangeOuter","shoulderHeight","shoulderSize","sleeveHeight","flangeAngle"] as const;
 const flangeParameters=(delta=0):FlangeParameters=>({boreRadius:value("flangeBore")+delta,sleeveOuterRadius:value("sleeveOuter"),flangeOuterRadius:value("flangeOuter"),shoulderHeight:value("shoulderHeight"),height:value("sleeveHeight"),angle:value("flangeAngle"),shoulder:element<HTMLSelectElement>("shoulderFinish").value==="fillet"?{kind:"fillet",radius:value("shoulderSize")}:{kind:"chamfer",distance:value("shoulderSize")}});
+const poleNames=["poleRadius","poleHeight"] as const;
+const poleParameters=(delta=0)=>({radius:value("poleRadius")+delta,height:value("poleHeight")});
 const authorCurrent = (delta=0) => {
   const sample=element<HTMLSelectElement>("sample").value;
   const p={...collarParameters(),radius:collarParameters().radius+delta};
@@ -115,6 +123,9 @@ const authorCurrent = (delta=0) => {
     case "collar": return authorCollar(p);
     case "roundedRing": case "torus": case "hollowTorus": return authorRoundedTurn(p,sample);
     case "sleeve": return authorFlangedSleeve(flangeParameters(delta));
+    case "sphere": return authorSphere(poleParameters(delta));
+    case "dome": return authorDome(poleParameters(delta));
+    case "cone": return authorPointedCone(poleParameters(delta));
     case "fitting": return authorTurnedFitting(p);
     default:return authorPanel({...parameters(),width:parameters().width+delta});
   }
@@ -122,7 +133,7 @@ const authorCurrent = (delta=0) => {
 const tolerance = () => Number(element<HTMLSelectElement>("quality").value);
 const format = (n: number, digits = 2) => n.toLocaleString(undefined, { maximumFractionDigits: digits });
 const formatMeasure = (value: NativeMeasurement) => value.status === "available" ? format(value.value,3) : value.status === "unavailable" ? "Not available" : "Numeric limit";
-const featureColors: Record<string, string> = { plate:"#4baca7",bore:"#bf9878",panel: "#4baca7", vents: "#6f9fdb", recess: "#d2a36d", pin: "#f1c77f", collar:"#8bbbc4" };
+const featureColors: Record<string, string> = { shell:"#8bbbc4",base:"#c69c76",plate:"#4baca7",bore:"#bf9878",panel: "#4baca7", vents: "#6f9fdb", recess: "#d2a36d", pin: "#f1c77f", collar:"#8bbbc4" };
 
 const renderer = new THREE.WebGLRenderer({ antialias: true, alpha: true });
 renderer.setPixelRatio(Math.min(devicePixelRatio, 2));
@@ -177,7 +188,7 @@ function frame(){
   if(moving)invalidate();
 }
 
-interface Entry { part: NativePart; display: Realization; mesh: THREE.Mesh<THREE.BufferGeometry, THREE.MeshStandardMaterial[]> }
+interface Entry { part: NativePart; display: Realization; mesh: THREE.Mesh<THREE.BufferGeometry, THREE.MeshStandardMaterial[]>; triangles:ReturnType<typeof meshTriangles> }
 interface Drawn { group: THREE.Group; entries: Entry[] }
 let session: AuthoringSession;
 let current: NativeDocument | null = null;
@@ -209,7 +220,7 @@ function chartControls(document:NativeDocument){
 }
 function materials(part: NativePart,display:Realization) {
   const names = [...new Set([part.name, ...part.faces().flatMap(f => f.features.length?f.features:[part.name])])];
-  const values = names.map(name => new THREE.MeshStandardMaterial({ color: featureColors[name] ?? "#87abb7", metalness: 0.25, roughness: 0.35, wireframe: element<HTMLInputElement>("wireframe").checked,map:display.uvs?checkerMap():null }));
+  const values = names.map(name => new THREE.MeshStandardMaterial({ color: featureColors[name] ?? "#87abb7", metalness: 0.25, roughness: 0.35,map:display.uvs?checkerMap():null }));
   return { names, values };
 }
 function draw(document: NativeDocument): Drawn {
@@ -235,12 +246,13 @@ function draw(document: NativeDocument): Drawn {
       }
       geometry.computeBoundingBox(); geometry.computeBoundingSphere();
       const mesh = new THREE.Mesh(geometry, style.values); mesh.castShadow = true; mesh.receiveShadow = true;
-      group.add(mesh); entries.push({ part, display, mesh });
+      const triangles=meshTriangles(mesh,element<HTMLInputElement>("wireframe").checked);
+      group.add(mesh,triangles.mesh); entries.push({ part, display, mesh, triangles });
     }
     return { group, entries };
   } catch (error) { dispose({ group, entries }); throw error; }
 }
-function dispose(view: Drawn) { for (const entry of view.entries) { entry.mesh.geometry.dispose(); for (const material of entry.mesh.material) material.dispose(); } }
+function dispose(view: Drawn) { for (const entry of view.entries) { entry.triangles.dispose(); entry.mesh.geometry.dispose(); for (const material of entry.mesh.material) material.dispose(); } }
 function clearHighlight() {
   if (!highlight) return;
   scene.remove(highlight); highlight.geometry.dispose();
@@ -379,7 +391,7 @@ function rebuild(){
 }
 // One pending frame reads the latest controls; dragging never queues obsolete builds.
 function scheduleBuild() { pendingBuild = true; invalidate(); }
-for (const key of [...controlsNames,...collarNames,...operationNames,...flangeNames,...boreNames]) {
+for (const key of [...controlsNames,...collarNames,...operationNames,...flangeNames,...boreNames,...poleNames]) {
   const input = element<HTMLInputElement>(key);
   const label = () => { element(`${key}-value`).textContent = `${input.value} ${["angle","turnAngle","loftTwist","flangeAngle","boreAngle"].includes(key) ? "°" : "mm"}`; };
   label(); input.addEventListener("input", () => { label(); scheduleBuild(); });
@@ -388,7 +400,16 @@ element<HTMLSelectElement>("shoulderFinish").onchange=()=>{element("shoulderSize
 element<HTMLSelectElement>("sample").onchange = () => {
   const sample=element<HTMLSelectElement>("sample").value, panel=sample === "panel", torus=sample === "torus" || sample === "hollowTorus";
   const rail=sample === "rail" || sample === "hollowRail", loft=sample === "loft", finish=sample === "fillet" || sample === "chamfer";
-  element("panel-controls").hidden=!panel; element("collar-controls").hidden=panel || rail || loft || finish || sample === "sleeve" || sample === "bore";
+  const pole=sample === "sphere" || sample === "dome" || sample === "cone";
+  element("panel-controls").hidden=!panel; element("collar-controls").hidden=panel || rail || loft || finish || pole || sample === "sleeve" || sample === "bore";
+  element("pole-controls").hidden=!pole;element("poleHeight-control").hidden=sample === "sphere";
+  if(pole){
+    const height=sample === "dome"?12:40;
+    element<HTMLInputElement>("poleRadius").value="25";element("poleRadius-value").textContent="25 mm";
+    element<HTMLInputElement>("poleHeight").value=String(height);element("poleHeight-value").textContent=`${height} mm`;
+    element("poleRadius-label").textContent=sample === "cone"?"Base radius":"Sphere radius";
+    element("pole-hint").textContent=sample === "dome"?"Cap height may reach the sphere diameter. Invalid dimensions retain the last valid model.":"Full revolutions with native poles. Show triangles to inspect the mesh near the tip.";
+  }
   element("flange-controls").hidden=sample!=="sleeve";element("bore-controls").hidden=sample!=="bore";
   element("rail-controls").hidden=!rail;element("loft-controls").hidden=!loft;element("finish-controls").hidden=!finish;
   for(const [key,initial] of [["railRadius",sample === "hollowRail"?8:6],["bendRadius",40],["turnAngle",135],["loftHeight",120],["loftTwist",14],["loftOffset",18],["finishSize",sample === "chamfer"?3:5],["finishHeight",30]] as const){element<HTMLInputElement>(key).value=String(initial);element(`${key}-value`).textContent=`${initial} ${["turnAngle","loftTwist"].includes(key)?"°":"mm"}`;}
@@ -402,14 +423,14 @@ element<HTMLSelectElement>("sample").onchange = () => {
     element<HTMLInputElement>(key).value=String(defaults[i]); element(`${key}-value`).textContent=`${defaults[i]} ${["angle","turnAngle","loftTwist","flangeAngle","boreAngle"].includes(key) ? "°" : "mm"}`;
   }
   for(const [key,value] of [["rounding",2],["innerRadius",4]] as const) {element<HTMLInputElement>(key).value=String(value);element(`${key}-value`).textContent=`${value} mm`;}
-  element<HTMLInputElement>("referenceRadius").value=String(torus?defaults[0]:defaults[0]+defaults[1]/2);
+  element<HTMLInputElement>("referenceRadius").value=String(pole?value("poleRadius"):torus?defaults[0]:defaults[0]+defaults[1]/2);
   element<HTMLInputElement>("restLength").value="120";element<HTMLInputElement>("referenceSection").value="0";
   hasCamera=false; scheduleBuild();
 };
 function scheduleDisplay(){pendingDisplay=true;invalidate();}
 element<HTMLSelectElement>("quality").onchange=scheduleDisplay;
 for(const key of ["checker","uvRepeat","referenceRadius","restLength","referenceSection","stations"]){element(key).addEventListener(key==="checker"||key==="stations"?"change":"input",scheduleDisplay);}
-element<HTMLInputElement>("wireframe").onchange = () => { for (const e of drawn?.entries ?? []) for (const m of e.mesh.material) m.wireframe = element<HTMLInputElement>("wireframe").checked; invalidate(); };
+element<HTMLInputElement>("wireframe").onchange = () => { for (const e of drawn?.entries ?? []) e.triangles.setVisible(element<HTMLInputElement>("wireframe").checked); invalidate(); };
 element("fit").onclick = fit;
 element("code-toggle").onclick = () => { const code = element("code"); code.hidden = !code.hidden; element("code-toggle").setAttribute("aria-expanded", String(!code.hidden)); };
 const raycaster = new THREE.Raycaster(); let down: [number, number] | null = null;

@@ -1,7 +1,7 @@
 // Copyright 2026 the Exedra Authors
 // SPDX-License-Identifier: Apache-2.0 OR MIT
 
-import { authorPanel, authorCollar, authorRoundedTurn, authorFlangedSleeve, authorTurnedFitting, authorRail, authorVariableLoft, authorFinishedPlate, authorAngledBore } from "../src/sample.ts";
+import { authorPanel, authorCollar, authorRoundedTurn, authorFlangedSleeve, authorSphere, authorDome, authorPointedCone, authorTurnedFitting, authorRail, authorVariableLoft, authorFinishedPlate, authorAngledBore } from "../src/sample.ts";
 
 // Independent must-succeed inventory. Unsupported exports are specific expected
 // outcomes, not an allowance for arbitrary failures or all-export-refused runs.
@@ -13,6 +13,9 @@ export const galleryCases = [
   { id: "hollowTorus", step: "supported", make: (delta=0) => authorRoundedTurn({radius:35+delta,wall:7,collarHeight:30,angle:270,innerRadius:4},"hollowTorus") },
   { id: "sleeve", step: "supported", make: (delta=0) => authorFlangedSleeve({boreRadius:12+delta,sleeveOuterRadius:18,flangeOuterRadius:22,shoulderHeight:8.75,height:35,angle:270,shoulder:{kind:"fillet",radius:2}}) },
   { id: "fitting", step: "supported", make: (delta=0) => authorTurnedFitting({radius:7+delta,wall:15,collarHeight:47,angle:270}) },
+  { id: "sphere", step: "supported", make: (delta=0) => authorSphere({radius:25+delta}) },
+  { id: "dome", step: "supported", make: (delta=0) => authorDome({radius:25+delta,height:12}) },
+  { id: "cone", step: "supported", make: (delta=0) => authorPointedCone({radius:25+delta,height:40}) },
   { id: "rail", step: "supported", make: (delta=0) => authorRail({radius:6+delta,bendRadius:40,angle:135,hollow:false}) },
   { id: "hollowRail", step: "supported", make: (delta=0) => authorRail({radius:8+delta,bendRadius:40,angle:135,hollow:true}) },
   { id: "loft", step: "unsupported", measures:"unavailable", make: (delta=0) => authorVariableLoft({height:120+delta,twist:14,offset:18}) },
