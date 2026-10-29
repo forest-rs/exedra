@@ -11,6 +11,7 @@
 //! A closed boundary is not by itself a certified regular solid.
 
 mod cylindrical;
+mod planar;
 pub(crate) mod trims;
 pub use cylindrical::{CylindricalBand, CylindricalBandError};
 pub use trims::{LoopTrims, TrimCurve};

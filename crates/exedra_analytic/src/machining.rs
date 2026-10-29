@@ -22,6 +22,11 @@ use crate::geometry::{Curve, GeometryError, ParameterDomain, ParameterRange, Sur
 use alloc::vec::Vec;
 use exedra_math::{Placement3, add, cross, dot, scale, sub};
 
+mod parallel;
+pub use parallel::{
+    PassageError, PassageReport, PassageResult, subtract_parallel_passages,
+    subtract_parallel_passages_with_roles,
+};
 mod stepped;
 pub use stepped::{
     BoreDepth, BoreError, BoreReport, BoreResult, BoreStep, BoreTool, subtract_bore,
@@ -844,6 +849,40 @@ fn section_clearance<F, E>(
             clearance = clearance.min(bound);
             continue;
         }
+        if coedges.iter().any(|co| {
+            matches!(
+                body.edges()[co.edge.index()].regular(),
+                Some((Curve::Circle(_), _))
+            )
+        }) {
+            let (profile, gap) = body
+                .planar_profile_loop(face, *l)
+                .ok_or(MachiningError::UnsupportedFace { face })?;
+            let point = f
+                .surface
+                .parameters(center)
+                .ok_or(MachiningError::NumericLimit)?;
+            let query = profile
+                .query_point(point)
+                .map_err(|_| MachiningError::NumericLimit)?;
+            let bound = query.boundary_distance - query.numeric_allowance - gap - radius;
+            let correct_side = query.winding.is_some_and(|winding| {
+                if loop_index == 0 {
+                    winding.abs() == 1
+                } else {
+                    winding == 0
+                }
+            });
+            if !correct_side || bound <= 0.0 {
+                return Err(MachiningError::Clearance {
+                    face,
+                    bound: bound.min(0.0),
+                    required: radius,
+                });
+            }
+            clearance = clearance.min(bound);
+            continue;
+        }
         let mut winding = false;
         let mut min = f64::INFINITY;
         for co in coedges {
@@ -928,6 +967,135 @@ mod tests {
                 .collect(),
         };
         Body::try_from_parts(parts, &ValidationPolicy { max_gap: 1e-9 }).unwrap()
+    }
+    #[test]
+    fn overlapping_parallel_passages_split_shared_native_walls_and_count_overlap_once() {
+        let source = stock();
+        let before = source.clone();
+        let tools = [
+            CylinderTool::new([-2.0, 0.0, 0.0], [0.0, 0.0, 1.0], 3.0).unwrap(),
+            CylinderTool::new([2.0, 0.0, 7.0], [0.0, 0.0, -1.0], 3.0).unwrap(),
+        ];
+        let result =
+            subtract_parallel_passages(&source, &tools, &MachiningPolicy::default()).unwrap();
+        assert_eq!(source, before);
+        assert!(result.body.is_closed());
+        assert_eq!(result.report.walls.len(), 2);
+        assert_eq!(result.report.intersection_vertices, 2);
+        assert_eq!(result.report.opening_components, 1);
+        let overlap = 18.0 * libm::acos(2.0 / 3.0) - 2.0 * libm::sqrt(20.0);
+        let area = 18.0 * core::f64::consts::PI - overlap;
+        assert!((result.report.removed_section_area - area).abs() < 1e-10);
+        assert!((result.report.removed_volume - 10.0 * area).abs() < 1e-10);
+        assert!(
+            (result.report.surface_area_delta
+                - (12.0 * (core::f64::consts::PI - libm::acos(2.0 / 3.0)) * 10.0 - 2.0 * area))
+                .abs()
+                < 1e-9
+        );
+        let next = BoreTool::new(
+            [12.0, 0.0, 0.0],
+            [0.0, 0.0, 1.0],
+            &[BoreStep {
+                radius: 1.0,
+                end: BoreDepth::ToDepth(3.0),
+            }],
+        )
+        .unwrap();
+        let continued = subtract_bore(&result.body, &next, &MachiningPolicy::default()).unwrap();
+        assert!(continued.body.is_closed());
+        assert_eq!(
+            &continued.body.edges()[..result.body.edges().len()],
+            result.body.edges()
+        );
+        for tolerance in [0.03, 0.005] {
+            let mesh = result
+                .body
+                .realize(
+                    Placement3::IDENTITY,
+                    &crate::realize::RealizationPolicy {
+                        tolerance,
+                        ..Default::default()
+                    },
+                )
+                .unwrap();
+            assert!(mesh.mesh.validate_deep().is_empty());
+            assert!(mesh.mesh.boundary_loops().unwrap().is_empty());
+            assert!(mesh.report.within_tolerance(), "{:?}", mesh.report);
+            let error =
+                (realized_volume(&mesh.mesh) - (24000.0 - result.report.removed_volume)).abs();
+            assert!(error < if tolerance > 0.01 { 8.0 } else { 2.0 }, "{error}");
+        }
+    }
+    #[test]
+    fn parallel_union_handles_chain_covered_arcs_disjoint_and_contained_tools() {
+        for requests in [
+            alloc::vec![([-5.0, 0.0], 4.0), ([0.0, 0.0], 4.0), ([5.0, 0.0], 4.0)],
+            alloc::vec![([-3.0, 0.0], 4.0), ([3.0, 0.0], 4.0), ([0.0, 5.0], 4.0)],
+            alloc::vec![([-10.0, 0.0], 2.0), ([10.0, 0.0], 2.0)],
+            alloc::vec![([0.0, 0.0], 2.0), ([0.0, 0.0], 4.0)],
+        ] {
+            let tools: Vec<_> = requests
+                .iter()
+                .map(|&(p, r)| CylinderTool::new([p[0], p[1], 0.0], [0.0, 0.0, 1.0], r).unwrap())
+                .collect();
+            let result =
+                subtract_parallel_passages(&stock(), &tools, &MachiningPolicy::default()).unwrap();
+            let mesh = result
+                .body
+                .realize(
+                    Placement3::IDENTITY,
+                    &crate::realize::RealizationPolicy {
+                        tolerance: 0.02,
+                        ..Default::default()
+                    },
+                )
+                .unwrap();
+            assert!(mesh.mesh.validate_deep().is_empty());
+            assert!(mesh.mesh.boundary_loops().unwrap().is_empty());
+            assert!(mesh.report.within_tolerance());
+            assert!(result.report.removed_section_area > 0.0);
+        }
+    }
+    #[test]
+    fn parallel_union_refuses_tangencies_skew_axes_and_enclosed_islands() {
+        let source = stock();
+        let original = source.clone();
+        for distance in [0.0, 4.0, 4.0 - 1e-8, 4.0 + 1e-8] {
+            let tools = [
+                CylinderTool::new([0.0; 3], [0.0, 0.0, 1.0], 2.0).unwrap(),
+                CylinderTool::new([distance, 0.0, 0.0], [0.0, 0.0, 1.0], 2.0).unwrap(),
+            ];
+            assert!(matches!(
+                subtract_parallel_passages(&source, &tools, &MachiningPolicy::default()),
+                Err(PassageError::Contact { .. })
+            ));
+        }
+        let tools = [
+            CylinderTool::new([-5.0, 0.0, 0.0], [0.0, 0.0, 1.0], 2.0).unwrap(),
+            CylinderTool::new([5.0, 0.0, 0.0], [0.01, 0.0, 1.0], 2.0).unwrap(),
+        ];
+        assert!(matches!(
+            subtract_parallel_passages(&source, &tools, &MachiningPolicy::default()),
+            Err(PassageError::Axis { tool: 1 })
+        ));
+        // Three disks with pairwise overlaps but a central uncovered island.
+        let tools: Vec<_> = (0..3)
+            .map(|i| {
+                let a = f64::from(i) * core::f64::consts::TAU / 3.0;
+                CylinderTool::new(
+                    [5.0 * libm::cos(a), 5.0 * libm::sin(a), 0.0],
+                    [0.0, 0.0, 1.0],
+                    4.5,
+                )
+                .unwrap()
+            })
+            .collect();
+        assert!(matches!(
+            subtract_parallel_passages(&source, &tools, &MachiningPolicy::default()),
+            Err(PassageError::EnclosedIsland)
+        ));
+        assert_eq!(source, original);
     }
     fn realized_volume(mesh: &exedra_mesh::Mesh) -> f64 {
         mesh.faces()
