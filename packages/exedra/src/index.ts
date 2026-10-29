@@ -181,11 +181,24 @@ export interface Diagnostic {
   cell?: readonly [number, number, number];
   required?: number;
   maximum?: number;
+  /** Zero-based bore portion responsible for a profile or depth refusal. */
+  readonly step?: number;
+  readonly entryDistance?: number;
+  readonly allowedEntryDistance?: number;
+  readonly tool?: number;
+  readonly leftTool?: number;
+  readonly rightTool?: number;
+  readonly edge?: number;
+  readonly loop?: number;
 }
 /** Host-observed elapsed milliseconds at the SDK/Wasm boundary; never GPU or presentation time. */
 export interface KernelCallTiming {
   readonly operation:
-    "document.build" | "part.realize" | "part.workplane" | "part.exportStep";
+    | "document.build"
+    | "part.realize"
+    | "part.workplane"
+    | "part.exportStep"
+    | "part.validateBoundary";
   readonly outcome: "success" | "refused";
   readonly sdkPrepareMs: number;
   readonly kernelMs: number;
@@ -747,6 +760,22 @@ function snapshotBody(body: NativeBodyDescription): NativeBodyDescription {
 type FaceSelector =
   { kind: "floor"; feature: string } | { kind: "cap"; end: End };
 type SolidNode =
+  | {
+      kind: "subtractParallelPassages";
+      base: Solid;
+      tools: readonly CylinderOptions[];
+      separation: number;
+      feature?: string;
+    }
+  | {
+      kind: "subtractBore";
+      base: Solid;
+      entry: XYZ;
+      direction: XYZ;
+      steps: readonly BoreStep[];
+      separation: number;
+      feature?: string;
+    }
   | { kind: "union" | "intersect" | "subtract"; base: Solid; other: Solid }
   | {
       kind: "intersectHalfSpace";
@@ -803,11 +832,33 @@ type SolidNode =
 const solidNodes = new WeakMap<Solid, SolidNode>();
 
 /** An unoriented cylinder axis in the body's local construction space, before placement. */
-export interface ThroughBoreOptions {
+export interface CylinderOptions {
   readonly point: XYZ;
   readonly direction: XYZ;
   readonly radius: number;
+}
+/** A through-cylinder tool with material clearance and optional feature identity. */
+export interface ThroughBoreOptions extends CylinderOptions {
   /** Minimum remaining material from the tool to untouched boundaries, in document units. Distinct from numeric separation/display tolerance. */
+  readonly separation: number;
+  readonly feature?: string;
+}
+/** One cylindrical portion of a bore. Depths are cumulative from entry along
+ * the inward normalized axis; radii decrease and finite depths increase.
+ * Only the final portion may end with `"through"`.
+ */
+export interface BoreStep {
+  readonly radius: number;
+  readonly depth: number | "through";
+}
+/** A blind or stepped cut in body-local construction space, before placement. */
+export interface BoreOptions {
+  /** Point on the entry plane, at the center of the opening. */
+  readonly entry: XYZ;
+  /** Axis pointing from entry into material; normalized by the kernel. */
+  readonly direction: XYZ;
+  readonly steps: readonly BoreStep[];
+  /** Required material clearance from untouched faces and between shoulders. */
   readonly separation: number;
   readonly feature?: string;
 }
@@ -947,7 +998,7 @@ export class Solid {
         options.feature === undefined ? undefined : name(options.feature),
     });
   }
-  /** Exact cylinder subtraction through two parallel planar exits.
+  /** Exact cylinder subtraction through two planar exits, which may be nonparallel.
    * Repeated disjoint cuts preserve existing native IDs. Polygonal and full conic
    * exit trims are supported; conservative separation checks can refuse valid cuts.
    * Input must already be an embedded outward-oriented regular solid; structural
@@ -962,6 +1013,71 @@ export class Solid {
       direction: point3(options.direction),
       radius: finite(options.radius, "bore radius"),
       separation: finite(options.separation, "bore clearance"),
+      feature:
+        options.feature === undefined ? undefined : name(options.feature),
+    });
+  }
+  /** Subtracts a complete blind or stepped bore in one native transaction.
+   * A single finite step makes a blind hole; a larger finite step followed by a
+   * smaller through step makes a counterbore. Shared shoulders and the blind
+   * floor are retained native faces, selectable by the feature name.
+   * The current planner requires a separated outer-radius corridor between two
+   * planar source faces, including for blind cuts. Unsupported intersections
+   * return a structured refusal without replacing the previous document.
+   */
+  subtractBore(options: BoreOptions): Solid {
+    if (options.steps.length > 256)
+      fail("budget.boreSteps", "A bore supports at most 256 portions");
+    const steps = Object.freeze(
+      options.steps.map((step) =>
+        Object.freeze({
+          radius: finite(step.radius, "bore step radius"),
+          depth:
+            step.depth === "through"
+              ? ("through" as const)
+              : finite(step.depth, "bore step depth"),
+        }),
+      ),
+    );
+    return new Solid({
+      kind: "subtractBore",
+      base: this,
+      entry: point3(options.entry),
+      direction: point3(options.direction),
+      steps,
+      separation: finite(options.separation, "bore clearance"),
+      feature:
+        options.feature === undefined ? undefined : name(options.feature),
+    });
+  }
+  /** Subtracts a union of parallel through cylinders in one native transaction.
+   * Overlapping circles join into a shared opening without internal walls.
+   * Axes must be parallel, with common perpendicular planar exits; source
+   * openings stay separated. Up to 32 tools are supported. Near tangencies,
+   * coincident tools and enclosed material islands return explicit refusals.
+   */
+  subtractParallelPassages(
+    tools: readonly CylinderOptions[],
+    options: {
+      separation: number;
+      feature?: string;
+    },
+  ): Solid {
+    if (tools.length > 32)
+      fail("budget.passageTools", "At most 32 parallel tools are supported");
+    return new Solid({
+      kind: "subtractParallelPassages",
+      base: this,
+      tools: Object.freeze(
+        tools.map((tool) =>
+          Object.freeze({
+            point: point3(tool.point),
+            direction: point3(tool.direction),
+            radius: finite(tool.radius, "passage radius"),
+          }),
+        ),
+      ),
+      separation: finite(options.separation, "passage clearance"),
       feature:
         options.feature === undefined ? undefined : name(options.feature),
     });
@@ -1251,6 +1367,56 @@ export interface NativeBore {
   readonly maxNativeGap: number;
   readonly axisDot: number;
 }
+/** Native chart units are surface parameters: cylinder U is radians, V is a length. */
+export interface BoundaryValidationOptions {
+  readonly chartSeparation?: number;
+  readonly maxCoedges?: number;
+  readonly maxPairTests?: number;
+}
+/** Continuous face-trim proof; unsupported means unverified, never accepted as valid. */
+export type NativeTrimValidation =
+  | {
+      readonly face: number;
+      readonly status: "certified";
+      readonly proof: "polygon" | "planarEllipses" | "cylindricalGraphs";
+    }
+  | {
+      readonly face: number;
+      readonly status: "unsupported";
+      readonly reason:
+        | "missingChart"
+        | "curveFamily"
+        | "separationUnresolved"
+        | "numericLimit";
+    };
+/** Local topology/trim evidence. Distant self-intersection, outward orientation
+ * and material containment require stronger checks and are explicitly unverified.
+ */
+export interface NativeBoundaryValidation {
+  readonly policy: {
+    readonly maxGap: number;
+    readonly chartSeparation: number;
+    readonly maxCoedges: number;
+    readonly maxPairTests: number;
+  };
+  readonly scope: "localBoundary";
+  readonly globalSolidValidity: "notChecked";
+  readonly orientedManifold: true;
+  readonly allTrimsChecked: boolean;
+  readonly faceTrims: readonly NativeTrimValidation[];
+  readonly shells: readonly {
+    readonly faces: readonly number[];
+    readonly vertices: number;
+    readonly regularEdges: number;
+    readonly eulerCharacteristic: number;
+  }[];
+  readonly coedges: number;
+  readonly pairTestBound: number;
+  readonly maxGap: number;
+  readonly explicitTrimCoedges: number;
+  readonly maxTrimGap: number;
+  readonly timing: KernelCallTiming;
+}
 /** Exact topology correspondence and analytic deltas for one retained-body cut. */
 export interface NativeMachiningOperation {
   readonly point: XYZ;
@@ -1284,6 +1450,54 @@ export interface NativeFaceSource {
 }
 /** Exact native operation evidence. IDs are local to the identified graph node. */
 export type NativeSolidOperation =
+  | {
+      readonly kind: "subtractParallelPassages";
+      readonly node: number;
+      readonly base: number;
+      readonly tools: readonly CylinderOptions[];
+      readonly feature: string | null;
+      readonly trimmedFaces: readonly [number, number];
+      readonly walls: readonly number[];
+      /** Requested tool index for each retained wall fragment. */
+      readonly wallTools: readonly number[];
+      readonly openingComponents: number;
+      readonly pairTests: number;
+      readonly intersectionVertices: number;
+      readonly removedSectionArea: number;
+      readonly removedVolume: number;
+      readonly surfaceAreaDelta: number;
+      readonly minimumClearance: number;
+      readonly maxGap: number;
+      readonly faces: readonly {
+        readonly source: number;
+        readonly result: number;
+        readonly change: "retained" | "trimmed";
+      }[];
+    }
+  | {
+      readonly kind: "subtractBore";
+      readonly node: number;
+      readonly base: number;
+      readonly entry: XYZ;
+      readonly direction: XYZ;
+      readonly steps: readonly BoreStep[];
+      readonly feature: string | null;
+      readonly entryFace: number;
+      readonly exitFace: number | null;
+      readonly rims: readonly number[];
+      readonly walls: readonly number[];
+      readonly shoulders: readonly number[];
+      readonly floor: number | null;
+      readonly minimumClearance: number;
+      readonly maxGap: number;
+      readonly removedVolume: number;
+      readonly surfaceAreaDelta: number;
+      readonly faces: readonly {
+        readonly source: number;
+        readonly result: number;
+        readonly change: "retained" | "trimmed";
+      }[];
+    }
   | {
       readonly kind: "union" | "intersect" | "subtract";
       readonly node: number;
@@ -1387,6 +1601,11 @@ export interface NativeTransport {
   export_step(document: number, part: number, request: string): NativeStepFile;
   stats_json(): string;
   workplane_json(document: number, part: number, face: number): string;
+  validate_boundary_json(
+    document: number,
+    part: number,
+    options: string,
+  ): string;
   free(): void;
 }
 
@@ -1506,6 +1725,8 @@ function graph(
       case "intersectHalfSpace":
       case "throughBore":
       case "subtractThroughCylinder":
+      case "subtractBore":
+      case "subtractParallelPassages":
         wire = { ...source, base: visit(source.base) };
         break;
       case "axialFinish":
@@ -1959,6 +2180,56 @@ export class NativePart {
         "The selection belongs to a different native part/revision",
       );
     return this.face(selection.nativeId);
+  }
+  /** Explicitly inspects native topology and supported trim arrangements without meshing.
+   * A successful report certifies an oriented manifold boundary; per-face trim
+   * statuses distinguish certified arrangements from unsupported families.
+   * This does not certify global solid validity. Work limits are checked before
+   * expensive inspection, and the installed document remains unchanged.
+   */
+  validateBoundary(
+    options: BoundaryValidationOptions = {},
+  ): NativeBoundaryValidation {
+    const call = this.document.beginCall("part.validateBoundary", this.id);
+    try {
+      const { transport, document } = this.document.backend();
+      const request = call.phase("sdkPrepareMs", () => {
+        const chartSeparation =
+          options.chartSeparation === undefined
+            ? undefined
+            : finite(options.chartSeparation, "chart separation");
+        for (const key of ["maxCoedges", "maxPairTests"] as const) {
+          const limit = options[key];
+          if (
+            limit !== undefined &&
+            (!Number.isSafeInteger(limit) || limit <= 0)
+          )
+            fail(
+              "input.validationBudget",
+              `${key} must be a positive safe integer`,
+            );
+        }
+        return JSON.stringify({ ...options, chartSeparation });
+      });
+      const response = call.phase("kernelMs", () =>
+        transport.validate_boundary_json(document, this.index, request),
+      );
+      const evidence = call.phase("metadataMs", () =>
+        freezeEvidence(
+          JSON.parse(response) as Omit<NativeBoundaryValidation, "timing">,
+        ),
+      );
+      return Object.freeze({
+        ...evidence,
+        get timing() {
+          return call.value;
+        },
+      });
+    } catch (error) {
+      throw call.refusal(error);
+    } finally {
+      call.finish("success");
+    }
   }
   /** Reads the exact native supporting plane; curved faces return a typed refusal. */
   workplane(selection: FaceSelection): NativeWorkplane {

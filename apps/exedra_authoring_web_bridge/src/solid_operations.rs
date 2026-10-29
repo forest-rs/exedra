@@ -339,3 +339,295 @@ pub(super) fn halfspace(
         integrals: None,
     })
 }
+
+/// Lowers one complete coaxial cutting profile into a retained native body.
+#[expect(
+    clippy::too_many_arguments,
+    reason = "Mirrors the explicit bore authoring node"
+)]
+pub(super) fn bore(
+    source: &Model,
+    base: u32,
+    entry: [f64; 3],
+    direction: [f64; 3],
+    steps: Vec<InputBoreStep>,
+    separation: f64,
+    feature: Option<String>,
+    labels: &BTreeMap<String, SegTag>,
+    gap: f64,
+    node: usize,
+) -> Result<Model, Error> {
+    use exedra_analytic::machining::{
+        BoreDepth, BoreError, BoreStep, BoreTool, MachiningError, MachiningPolicy,
+        subtract_bore_with_roles,
+    };
+    const OPERATION: &str = "solid.subtractBore";
+    let refusal = |error: BoreError| {
+        let code = match &error {
+            BoreError::StepCount { .. } => "bore.stepCount",
+            BoreError::InvalidStep { .. } => "bore.invalidStep",
+            BoreError::Entry { .. } => "bore.entry",
+            BoreError::DepthClearance { .. } => "bore.depthClearance",
+            BoreError::Machining(error) => match error {
+                MachiningError::InvalidPolicy => "machining.policy",
+                MachiningError::OpenBoundary => "machining.openBoundary",
+                MachiningError::UnsupportedFace { .. } => "machining.unsupportedFace",
+                MachiningError::Clearance { .. } => "machining.clearance",
+                MachiningError::ExitCount { .. } => "machining.exitCount",
+                MachiningError::NumericLimit => "machining.numericLimit",
+                MachiningError::Section(
+                    exedra_analytic::geometry::intersection::SectionError::NearParallel { .. },
+                ) => "machining.nearParallel",
+                _ => "machining.invalid",
+            },
+        };
+        let mut diagnostic = Error::new(code, OPERATION, error.to_string()).node(node);
+        let context = diagnostic.context_mut();
+        context.feature = feature.clone();
+        match error {
+            BoreError::StepCount { found, maximum } => {
+                context.required = Some(found);
+                context.maximum = Some(maximum);
+            }
+            BoreError::InvalidStep { step } => context.step = Some(step),
+            BoreError::Entry {
+                face,
+                distance,
+                allowed,
+            } => {
+                context.face = Some(face.0);
+                context.entry_distance = Some(distance);
+                context.allowed_entry_distance = Some(allowed);
+            }
+            BoreError::DepthClearance {
+                step,
+                bound,
+                required,
+            } => {
+                context.step = Some(step);
+                context.clearance = Some(bound);
+                context.required_clearance = Some(required);
+            }
+            BoreError::Machining(MachiningError::UnsupportedFace { face }) => {
+                context.face = Some(face.0);
+            }
+            BoreError::Machining(MachiningError::Clearance {
+                face,
+                bound,
+                required,
+            }) => {
+                context.face = Some(face.0);
+                context.clearance = Some(bound);
+                context.required_clearance = Some(required);
+            }
+            BoreError::Machining(MachiningError::Section(
+                exedra_analytic::geometry::intersection::SectionError::NearParallel {
+                    axis_dot,
+                    minimum,
+                },
+            )) => {
+                context.axis_dot = Some(axis_dot);
+                context.minimum_axis_dot = Some(minimum);
+            }
+            _ => (),
+        }
+        diagnostic
+    };
+    let steps: Vec<_> = steps
+        .into_iter()
+        .map(|step| BoreStep {
+            radius: step.radius,
+            end: match step.depth {
+                InputBoreDepth::Finite(depth) => BoreDepth::ToDepth(depth),
+                InputBoreDepth::Through(_) => BoreDepth::Through,
+            },
+        })
+        .collect();
+    let tool = BoreTool::new(entry, direction, &steps).map_err(refusal)?;
+    let role = feature
+        .as_ref()
+        .map(|name| labels[name])
+        .into_iter()
+        .collect();
+    let result = subtract_bore_with_roles(
+        &source.geometry().to_body(),
+        &tool,
+        &MachiningPolicy {
+            separation,
+            geometry_gap: gap,
+            min_axis_dot: 0.05,
+        },
+        role,
+        (),
+    )
+    .map_err(refusal)?;
+    let integrals = source
+        .integral_values()
+        .map(|[volume, area]| {
+            [
+                volume - result.report.removed_volume,
+                area + result.report.surface_area_delta,
+            ]
+        })
+        .filter(|values| values.iter().all(|v| v.is_finite() && *v > 0.0));
+    let mut operations = history(source);
+    operations.push(AuthoredSolidOperation::Bore {
+        node,
+        base,
+        entry,
+        direction: tool.direction(),
+        steps,
+        feature,
+        report: result.report,
+    });
+    Ok(Model::Body {
+        body: result.body,
+        frame: source.geometry().frame(),
+        machining: if let Model::Body { machining, .. } = source {
+            machining.clone()
+        } else {
+            Vec::new()
+        },
+        operations,
+        integrals,
+    })
+}
+
+/// Installs one exact union of parallel cylinder corridors with shared walls.
+#[expect(
+    clippy::too_many_arguments,
+    reason = "Mirrors the explicit passage authoring node"
+)]
+pub(super) fn passages(
+    source: &Model,
+    base: u32,
+    descriptions: Vec<InputCylinder>,
+    separation: f64,
+    feature: Option<String>,
+    labels: &BTreeMap<String, SegTag>,
+    gap: f64,
+    node: usize,
+) -> Result<Model, Error> {
+    use exedra_analytic::machining::{
+        CylinderTool, MachiningPolicy, PassageError, subtract_parallel_passages_with_roles,
+    };
+    const OPERATION: &str = "solid.subtractParallelPassages";
+    let tools: Vec<_> = descriptions
+        .iter()
+        .enumerate()
+        .map(|(index, tool)| {
+            CylinderTool::new(tool.point, tool.direction, tool.radius).map_err(|error| {
+                let mut diagnostic =
+                    Error::new("passages.tool", OPERATION, error.to_string()).node(node);
+                diagnostic.context_mut().tool = Some(index);
+                diagnostic
+            })
+        })
+        .collect::<Result<_, _>>()?;
+    let role = feature
+        .as_ref()
+        .map(|name| labels[name])
+        .into_iter()
+        .collect();
+    let result = subtract_parallel_passages_with_roles(
+        &source.geometry().to_body(),
+        &tools,
+        &MachiningPolicy {
+            separation,
+            geometry_gap: gap,
+            min_axis_dot: 0.05,
+        },
+        role,
+        (),
+    )
+    .map_err(|error| {
+        let code = match &error {
+            PassageError::ToolCount { .. } => "passages.toolCount",
+            PassageError::Tool { .. } => "passages.tool",
+            PassageError::Axis { .. } => "passages.axis",
+            PassageError::Exits { .. } => "passages.exits",
+            PassageError::Contact { .. } => "passages.contact",
+            PassageError::Junction => "passages.junction",
+            PassageError::EnclosedIsland => "passages.enclosedIsland",
+            PassageError::Machining(_) => "passages.invalid",
+        };
+        let mut diagnostic = Error::new(code, OPERATION, error.to_string()).node(node);
+        let context = diagnostic.context_mut();
+        context.feature = feature.clone();
+        match error {
+            PassageError::ToolCount { found } => {
+                context.required = Some(found);
+                context.maximum = Some(32);
+            }
+            PassageError::Axis { tool } | PassageError::Exits { tool } => context.tool = Some(tool),
+            PassageError::Tool { tool, error } => {
+                context.tool = Some(tool);
+                match error {
+                    exedra_analytic::machining::MachiningError::UnsupportedFace { face } => {
+                        context.face = Some(face.0);
+                    }
+                    exedra_analytic::machining::MachiningError::Clearance {
+                        face,
+                        bound,
+                        required,
+                    } => {
+                        context.face = Some(face.0);
+                        context.clearance = Some(bound);
+                        context.required_clearance = Some(required);
+                    }
+                    _ => (),
+                }
+            }
+            PassageError::Contact {
+                left,
+                right,
+                bound,
+                required,
+            } => {
+                context.left_tool = Some(left);
+                context.right_tool = Some(right);
+                context.clearance = Some(bound);
+                context.required_clearance = Some(required);
+            }
+            _ => (),
+        }
+        diagnostic
+    })?;
+    let integrals = source
+        .integral_values()
+        .map(|[volume, area]| {
+            [
+                volume - result.report.removed_volume,
+                area + result.report.surface_area_delta,
+            ]
+        })
+        .filter(|values| values.iter().all(|v| v.is_finite() && *v > 0.0));
+    let mut operations = history(source);
+    // Store normalized axes as evidence, independent of the caller's axis length.
+    let descriptions = descriptions
+        .into_iter()
+        .zip(&tools)
+        .map(|(mut input, tool)| {
+            input.direction = tool.surface().frame().rows.map(|row| row[2]);
+            input
+        })
+        .collect();
+    operations.push(AuthoredSolidOperation::Passages {
+        node,
+        base,
+        tools: descriptions,
+        feature,
+        report: result.report,
+    });
+    Ok(Model::Body {
+        body: result.body,
+        frame: source.geometry().frame(),
+        machining: if let Model::Body { machining, .. } = source {
+            machining.clone()
+        } else {
+            Vec::new()
+        },
+        operations,
+        integrals,
+    })
+}

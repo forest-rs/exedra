@@ -297,6 +297,20 @@ enum Node {
         #[serde(default)]
         placement: InputPlacement,
     },
+    SubtractParallelPassages {
+        base: u32,
+        tools: Vec<InputCylinder>,
+        separation: f64,
+        feature: Option<String>,
+    },
+    SubtractBore {
+        base: u32,
+        entry: [f64; 3],
+        direction: [f64; 3],
+        steps: Vec<InputBoreStep>,
+        separation: f64,
+        feature: Option<String>,
+    },
     SubtractThroughCylinder {
         base: u32,
         point: [f64; 3],
@@ -360,6 +374,30 @@ enum Node {
         at: [f64; 2],
     },
 }
+#[derive(Clone, Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub(crate) struct InputCylinder {
+    pub point: [f64; 3],
+    pub direction: [f64; 3],
+    pub radius: f64,
+}
+#[derive(Clone, Debug, Deserialize)]
+#[serde(untagged)]
+pub(crate) enum InputBoreDepth {
+    Finite(f64),
+    Through(InputThrough),
+}
+#[derive(Clone, Debug, Deserialize)]
+pub(crate) enum InputThrough {
+    #[serde(rename = "through")]
+    Through,
+}
+#[derive(Clone, Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub(crate) struct InputBoreStep {
+    pub radius: f64,
+    pub depth: InputBoreDepth,
+}
 #[derive(Debug, Deserialize)]
 #[serde(deny_unknown_fields)]
 struct Root {
@@ -387,6 +425,22 @@ pub(crate) struct AuthoredMachining {
 }
 #[derive(Clone, Debug)]
 pub(crate) enum AuthoredSolidOperation {
+    Passages {
+        node: usize,
+        base: u32,
+        tools: Vec<InputCylinder>,
+        feature: Option<String>,
+        report: exedra_analytic::machining::PassageReport,
+    },
+    Bore {
+        node: usize,
+        base: u32,
+        entry: [f64; 3],
+        direction: [f64; 3],
+        steps: Vec<exedra_analytic::machining::BoreStep>,
+        feature: Option<String>,
+        report: exedra_analytic::machining::BoreReport,
+    },
     Rectilinear {
         node: usize,
         left: u32,
@@ -405,7 +459,10 @@ pub(crate) enum AuthoredSolidOperation {
 impl AuthoredSolidOperation {
     fn node(&self) -> usize {
         match self {
-            Self::Rectilinear { node, .. } | Self::HalfSpace { node, .. } => *node,
+            Self::Rectilinear { node, .. }
+            | Self::HalfSpace { node, .. }
+            | Self::Bore { node, .. }
+            | Self::Passages { node, .. } => *node,
         }
     }
 }
@@ -780,7 +837,9 @@ impl Request {
                     (sections.iter().map(|s| s.profile).collect(), None, 1)
                 }
                 Node::ThroughBore { base, feature, .. }
-                | Node::SubtractThroughCylinder { base, feature, .. } => {
+                | Node::SubtractThroughCylinder { base, feature, .. }
+                | Node::SubtractBore { base, feature, .. }
+                | Node::SubtractParallelPassages { base, feature, .. } => {
                     if let Some(feature) = feature {
                         if !label(feature) {
                             return Err(Error::new(
@@ -878,12 +937,41 @@ impl Request {
                             | Node::AxialFinish { .. }
                             | Node::ThroughBore { .. }
                             | Node::SubtractThroughCylinder { .. }
+                            | Node::SubtractBore { .. }
+                            | Node::SubtractParallelPassages { .. }
                     ) {
                         body_counts[parent.expect("feature parent") as usize]
                     } else {
                         0
                     },
                 );
+            let count = count.saturating_add(if let Node::SubtractBore { steps, .. } = node {
+                if steps.len() > 256 {
+                    return Err(Error::new(
+                        "budget.boreSteps",
+                        "document.validate",
+                        "A bore supports at most 256 portions",
+                    )
+                    .node(i));
+                }
+                steps.len().saturating_mul(4)
+            } else {
+                0
+            });
+            let count =
+                count.saturating_add(if let Node::SubtractParallelPassages { tools, .. } = node {
+                    if tools.len() > 32 {
+                        return Err(Error::new(
+                            "budget.passageTools",
+                            "document.validate",
+                            "At most 32 parallel tools are supported",
+                        )
+                        .node(i));
+                    }
+                    tools.len().saturating_mul(tools.len()).saturating_mul(8)
+                } else {
+                    0
+                });
             let count = count.saturating_add(
                 if let Node::Union { other, .. }
                 | Node::Intersect { other, .. }
@@ -1249,6 +1337,41 @@ impl Request {
                             .map_err(refusal)?,
                     ))
                 }
+
+                Node::SubtractParallelPassages {
+                    base,
+                    tools,
+                    separation,
+                    feature,
+                } => solid_operations::passages(
+                    &models[base as usize],
+                    base,
+                    tools,
+                    separation,
+                    feature,
+                    &labels,
+                    self.separation,
+                    i,
+                )?,
+                Node::SubtractBore {
+                    base,
+                    entry,
+                    direction,
+                    steps,
+                    separation,
+                    feature,
+                } => solid_operations::bore(
+                    &models[base as usize],
+                    base,
+                    entry,
+                    direction,
+                    steps,
+                    separation,
+                    feature,
+                    &labels,
+                    self.separation,
+                    i,
+                )?,
 
                 Node::SubtractThroughCylinder {
                     base,
