@@ -11,4 +11,4 @@ publish = false
 workspace = true
 
 [dependencies]
-exedra = { features = ["compile", "std"], workspace = true }
+exedra = { features = ["analytic", "compile", "std"], workspace = true }
