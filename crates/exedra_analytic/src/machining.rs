@@ -22,6 +22,12 @@ use crate::geometry::{Curve, GeometryError, ParameterDomain, ParameterRange, Sur
 use alloc::vec::Vec;
 use exedra_math::{Placement3, add, cross, dot, scale, sub};
 
+mod stepped;
+pub use stepped::{
+    BoreDepth, BoreError, BoreReport, BoreResult, BoreStep, BoreTool, subtract_bore,
+    subtract_bore_with_roles,
+};
+
 /// Infinite circular cylinder used to remove a through passage.
 #[derive(Clone, Debug, PartialEq)]
 pub struct CylinderTool {
@@ -922,6 +928,196 @@ mod tests {
                 .collect(),
         };
         Body::try_from_parts(parts, &ValidationPolicy { max_gap: 1e-9 }).unwrap()
+    }
+    fn realized_volume(mesh: &exedra_mesh::Mesh) -> f64 {
+        mesh.faces()
+            .map(|face| {
+                let p: Vec<_> = mesh
+                    .face_loop(face)
+                    .map(|c| {
+                        mesh.vertex_position(mesh.from_vertex(c).unwrap())
+                            .unwrap()
+                            .map(f64::from)
+                    })
+                    .collect();
+                dot(p[0], cross(p[1], p[2])) / 6.0
+            })
+            .sum()
+    }
+    #[test]
+    fn blind_and_stepped_bores_share_native_shoulders_and_keep_exact_integrals() {
+        for reverse in [false, true] {
+            let entry = if reverse { [0.0, 0.0, 10.0] } else { [0.0; 3] };
+            let direction = [0.0, 0.0, if reverse { -1.0 } else { 1.0 }];
+            for through in [false, true] {
+                let steps = [
+                    BoreStep {
+                        radius: 5.0,
+                        end: BoreDepth::ToDepth(2.0),
+                    },
+                    BoreStep {
+                        radius: 3.0,
+                        end: if through {
+                            BoreDepth::Through
+                        } else {
+                            BoreDepth::ToDepth(7.0)
+                        },
+                    },
+                ];
+                let tool = BoreTool::new(entry, direction, &steps).unwrap();
+                let source = stock();
+                let before = source.clone();
+                let result = subtract_bore(&source, &tool, &MachiningPolicy::default()).unwrap();
+                assert_eq!(source, before);
+                assert!(result.body.is_closed());
+                assert_eq!(result.report.walls.len(), 2);
+                assert_eq!(result.report.shoulders.len(), 1);
+                assert_eq!(result.report.rims.len(), 4);
+                assert_eq!(result.report.floor.is_some(), !through);
+                assert_eq!(result.report.exit.is_some(), through);
+                let removed =
+                    core::f64::consts::PI * (50.0 + 9.0 * if through { 8.0 } else { 5.0 });
+                assert!((result.report.removed_volume - removed).abs() < 1e-10);
+                let walls = core::f64::consts::TAU * (10.0 + 3.0 * if through { 8.0 } else { 5.0 });
+                let area = walls
+                    + core::f64::consts::PI * (16.0 + if through { -9.0 } else { 9.0 } - 25.0);
+                assert!((result.report.surface_area_delta - area).abs() < 1e-10);
+                for &face in result
+                    .report
+                    .walls
+                    .iter()
+                    .chain(&result.report.shoulders)
+                    .chain(result.report.floor.iter())
+                {
+                    assert!(result.body.has_explicit_trims(face));
+                }
+                for tolerance in [0.03, 0.005] {
+                    let realized = result
+                        .body
+                        .realize(
+                            Placement3::IDENTITY,
+                            &crate::realize::RealizationPolicy {
+                                tolerance,
+                                ..Default::default()
+                            },
+                        )
+                        .unwrap();
+                    assert!(realized.mesh.validate_deep().is_empty());
+                    assert!(realized.mesh.boundary_loops().unwrap().is_empty());
+                    assert!(realized.report.within_tolerance(), "{:?}", realized.report);
+                    let difference = (realized_volume(&realized.mesh) - (24000.0 - removed)).abs();
+                    assert!(difference < 5.0, "{difference}");
+                }
+            }
+        }
+    }
+    #[test]
+    fn stepped_bores_accept_oblique_entries_nonparallel_exits_and_later_disjoint_cuts() {
+        let wedge = crate::halfspace::intersect_half_space(
+            &stock(),
+            &crate::halfspace::HalfSpace::new([0.0, 0.0, 7.0], [-0.15, 0.1, 1.0]).unwrap(),
+            &crate::halfspace::ClipPolicy::default(),
+        )
+        .unwrap()
+        .body;
+        for sign in [-1.0, 1.0] {
+            let entry = if sign > 0.0 {
+                [0.0; 3]
+            } else {
+                [0.0, 0.0, 7.0]
+            };
+            for end in [BoreDepth::ToDepth(5.0), BoreDepth::Through] {
+                let tool = BoreTool::new(
+                    entry,
+                    [sign * 0.2, sign * 0.1, sign],
+                    &[
+                        BoreStep {
+                            radius: 3.0,
+                            end: BoreDepth::ToDepth(1.5),
+                        },
+                        BoreStep { radius: 1.5, end },
+                    ],
+                )
+                .unwrap();
+                let result = subtract_bore(&wedge, &tool, &MachiningPolicy::default()).unwrap();
+                let realized = result
+                    .body
+                    .realize(
+                        Placement3::IDENTITY,
+                        &crate::realize::RealizationPolicy {
+                            tolerance: 0.02,
+                            ..Default::default()
+                        },
+                    )
+                    .unwrap();
+                assert!(realized.mesh.validate_deep().is_empty());
+                assert!(realized.mesh.boundary_loops().unwrap().is_empty());
+                assert!(realized.report.within_tolerance());
+                let next = BoreTool::new(
+                    [-15.0, 0.0, 0.0],
+                    [0.0, 0.0, 1.0],
+                    &[BoreStep {
+                        radius: 1.0,
+                        end: BoreDepth::ToDepth(2.0),
+                    }],
+                )
+                .unwrap();
+                let again =
+                    subtract_bore(&result.body, &next, &MachiningPolicy::default()).unwrap();
+                assert_eq!(
+                    &again.body.edges()[..result.body.edges().len()],
+                    result.body.edges()
+                );
+                assert!(again.body.is_closed());
+            }
+        }
+    }
+    #[test]
+    fn blind_bore_refusals_are_indexed_and_leave_the_source_unchanged() {
+        let source = stock();
+        let before = source.clone();
+        for (entry, depth) in [
+            ([0.0; 3], 10.0),
+            ([0.0; 3], 10.0 - 1e-9),
+            ([0.0, 0.0, -1.0], 4.0),
+        ] {
+            let tool = BoreTool::new(
+                entry,
+                [0.0, 0.0, 1.0],
+                &[BoreStep {
+                    radius: 2.0,
+                    end: BoreDepth::ToDepth(depth),
+                }],
+            )
+            .unwrap();
+            let error = subtract_bore(&source, &tool, &MachiningPolicy::default()).unwrap_err();
+            match &error {
+                BoreError::DepthClearance { step, .. } => {
+                    assert_eq!(*step, 0);
+                    let message = alloc::format!("{error}");
+                    assert!(message.contains("bore step 1"));
+                    assert!(message.contains("model units"));
+                }
+                BoreError::Entry { face, .. } => assert!(face.index() < source.faces().len()),
+                _ => panic!("unexpected bore refusal: {error}"),
+            }
+        }
+        let tool = BoreTool::new(
+            [0.0; 3],
+            [0.0, 0.0, 1.0],
+            &[
+                BoreStep {
+                    radius: 2.0,
+                    end: BoreDepth::ToDepth(4.0),
+                },
+                BoreStep {
+                    radius: 2.0,
+                    end: BoreDepth::Through,
+                },
+            ],
+        );
+        assert!(matches!(tool, Err(BoreError::InvalidStep { step: 1 })));
+        assert_eq!(source, before);
     }
     #[test]
     fn nonparallel_exits_keep_complete_trim_correspondence_and_exact_integrals() {
