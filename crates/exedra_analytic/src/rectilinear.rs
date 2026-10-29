@@ -15,6 +15,8 @@
 //! rejected by oriented edge incidence and connected vertex links. Disconnected
 //! positive-volume components and closed cavities are represented explicitly and
 //! counted in the report; consumers requiring one shell must inspect those counts.
+//! [`validate_material`] independently certifies one connected rectilinear material
+//! region with disjoint cavity shells, matching every input face to that boundary.
 use crate::body::{
     Body, BodyError, BodyParts, BoundaryLoop, Coedge, Edge, EdgeId, Face, FaceId, LoopId, Sense,
     ValidationPolicy, VertexId,
@@ -25,6 +27,12 @@ use alloc::{
     vec::Vec,
 };
 use exedra_math::{Placement3, sub};
+
+mod grid;
+mod material;
+pub use material::{
+    MaterialValidationError, MaterialValidationPolicy, MaterialValidationReport, validate_material,
+};
 
 type GridVertex = [usize; 3];
 type GridEdge = (GridVertex, GridVertex);
@@ -254,95 +262,24 @@ pub fn boolean_rectilinear<LF, LE, RF, RE>(
     };
     let left_faces = inspect(left, Operand::Left, &validation)?;
     let right_faces = inspect(right, Operand::Right, &validation)?;
-    let mut coordinates: [Vec<f64>; 3] = core::array::from_fn(|_| Vec::new());
-    for point in used_points(left).chain(used_points(right)) {
-        for axis in 0..3 {
-            coordinates[axis].push(point[axis]);
-        }
-    }
-    let magnitude = coordinates
-        .iter()
-        .flatten()
-        .map(|v| v.abs())
-        .fold(0.0, f64::max);
-    let arithmetic = 512.0 * f64::EPSILON * magnitude;
-    if !arithmetic.is_finite() || arithmetic > policy.geometry_gap {
-        return Err(RectilinearError::NumericLimit);
-    }
-    for (axis, values) in coordinates.iter_mut().enumerate() {
-        values.sort_by(f64::total_cmp);
-        values.dedup_by(|a, b| *a == *b);
-        for pair in values.windows(2) {
-            let distance = pair[1] - pair[0];
-            if !distance.is_finite() {
-                return Err(RectilinearError::NumericLimit);
-            }
-            if distance < policy.minimum_spacing + arithmetic {
-                return Err(RectilinearError::PlaneSpacing {
-                    axis,
-                    lower: pair[0],
-                    upper: pair[1],
-                    required: policy.minimum_spacing + arithmetic,
-                });
-            }
-        }
-        if values.len() < 2 {
-            return Err(RectilinearError::NumericLimit);
-        }
-    }
-    let planes = coordinates.each_ref().map(Vec::len);
-    let dimensions = planes.map(|n| n - 1);
-    let cells = dimensions[0]
-        .checked_mul(dimensions[1])
-        .and_then(|n| n.checked_mul(dimensions[2]));
-    let Some(cells) = cells else {
-        return Err(RectilinearError::CellBudget {
-            required: None,
-            maximum: policy.max_cells,
-        });
-    };
-    if cells > policy.max_cells
-        || cells
-            .checked_mul(24)
-            .is_none_or(|n| u32::try_from(n).is_err())
-    {
-        return Err(RectilinearError::CellBudget {
-            required: Some(cells),
-            maximum: policy.max_cells,
-        });
-    }
     let source_faces = left_faces
         .len()
         .checked_add(right_faces.len())
         .ok_or(RectilinearError::NumericLimit)?;
-    let face_test_bound = cells
-        .checked_mul(source_faces)
-        .and_then(|n| n.checked_mul(9));
-    let Some(face_test_bound) = face_test_bound.filter(|&n| n <= policy.max_face_tests) else {
-        return Err(RectilinearError::FaceTestBudget {
-            required: face_test_bound,
-            maximum: policy.max_face_tests,
-        });
-    };
+    let grid::Grid {
+        coordinates,
+        references,
+        planes,
+        dimensions,
+        cells,
+        arithmetic,
+        face_test_bound,
+    } = grid::Grid::new(
+        used_points(left).chain(used_points(right)),
+        policy,
+        source_faces,
+    )?;
     let mut face_tests = cells * source_faces * 3;
-    let references: [Vec<f64>; 3] = coordinates
-        .each_ref()
-        .map(|v| {
-            v.windows(2)
-                .map(|p| {
-                    let m = p[0] + (p[1] - p[0]) * 0.5;
-                    if !m.is_finite() || m <= p[0] || m >= p[1] {
-                        Err(RectilinearError::NumericLimit)
-                    } else {
-                        Ok(m)
-                    }
-                })
-                .collect::<Result<Vec<_>, _>>()
-        })
-        .into_iter()
-        .collect::<Result<Vec<_>, _>>()?
-        .try_into()
-        .map_err(|_| RectilinearError::NumericLimit)?;
     let mut material = alloc::vec![false;cells];
     let mut material_cells = 0;
     let mut volume = 0.0;
@@ -1725,5 +1662,216 @@ mod tests {
             .unwrap();
         assert!(mesh.mesh.validate_deep().is_empty());
         assert!(mesh.mesh.boundary_loops().unwrap().is_empty());
+    }
+    fn join_shells(bodies: impl IntoIterator<Item = Body>) -> Body {
+        let mut parts = BodyParts::default();
+        for body in bodies {
+            let other = body.into_parts();
+            let vo = crate::usize_to_u32(parts.vertices.len());
+            let eo = crate::usize_to_u32(parts.edges.len());
+            let lo = crate::usize_to_u32(parts.loops.len());
+            parts.vertices.extend(other.vertices);
+            parts.edges.extend(other.edges.into_iter().map(|mut e| {
+                e.start.0 += vo;
+                e.end.0 += vo;
+                e
+            }));
+            parts.loops.extend(other.loops.into_iter().map(|mut l| {
+                for c in &mut l.coedges {
+                    c.edge.0 += eo;
+                }
+                l
+            }));
+            parts.faces.extend(other.faces.into_iter().map(|mut f| {
+                for l in &mut f.loops {
+                    l.0 += lo;
+                }
+                f
+            }));
+        }
+        Body::try_from_parts(parts, &ValidationPolicy { max_gap: 1e-9 }).unwrap()
+    }
+    fn inward(body: Body) -> Body {
+        let mut parts = body.into_parts();
+        parts.trims.clear();
+        for face in &mut parts.faces {
+            face.sense = if face.sense == Sense::Forward {
+                Sense::Reverse
+            } else {
+                Sense::Forward
+            };
+        }
+        for l in &mut parts.loops {
+            l.coedges.reverse();
+            for c in &mut l.coedges {
+                c.reversed = !c.reversed;
+            }
+        }
+        Body::try_from_parts(parts, &ValidationPolicy { max_gap: 1e-9 }).unwrap()
+    }
+    #[test]
+    fn material_certificate_checks_nonconvex_outer_and_multiple_cavities() {
+        let base = block([0.0; 3], [10.0; 3]);
+        let lug = block([10.0, 2.0, 0.0], [14.0, 8.0, 10.0]);
+        let outer = boolean(&base, &lug, BooleanOperation::Union);
+        let a = boolean(
+            &outer.body,
+            &block([2.0; 3], [4.0, 4.0, 8.0]),
+            BooleanOperation::Difference,
+        );
+        let body = boolean(
+            &a.body,
+            &block([6.0, 6.0, 2.0], [8.0; 3]),
+            BooleanOperation::Difference,
+        )
+        .body;
+        let report = validate_material(&body, &MaterialValidationPolicy::default()).unwrap();
+        assert_eq!(report.boundary.shells.len(), 3);
+        assert_eq!(report.void_shells.len(), 2);
+        assert_eq!(report.volume, 1192.0);
+        assert_eq!(report.surface_area, 840.0);
+        assert!(report.volume_bounds[0] <= 1192.0 && report.volume_bounds[1] >= 1192.0);
+        assert!(report.surface_area_bounds[0] <= 840.0 && report.surface_area_bounds[1] >= 840.0);
+        assert!(report.face_tests <= report.face_test_bound);
+        let mut historic = body.into_parts();
+        historic.vertices.push([1e100; 3]);
+        let historic = Body::try_from_parts(historic, &ValidationPolicy { max_gap: 1e-9 }).unwrap();
+        assert_eq!(
+            validate_material(&historic, &MaterialValidationPolicy::default())
+                .unwrap()
+                .volume,
+            1192.0
+        );
+    }
+    #[test]
+    fn material_certificate_refuses_wrong_nesting_sense_and_disconnected_material() {
+        let policy = MaterialValidationPolicy::default();
+        let outer = || block([0.0; 3], [10.0; 3]);
+        let cavity = || inward(block([2.0; 3], [8.0; 3]));
+        for body in [
+            join_shells([outer(), block([2.0; 3], [8.0; 3])]),
+            join_shells([outer(), inward(block([20.0; 3], [24.0; 3]))]),
+            join_shells([outer(), cavity(), inward(block([3.0; 3], [7.0; 3]))]),
+            join_shells([outer(), cavity(), block([3.0; 3], [7.0; 3])]),
+            join_shells([outer(), block([20.0; 3], [24.0; 3])]),
+        ] {
+            assert!(validate_material(&body, &policy).is_err());
+        }
+    }
+    #[test]
+    fn material_certificate_refuses_shell_face_edge_and_vertex_contacts() {
+        for (min, max) in [
+            ([5.0, 3.0, 3.0], [8.0, 5.0, 5.0]),
+            ([5.0, 6.0, 3.0], [8.0, 8.0, 5.0]),
+            ([5.0, 6.0, 6.0], [8.0, 8.0, 8.0]),
+        ] {
+            let body = join_shells([
+                block([0.0; 3], [10.0; 3]),
+                inward(block([2.0; 3], [5.0, 6.0, 6.0])),
+                inward(block(min, max)),
+            ]);
+            assert!(
+                validate_material(&body, &MaterialValidationPolicy::default()).is_err(),
+                "{min:?}"
+            );
+        }
+    }
+    #[test]
+    fn material_certificate_checks_spacing_scale_and_each_work_budget() {
+        let body = join_shells([
+            block([0.0; 3], [10.0; 3]),
+            inward(block([2.0; 3], [8.0; 3])),
+        ]);
+        let mut policy = MaterialValidationPolicy::default();
+        policy.arrangement.max_cells = 1;
+        assert!(matches!(
+            validate_material(&body, &policy),
+            Err(MaterialValidationError::Arrangement(
+                RectilinearError::CellBudget { .. }
+            ))
+        ));
+        policy = MaterialValidationPolicy::default();
+        policy.arrangement.max_face_tests = 1;
+        assert!(matches!(
+            validate_material(&body, &policy),
+            Err(MaterialValidationError::Arrangement(
+                RectilinearError::FaceTestBudget { .. }
+            ))
+        ));
+        policy = MaterialValidationPolicy::default();
+        policy.max_cell_scratch_bytes = 1;
+        assert!(matches!(
+            validate_material(&body, &policy),
+            Err(MaterialValidationError::ScratchBudget { .. })
+        ));
+        policy = MaterialValidationPolicy::default();
+        policy.boundary.max_coedges = 1;
+        assert!(matches!(
+            validate_material(&body, &policy),
+            Err(MaterialValidationError::Boundary(
+                crate::validation::BoundaryValidationError::WorkLimit { .. }
+            ))
+        ));
+        let thin = block([0.0; 3], [1e-7, 1.0, 1.0]);
+        assert!(matches!(
+            validate_material(&thin, &MaterialValidationPolicy::default()),
+            Err(MaterialValidationError::Arrangement(
+                RectilinearError::PlaneSpacing { .. }
+            ))
+        ));
+        let huge = block([1e9, 0.0, 0.0], [1e9 + 2.0, 3.0, 4.0]);
+        assert!(matches!(
+            validate_material(&huge, &MaterialValidationPolicy::default()),
+            Err(MaterialValidationError::UncertifiedTrim { .. })
+        ));
+        let translated = block([1000.0, 0.0, 0.0], [1002.0, 3.0, 4.0]);
+        let mut policy = MaterialValidationPolicy::default();
+        policy.arrangement.geometry_gap = 1e-14;
+        assert!(matches!(
+            validate_material(&translated, &policy),
+            Err(MaterialValidationError::Arrangement(
+                RectilinearError::NumericLimit
+            ))
+        ));
+        policy.arrangement.geometry_gap = 1e-9;
+        assert_eq!(
+            validate_material(&translated, &policy).unwrap().volume,
+            24.0
+        );
+    }
+    #[test]
+    fn cancelling_internal_face_patches_do_not_hide_behind_valid_cell_winding() {
+        let mut parts = block([2.0, 2.0, 5.0], [8.0, 8.0, 6.0]).into_parts();
+        let face = parts
+            .faces
+            .iter()
+            .find(|f| {
+                f.surface.frame().rows[2][2].abs() == 1.0 && f.surface.frame().rows[2][3] == 5.0
+            })
+            .unwrap()
+            .clone();
+        let mut reverse = face.clone();
+        reverse.sense = if face.sense == Sense::Forward {
+            Sense::Reverse
+        } else {
+            Sense::Forward
+        };
+        let mut ring = parts.loops[face.loops[0].index()].clone();
+        ring.coedges.reverse();
+        for c in &mut ring.coedges {
+            c.reversed = !c.reversed;
+        }
+        reverse.loops = alloc::vec![LoopId(crate::usize_to_u32(parts.loops.len()))];
+        parts.loops.push(ring);
+        parts.faces = alloc::vec![face, reverse];
+        parts.trims.clear();
+        let lamina = Body::try_from_parts(parts, &ValidationPolicy { max_gap: 1e-9 }).unwrap();
+        let body = join_shells([block([0.0; 3], [10.0; 3]), lamina]);
+        // This locally closed, oriented two-face shell cancels in every ray.
+        // Its internal patches must still fail the independent face match.
+        assert!(matches!(
+            validate_material(&body, &MaterialValidationPolicy::default()),
+            Err(MaterialValidationError::FaceTransition { .. })
+        ));
     }
 }

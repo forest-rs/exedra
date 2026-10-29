@@ -60,6 +60,18 @@ allowance, halfspace disagreement and work counts. Curved faces, cavities and
 multiple material components are outside this certificate. Complete trim checks
 alone never establish global face non-intersection or shell/material containment.
 
+`rectilinear::validate_material` establishes a separate bounded whole-material
+certificate for axis-aligned plane/line boundaries. It checks every exact
+coordinate-plane cell with all three ray windings, matches every authored face
+patch to one outward material transition, and checks geometric boundary links
+and disjoint shell ownership. It identifies one connected material region, its
+outer shell and distinct closed voids without constructing a Boolean or mesh.
+Duplicate/internal cancelling patches, touching or nested void shells and
+material islands refuse explicitly. Native trim, cell, face-scan and flat scratch
+budgets are independent; the report includes volume/area enclosures, arithmetic
+allowance and link/scratch bytes. Other support families remain outside this
+certificate, and unresolved local trim evidence cannot become a global claim.
+
 The extrusion, revolution, sweep and loft constructors and planar shell builder
 own this shared model and expose it through `body()`. A cloned body can outlive
 its construction record. Legacy constructors may omit explicit trim records;
