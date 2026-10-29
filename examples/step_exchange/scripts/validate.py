@@ -88,7 +88,7 @@ def validate(folder, fixture):
     assert not transfer_checks, transfer_checks
     shape = reader.OneShape()
     assert not shape.IsNull()
-    assert BRepCheck_Analyzer(shape).IsValid(), "invalid imported boundary"
+    assert BRepCheck_Analyzer(shape, True, False, True).IsValid(), "invalid imported boundary"
     assert count(shape, TopAbs_SOLID) == 1
     assert count(shape, TopAbs_SHELL) == 1
     for key, kind in [("faces", TopAbs_FACE), ("edges", TopAbs_EDGE), ("vertices", TopAbs_VERTEX)]:
@@ -96,11 +96,13 @@ def validate(folder, fixture):
     # OCCT's STEP reader uses millimetres; metres must scale all measures.
     scale = fixture["metres_per_unit"] * 1000.0
     volume = GProp_GProps()
-    BRepGProp.VolumeProperties_s(shape, volume)
+    # Request adaptive integration explicitly: the default non-adaptive overload
+    # can miss this harness's tolerance on oblique elliptic openings.
+    volume_integration_error = BRepGProp.VolumeProperties_s(shape, volume, 1e-12)
     expected_volume = fixture["native_volume"] * scale**3
     close(volume.Mass(), expected_volume, absolute=0.0)
     area = GProp_GProps()
-    BRepGProp.SurfaceProperties_s(shape, area)
+    area_integration_error = BRepGProp.SurfaceProperties_s(shape, area, 1e-12)
     expected_area = fixture["native_area"] * scale**2
     close(area.Mass(), expected_area, absolute=0.0)
     centroid = volume.CentreOfMass().Coord()
@@ -168,7 +170,7 @@ def validate(folder, fixture):
     assert fixture["max_deviation"] <= fixture["uncertainty"]
     return {"file": fixture["file"], "valid": True, "solids": 1, "shells": 1,
             "faces": fixture["faces"], "edges": fixture["edges"], "vertices": fixture["vertices"],
-            "volume_mm3": volume.Mass(), "area_mm2": area.Mass(),
+            "volume_mm3": volume.Mass(), "area_mm2": area.Mass(), "volume_integration_error_estimate":volume_integration_error, "area_integration_error_estimate":area_integration_error,
             "volume_relative_error":abs(volume.Mass()/expected_volume-1.0),"area_relative_error":abs(area.Mass()/expected_area-1.0),
             "centroid_mm":list(centroid),"centroid_error_mm":centroid_error,"export_deviation_mm":fixture["max_deviation"]*scale,"native_support_gap_mm":(fixture["max_native_support_gap"]*scale if "max_native_support_gap" in fixture else None),"frame_roundoff_bound_mm":(fixture["frame_roundoff_bound"]*scale if "frame_roundoff_bound" in fixture else None),"parameter_roundoff_bound_mm":(fixture["parameter_roundoff_bound"]*scale if "parameter_roundoff_bound" in fixture else None),"bounds_mm": actual_bounds,"bounds_method":bounds_method,"raw_shape_bounds_mm":shape_bounds,
             "product_name": product_name, "serialized_topology":serialized, "surface_counts":surface_counts, "bounds_comparison_tolerance_mm":bounds_comparison_tolerance, "model_checks": model_checks, "transfer_checks": transfer_checks, "material_witnesses": witnesses}
@@ -177,7 +179,15 @@ def validate(folder, fixture):
 folder = pathlib.Path(sys.argv[1] if len(sys.argv) > 1 else "step-fixtures")
 try:
     fixtures = json.loads((folder / "expected.json").read_text())
-    report = {"status": "passed", "reader": "OCCT via cadquery-ocp", "reader_package_version": importlib.metadata.version("cadquery-ocp"), "fixtures": [validate(folder, f) for f in fixtures]}
+    for reader_package in ("cadquery-ocp", "cadquery-ocp-novtk"):
+        try:
+            reader_version = importlib.metadata.version(reader_package)
+            break
+        except importlib.metadata.PackageNotFoundError:
+            continue
+    else:
+        raise RuntimeError("OCP imported, but its installed distribution was not found")
+    report = {"status": "passed", "reader": "OCCT via " + reader_package, "reader_package": reader_package, "reader_package_version": reader_version, "fixtures": [validate(folder, f) for f in fixtures]}
 except Exception as error:
     print(json.dumps({"status": "failed", "reason": str(error)}))
     raise
