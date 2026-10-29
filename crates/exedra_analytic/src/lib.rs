@@ -36,6 +36,7 @@ pub mod realize;
 pub mod rectilinear;
 pub mod revolve;
 pub mod sweep;
+pub mod validation;
 pub use planar::{
     AnalyticFaceId, AnalyticLoopId, AnalyticShell, AnalyticShellBuilder, AnalyticVertexId,
     BuildError, EditError, PlanarFace, RectFrameParams, RectOpeningParams, RegionId,
