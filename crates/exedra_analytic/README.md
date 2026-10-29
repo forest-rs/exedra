@@ -41,6 +41,25 @@ Domain bounds and chart closure are checked independently of model-space gaps.
 `Body::map_roles` consumes and remaps metadata while moving all retained geometry,
 topology and trim tables unchanged.
 
+`Body::validate_boundary` independently checks used-loop ownership, opposite edge
+pairing and connected vertex links. A pinched vertex shared by otherwise closed
+shells is rejected; periodic seam endpoints and collapsed poles are handled
+without inventing extra physical edges. Its report identifies connected shells,
+their Euler characteristics, and the arrangement status of every face. Straight
+chart polygons use profile crossing/separation/nesting checks. Planar full
+ellipses and annuli use whole-curve separation/containment bounds; cylindrical
+walls use the complete difference between their harmonic rim functions. A bound
+that cannot establish separation is explicitly unsupported, not a successful
+certificate. Native chart units and work limits are explicit in the policy.
+
+`Body::validate_convex_solid` additionally establishes the bounded single-shell
+planar convex subset: convex polygon faces, sphere topology, distinct geometric
+vertex identities, all vertices behind every outward support plane, a strictly
+interior witness and positive signed volume. The report retains the model-gap
+allowance, halfspace disagreement and work counts. Curved faces, cavities and
+multiple material components are outside this certificate. Complete trim checks
+alone never establish global face non-intersection or shell/material containment.
+
 The extrusion, revolution, sweep and loft constructors and planar shell builder
 own this shared model and expose it through `body()`. A cloned body can outlive
 its construction record. Legacy constructors may omit explicit trim records;
