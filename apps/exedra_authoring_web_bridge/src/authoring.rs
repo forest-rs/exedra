@@ -173,9 +173,22 @@ enum Model {
     Body {
         body: exedra_analytic::body::Body<Vec<SegTag>>,
         frame: Placement3,
+        machining: Vec<AuthoredMachining>,
+        integrals: Option<[f64; 2]>,
     },
 }
 impl Model {
+    fn integral_values(&self) -> Option<[f64; 2]> {
+        match self {
+            Self::Extrusion(v) => Some([v.volume(), v.surface_area()]),
+            Self::Revolution(v) => Some([v.volume(), v.surface_area()]),
+            Self::Sweep(v) => Some([v.volume(), v.surface_area()]),
+            Self::BoredPlate(v) => Some([v.volume(), v.surface_area()]),
+            Self::Loft(_) => None,
+            Self::Body { integrals, .. } => *integrals,
+        }
+        .filter(|values| values.iter().all(|v| v.is_finite() && *v > 0.0))
+    }
     fn geometry(&self) -> NativeGeometryRef<'_> {
         match self {
             Self::Extrusion(v) => NativeGeometryRef::Extrusion(v),
@@ -183,7 +196,7 @@ impl Model {
             Self::Sweep(v) => NativeGeometryRef::Sweep(v),
             Self::Loft(v) => NativeGeometryRef::Loft(v),
             Self::BoredPlate(v) => NativeGeometryRef::BoredPlate(v),
-            Self::Body { body, frame } => NativeGeometryRef::Body {
+            Self::Body { body, frame, .. } => NativeGeometryRef::Body {
                 body,
                 frame: *frame,
             },
@@ -207,7 +220,7 @@ impl Model {
             Self::Sweep(v) => NativeSource::from(v),
             Self::Loft(v) => NativeSource::from(v),
             Self::BoredPlate(v) => NativeSource::from(*v),
-            Self::Body { body, frame } => {
+            Self::Body { body, frame, .. } => {
                 NativeSource::from_body(body, frame).expect("authoring checked body placement")
             }
         }
@@ -262,6 +275,15 @@ enum Node {
         #[serde(default)]
         placement: InputPlacement,
     },
+    SubtractThroughCylinder {
+        base: u32,
+        point: [f64; 3],
+        direction: [f64; 3],
+        radius: f64,
+        separation: f64,
+        feature: Option<String>,
+    },
+
     ThroughBore {
         base: u32,
         point: [f64; 3],
@@ -333,12 +355,26 @@ pub(crate) struct Request {
     nodes: Vec<Node>,
     roots: Vec<Root>,
 }
+#[derive(Clone, Debug)]
+pub(crate) struct AuthoredMachining {
+    pub report: exedra_analytic::machining::MachiningReport,
+    pub point: [f64; 3],
+    pub direction: [f64; 3],
+    pub radius: f64,
+    pub feature: Option<String>,
+}
+#[derive(Clone, Debug)]
+pub(crate) struct MachiningEvidence {
+    pub reports: Vec<AuthoredMachining>,
+    pub integrals: Option<[f64; 2]>,
+}
 #[derive(Debug)]
 pub(crate) struct Built {
     pub units: Units,
     pub separation: f64,
     pub roots: Vec<(String, NativeSource)>,
     pub names: BTreeMap<u32, String>,
+    pub machining: BTreeMap<String, MachiningEvidence>,
 }
 fn label(value: &str) -> bool {
     !value.trim().is_empty() && value.len() <= 128
@@ -674,7 +710,8 @@ impl Request {
                     }
                     (sections.iter().map(|s| s.profile).collect(), None, 1)
                 }
-                Node::ThroughBore { base, feature, .. } => {
+                Node::ThroughBore { base, feature, .. }
+                | Node::SubtractThroughCylinder { base, feature, .. } => {
                     if let Some(feature) = feature {
                         if !label(feature) {
                             return Err(Error::new(
@@ -757,7 +794,10 @@ impl Request {
                 .saturating_add(
                     if matches!(
                         node,
-                        Node::Pocket { .. } | Node::AxialFinish { .. } | Node::ThroughBore { .. }
+                        Node::Pocket { .. }
+                            | Node::AxialFinish { .. }
+                            | Node::ThroughBore { .. }
+                            | Node::SubtractThroughCylinder { .. }
                     ) {
                         body_counts[parent.expect("feature parent") as usize]
                     } else {
@@ -1005,6 +1045,8 @@ impl Request {
                             .lower(&labels, self.separation)
                             .map_err(|e| failure(e.code, e.operation, e.message))?,
                         frame,
+                        machining: Vec::new(),
+                        integrals: None,
                     }
                 }
 
@@ -1076,6 +1118,95 @@ impl Request {
                             )
                             .map_err(refusal)?,
                     ))
+                }
+
+                Node::SubtractThroughCylinder {
+                    base,
+                    point,
+                    direction,
+                    radius,
+                    separation,
+                    feature,
+                } => {
+                    let source = &models[base as usize];
+                    use exedra_analytic::machining::{
+                        CylinderTool, MachiningError, MachiningPolicy,
+                        subtract_through_cylinder_with_roles,
+                    };
+                    let refusal = |error: MachiningError| {
+                        let code=match &error {
+                                MachiningError::InvalidPolicy=>"machining.policy",
+                                MachiningError::OpenBoundary=>"machining.openBoundary",
+                                MachiningError::UnsupportedFace{..}=>"machining.unsupportedFace",
+                                MachiningError::Clearance{..}=>"machining.clearance",
+                                MachiningError::ExitCount{..}=>"machining.exitCount",
+                                MachiningError::NonparallelExits=>"machining.nonparallelExits",
+                                MachiningError::NumericLimit=>"machining.numericLimit",
+                                MachiningError::Section(exedra_analytic::geometry::intersection::SectionError::NearParallel{..})=>"machining.nearParallel",
+                                _=>"machining.invalid",
+                            };
+                        let mut error_context =
+                            failure(code, "solid.subtractThroughCylinder", error.to_string());
+                        error_context.context_mut().feature = feature.clone();
+                        match error {
+                                MachiningError::UnsupportedFace{face}=>error_context.context_mut().face=Some(face.0),
+                                MachiningError::Clearance{face,bound,required}=>{let context=error_context.context_mut();context.face=Some(face.0);context.clearance=Some(bound);context.required_clearance=Some(required);},
+                                MachiningError::Section(exedra_analytic::geometry::intersection::SectionError::NearParallel{axis_dot,minimum})=>{let context=error_context.context_mut();context.axis_dot=Some(axis_dot);context.minimum_axis_dot=Some(minimum);},
+                                _=>{},
+                            }
+                        error_context
+                    };
+                    let tool = CylinderTool::new(point, direction, radius).map_err(|error| {
+                        failure(
+                            "machining.tool",
+                            "solid.subtractThroughCylinder",
+                            error.to_string(),
+                        )
+                    })?;
+                    let role = feature
+                        .as_ref()
+                        .map(|name| labels[name])
+                        .into_iter()
+                        .collect();
+                    let result = subtract_through_cylinder_with_roles(
+                        &source.geometry().to_body(),
+                        &tool,
+                        &MachiningPolicy {
+                            separation,
+                            geometry_gap: self.separation,
+                            min_axis_dot: 0.05,
+                        },
+                        role,
+                        (),
+                    )
+                    .map_err(refusal)?;
+                    let integrals = source
+                        .integral_values()
+                        .map(|[volume, area]| {
+                            [
+                                volume - result.report.removed_volume,
+                                area + result.report.surface_area_delta,
+                            ]
+                        })
+                        .filter(|values| values.iter().all(|v| v.is_finite() && *v > 0.0));
+                    let mut machining = if let Model::Body { machining, .. } = source {
+                        machining.clone()
+                    } else {
+                        Vec::new()
+                    };
+                    machining.push(AuthoredMachining {
+                        report: result.report,
+                        point,
+                        direction: tool.surface().frame().rows.map(|row| row[2]),
+                        radius,
+                        feature,
+                    });
+                    Model::Body {
+                        body: result.body,
+                        frame: source.geometry().frame(),
+                        machining,
+                        integrals,
+                    }
                 }
 
                 Node::Sweep {
@@ -1269,6 +1400,37 @@ impl Request {
             };
             models.push(solid);
         }
+        let machining_by_node: BTreeMap<_, _> = models
+            .iter()
+            .enumerate()
+            .filter_map(|(id, model)| {
+                if let Model::Body {
+                    machining,
+                    integrals,
+                    ..
+                } = model
+                    && !machining.is_empty()
+                {
+                    return Some((
+                        id,
+                        MachiningEvidence {
+                            reports: machining.clone(),
+                            integrals: *integrals,
+                        },
+                    ));
+                }
+                None
+            })
+            .collect();
+        let machining = self
+            .roots
+            .iter()
+            .filter_map(|root| {
+                machining_by_node
+                    .get(&(root.node as usize))
+                    .map(|evidence| (root.name.clone(), evidence.clone()))
+            })
+            .collect();
         let wanted: BTreeSet<_> = self.roots.iter().map(|r| r.node as usize).collect();
         let retained: BTreeMap<_, _> = models
             .into_iter()
@@ -1285,6 +1447,7 @@ impl Request {
             units: self.units,
             separation: self.separation,
             roots,
+            machining,
             names: labels
                 .into_iter()
                 .map(|(name, tag)| (tag.0, name))

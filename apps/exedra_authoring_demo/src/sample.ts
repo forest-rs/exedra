@@ -177,3 +177,33 @@ export function authorAngledBore(p:BoreParameters){
   const radians=p.angle*Math.PI/180;
   return {plate:plate.throughBore({point:[0,0,p.thickness/2],direction:[Math.sin(radians),0,Math.cos(radians)],radius:p.radius,separation:p.separation,feature:"bore"})};
 }
+
+export interface HousingParameters {
+  width:number;
+  bodyWidth:number;
+  height:number;
+  flangeDepth:number;
+  thickness:number;
+  passageRadius:number;
+  passageY:number;
+  passageAngle:number;
+  mountSpacing:number;
+  mountRadius:number;
+  portY:number;
+  portRadius:number;
+  clearance:number;
+}
+/** Ordinary polygon stock and four independent exact cylinder cuts.
+ * Every cut edits retained boundary geometry; features select generated faces.
+ */
+export function authorHousing(p:HousingParameters) {
+  const x=p.width/2,b=p.bodyWidth/2,y=p.height/2,shoulder=-y+p.flangeDepth;
+  const stock=extrude(profiles.polygon([[-x,-y],[x,-y],[x,shoulder],[b,shoulder],[b,y],[-b,y],[-b,shoulder],[-x,shoulder]]).tagged("stock"),{height:p.thickness});
+  const mountY=-y+p.flangeDepth/2;
+  const left=stock.subtractThroughCylinder({point:[-p.mountSpacing/2,mountY,p.thickness/2],direction:[0,0,1],radius:p.mountRadius,separation:p.clearance,feature:"left mount"});
+  const right=left.subtractThroughCylinder({point:[p.mountSpacing/2,mountY,p.thickness/2],direction:[0,0,1],radius:p.mountRadius,separation:p.clearance,feature:"right mount"});
+  const angle=p.passageAngle*Math.PI/180;
+  const passage=right.subtractThroughCylinder({point:[0,p.passageY,p.thickness/2],direction:[Math.sin(angle),0,Math.cos(angle)],radius:p.passageRadius,separation:p.clearance,feature:"main passage"});
+  const housing=passage.subtractThroughCylinder({point:[0,p.portY,p.thickness/2],direction:[0,0,1],radius:p.portRadius,separation:p.clearance,feature:"service port"});
+  return {housing};
+}

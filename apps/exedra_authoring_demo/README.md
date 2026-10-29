@@ -147,3 +147,16 @@ The maintained Wasm inventory checks exact analytic measures, emitted closed
 oriented meshes, unit normals, coarse/medium/fine accuracy, charted poles and
 explicit collapsed-vertex STEP correspondence. It also checks recovery from an
 invalid cap height and from a representable height too small to preserve its rim.
+
+The Machined housing sample authors a flanged polygon blank followed by four
+retained-body cylinder cuts. Thirteen independent controls cover stock, flange,
+main passage, two mounts, service port and material clearance. Selecting a named
+passage shows its exact native cylinder, local tool axis, radius, rim identities
+and certified clearance. Build, realization and STEP timings are actual SDK/Wasm
+calls. Intersecting/invalid edits preserve the last valid displayed model and
+prevent stale export. The generated-release-Wasm smoke suite checks every prior
+gallery case plus housing, independent parameter edits, selections across quality
+changes, STEP, failed drafts, repeated release and arbitrary native-body import
+with explicit face-local trims. Native archive layer save/reopen is currently a
+Rust `exedra_scene` adapter; this geometry view does not claim browser-native USD
+BRep editing or persistence.
