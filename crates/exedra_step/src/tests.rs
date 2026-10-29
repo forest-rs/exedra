@@ -533,3 +533,119 @@ fn certified_poles_map_to_vertices_and_regular_meridian_identity_survives() {
         }
     }
 }
+
+#[test]
+fn elliptic_rims_export_shared_exact_arc_chains_with_complete_correspondence() {
+    use exedra_analytic::machining::{CylinderTool, MachiningPolicy, subtract_through_cylinder};
+    let source = cube();
+    let result = subtract_through_cylinder(
+        &source,
+        &CylinderTool::new([0.5, 0.5, 0.0], [0.1, 0.15, 1.0], 0.1).unwrap(),
+        &MachiningPolicy::default(),
+    )
+    .unwrap();
+    let document =
+        export_body(&result.body, Placement3::IDENTITY, &StepOptions::default()).unwrap();
+    let map = &document.report.correspondence;
+    for rim in result.report.rims {
+        let entity = map.edge(rim).unwrap();
+        assert!(matches!(
+            entity,
+            StepEdgeEntity::CurveChain { count: 8, .. }
+        ));
+        let fragments = entity.curve_entities().collect::<Vec<_>>();
+        assert_eq!(fragments.len(), 8);
+        for fragment in fragments {
+            assert_eq!(
+                document
+                    .text
+                    .matches(&format!("*,*,#{},", fragment.0))
+                    .count(),
+                2,
+                "every fragment is shared by exactly two face occurrences"
+            );
+            assert!(
+                document
+                    .text
+                    .contains(&format!("#{}=EDGE_CURVE(", fragment.0))
+            );
+        }
+    }
+    assert_eq!(document.report.counts.vertices, 24);
+    assert_eq!(document.report.counts.edges, 29);
+    assert_eq!(document.report.counts.coedges, 58);
+    assert_eq!(document.text.matches("=VERTEX_POINT(").count(), 24);
+    assert_eq!(document.text.matches("=EDGE_CURVE(").count(), 29);
+    assert_eq!(document.text.matches("=ORIENTED_EDGE(").count(), 58);
+    assert_eq!(document.text.matches("=ELLIPSE(").count(), 2);
+    // The additional exact topology participates in the ordinary atomic budget.
+    let options = StepOptions {
+        max_entities: document.report.counts.entities - 1,
+        ..Default::default()
+    };
+    assert!(matches!(
+        export_body(&result.body, Placement3::IDENTITY, &options),
+        Err(StepError::Budget {
+            resource: "entities",
+            ..
+        })
+    ));
+}
+
+#[test]
+fn ellipse_fragment_policy_tracks_physical_units_and_exact_equal_axes() {
+    use exedra_analytic::machining::{CylinderTool, MachiningPolicy, subtract_through_cylinder};
+    let source = cube();
+    let oblique = subtract_through_cylinder(
+        &source,
+        &CylinderTool::new([0.5, 0.5, 0.0], [0.1, 0.15, 1.0], 0.1).unwrap(),
+        &MachiningPolicy::default(),
+    )
+    .unwrap();
+    for (units, count) in [(LengthUnit::Millimetre, 8), (LengthUnit::Metre, 16)] {
+        let doc = export_body(
+            &oblique.body,
+            Placement3::IDENTITY,
+            &StepOptions {
+                units,
+                ..Default::default()
+            },
+        )
+        .unwrap();
+        for rim in oblique.report.rims {
+            assert!(
+                matches!(doc.report.correspondence.edge(rim),Some(StepEdgeEntity::CurveChain{count:n,..}) if n==count)
+            );
+        }
+    }
+    let axial = subtract_through_cylinder(
+        &source,
+        &CylinderTool::new([0.5, 0.5, 0.0], [0.0, 0.0, 1.0], 0.1).unwrap(),
+        &MachiningPolicy::default(),
+    )
+    .unwrap();
+    let mut parts = axial.body.into_parts();
+    // Exercise the exact ellipse identity even when a constructor selected Circle.
+    for rim in axial.report.rims {
+        let (curve, _) = parts.edges[rim.index()].regular_mut().unwrap();
+        if let Curve::Circle(c) = curve {
+            *curve = Curve::ellipse(c.frame(), c.radius(), c.radius()).unwrap();
+        }
+    }
+    let body = Body::try_from_parts(
+        parts,
+        &exedra_analytic::body::ValidationPolicy { max_gap: 1e-9 },
+    )
+    .unwrap();
+    let doc = export_body(&body, Placement3::IDENTITY, &StepOptions::default()).unwrap();
+    for rim in axial.report.rims {
+        assert!(matches!(
+            doc.report.correspondence.edge(rim),
+            Some(StepEdgeEntity::Curve(_))
+        ));
+    }
+    assert_eq!(doc.text.matches("=ELLIPSE(").count(), 0);
+    assert_eq!(doc.text.matches("=CIRCLE(").count(), 2);
+    assert_eq!(doc.report.counts.edges, 15);
+    assert_eq!(doc.report.counts.vertices, 10);
+}

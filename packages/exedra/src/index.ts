@@ -1210,6 +1210,7 @@ export type StepSupport =
 /** A native edge's exact STEP representation; collapsed boundaries have no 3D curve. */
 export type StepEdgeEntity =
   | { readonly kind: "curve"; readonly entity: number }
+  | { readonly kind: "curveChain"; readonly entities: readonly number[] }
   | { readonly kind: "collapsedVertex"; readonly entity: number };
 export interface StepReport {
   schema: string;

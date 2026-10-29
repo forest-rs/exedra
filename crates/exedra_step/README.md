@@ -43,7 +43,8 @@ incidence; independent reader checks cover its periodic trim reconstruction.
 
 Sphere longitude/latitude parameters and radius map directly. A certified
 collapsed boundary maps to its authoritative exported `VERTEX_POINT` through
-`StepEdgeEntity::CollapsedVertex`; a regular edge maps to `Curve(EDGE_CURVE)`.
+`StepEdgeEntity::CollapsedVertex`; a regular edge maps to `Curve(EDGE_CURVE)`
+or `CurveChain` for several exact elliptic-arc fragments.
 Only unused source edges are `None`. Collapsed coedges are omitted from the
 serialized edge loop, retaining ordinary meridian seams. A pole-only loop emits
 `VERTEX_LOOP` rather than a zero-length curve. Counts describe actual emitted
@@ -51,8 +52,21 @@ records; an independent reader may reconstruct natural degenerate edges and
 pole vertices absent from those records. No fake circle or line represents a
 collapsed boundary.
 
-Native vertex, edge, loop and face IDs map to explicit STEP representations. Shared
-edges are emitted once and oriented edge uses preserve their native traversal.
+Native vertex, edge, loop and face IDs map to explicit STEP representations.
+Elliptic spans use exact shared arcs on the original `ELLIPSE` support. The
+bounded subdivision policy starts with eight fragments per turn and increases
+by powers of two, up to 128, with physical axial excursion and ellipse aspect
+ratio. The cap and ordinary output budgets bound work; the defining geometry
+remains exact when the cap is reached. This
+addresses observed independent-reader reconstruction errors on closed rephased
+rims and metre-valued files; it is an empirical interoperability guard, not a
+universal reader parameter-curve certificate. Very large, highly eccentric
+sections can still exceed the observed reader's trim-reconstruction limits. Exact equal-axis ellipses emit
+`CIRCLE` and retain one edge. No fitted curve or mesh approximation is introduced.
+`StepEdgeEntity::curve_entities` enumerates every fragment in native traversal
+order; reversed coedges traverse that same sequence backward. Each fragment is
+shared by both incident faces. Counts include the added vertices, regular edges
+and oriented occurrences, and ordinary output budgets include all added entities.
 Detached unused entries stay `None` in correspondence. Caller feature labels
 remain available through that mapping; exchange does not own application scenes
 or material policy. Entity/input-work and byte budgets bound failure before a

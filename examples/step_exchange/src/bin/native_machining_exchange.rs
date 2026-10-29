@@ -95,7 +95,7 @@ fn main() -> Result<(), Box<dyn Error>> {
         let doc = export_body(&body, Placement3::IDENTITY, &options)?;
         let file = format!("{name}.step");
         std::fs::write(output.join(&file), &doc.text)?;
-        fixtures.push(json!({"file":file,"product_name":name,"faces":body.faces().len(),"edges":body.edges().len(),"vertices":body.vertices().len(),"metres_per_unit":0.001,"native_volume":volume,"native_area":area,"bounds":bounds,"uncertainty":options.tolerance,"max_deviation":doc.report.max_deviation,"max_native_support_gap":doc.report.max_native_support_gap,"frame_roundoff_bound":doc.report.frame_roundoff_bound,"parameter_roundoff_bound":doc.report.parameter_roundoff_bound,"witnesses":witnesses}));
+        fixtures.push(json!({"file":file,"product_name":name,"faces":body.faces().len(),"edges":doc.report.counts.edges,"vertices":doc.report.counts.vertices,"metres_per_unit":0.001,"native_volume":volume,"native_area":area,"bounds":bounds,"uncertainty":options.tolerance,"max_deviation":doc.report.max_deviation,"max_native_support_gap":doc.report.max_native_support_gap,"frame_roundoff_bound":doc.report.frame_roundoff_bound,"parameter_roundoff_bound":doc.report.parameter_roundoff_bound,"witnesses":witnesses}));
     }
     std::fs::write(
         output.join("expected.json"),
