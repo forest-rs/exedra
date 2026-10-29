@@ -2,7 +2,8 @@
 
 Editable TypeScript samples: a pocketed plate, collar, rounded ring, solid and
 hollow toroidal seals, a flanged sleeve, a turned fitting, solid/hollow swept rails,
-a four-section loft and selected outer fillets/inner chamfers. Controls rebuild actual
+a four-section loft, selected outer fillets/inner chamfers, spheres, spherical caps,
+pointed cones, and machined/fused-lug housings. Controls rebuild actual
 Rust/Wasm geometry. Slider input coalesces to one latest-value build before the
 next frame is drawn, without a trailing debounce or reduced interaction quality.
 Rendering is requested for edits, display changes, picking, resize and camera
@@ -44,8 +45,9 @@ checks that live document/part ownership returns to baseline with a bounded
 compiler cache.
 
 Download buttons export one named native part per STEP file in millimetres when
-its geometry is supported. Plane/cylinder samples export; cone, torus and ruled
-supports show a disabled export button with the unsupported face/family reason.
+its geometry is supported. Plane, cylinder, cone, sphere and torus supports export
+with supported boundary topology. Ruled supports show the unsupported face/family
+reason; multiple shells require explicit solid/cavity ownership and are refused.
 The SDK still returns a typed refusal if export is called directly. Structural
 support does not guarantee final tolerance, topology or budget validation. They do not imply an assembly export and never pass through
 the display mesh. The report includes native support/frame tolerance evidence
@@ -160,3 +162,30 @@ changes, STEP, failed drafts, repeated release and arbitrary native-body import
 with explicit face-local trims. Native archive layer save/reopen is currently a
 Rust `exedra_scene` adapter; this geometry view does not claim browser-native USD
 BRep editing or persistence.
+
+Fused-lug housing is a second path through the same controls and machining
+sequence: two actual native rectilinear unions attach left and right box lugs to
+a central box blank. The SDK exposes the Boolean arrangement work, source-face
+origins and complete source images through `part.solidOperations`. Merged faces
+can retain several source feature names. Exact Boolean integrals plus analytic
+machining deltas use `basis: "nativeBooleanAndAnalyticMachining"`.
+
+## Native housing machining
+
+**Machined housing** uses stepped polygon stock and four retained-body cylinder
+cuts. **Fused-lug housing** starts with three box blanks, performs two native
+unions, then applies those cuts. Both expose 13 independent dimensions and named
+stock, lug and passage selections. Selecting a passage shows its native axis,
+radius, rims and clearance evidence. Quality changes retain the native selection.
+
+An overlapping service passage produces a structured clearance refusal, retains
+the last valid model and disables STEP export until corrected. The inspector
+distinguishes constructor-derived machining measures from native Boolean measures.
+`solidOperations` and `machining` provide typed operation-local correspondence.
+The Boolean kernel accepts orthogonal planar/line bodies; drilling accepts
+disjoint cylindrical passages through two parallel planar exit patches.
+
+`npm run test:wasm` also checks union, intersection, subtraction, convex halfspace
+cuts, cavities/disconnected outputs, placed operands and refused-edit recovery.
+Native archive save/reopen is separately available through the Rust
+`exedra_scene::native` adapter; the browser scene view does not yet expose it.

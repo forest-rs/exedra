@@ -33,3 +33,15 @@ cargo clippy -p exedra_authoring_web_bridge --all-targets --all-features -- -D w
 Build the browser package with the demo's `npm run prepare:sdk` command. The
 bridge is a Wasm host adapter; portable native/core checks remain on their owning
 crates.
+
+Retained solid nodes lower to the analytic rectilinear Boolean and convex planar
+halfspace kernels. The SDK exposes `union`, `intersect`, `subtract` and
+`intersectHalfSpace`; their support, frame, budget and empty-result contracts are
+documented in the [SDK guide](../../packages/exedra/README.md). Typed operation
+reports retain source correspondence in intermediate authoring-node scope.
+
+After building the SDK and Wasm, verify the actual public boundary with:
+
+```sh
+node --experimental-strip-types apps/exedra_authoring_demo/scripts/smoke-solid-operations.mjs
+```

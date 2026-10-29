@@ -5,7 +5,7 @@ import "./style.css";
 import * as THREE from "three";
 import { OrbitControls } from "three/examples/jsm/controls/OrbitControls.js";
 import { createSession, ExedraError, type AuthoringSession, type NativeDocument, type NativePart, type Realization, type FaceSelection, type NativeMeasurement } from "@exedra/authoring";
-import { authorPanel, authorCollar, authorRoundedTurn, authorFlangedSleeve, authorSphere, authorDome, authorPointedCone, authorTurnedFitting, authorRail, authorVariableLoft, authorFinishedPlate, authorAngledBore, authorHousing, constructionChart, type PanelParameters, type CollarParameters, type FlangeParameters, type HousingParameters } from "./sample.js";
+import { authorPanel, authorCollar, authorRoundedTurn, authorFlangedSleeve, authorSphere, authorDome, authorPointedCone, authorTurnedFitting, authorRail, authorVariableLoft, authorFinishedPlate, authorAngledBore, authorHousing, authorFusedHousing, constructionChart, type PanelParameters, type CollarParameters, type FlangeParameters, type HousingParameters } from "./sample.js";
 import sampleSource from "./sample.ts?raw";
 import { mountViews } from "./views.js";
 import { meshTriangles } from "./mesh-overlay.js";
@@ -13,7 +13,7 @@ import { meshTriangles } from "./mesh-overlay.js";
 const app = document.querySelector<HTMLDivElement>("#app")!;
 app.innerHTML = `
 <main class="layout">
- <aside><div class="brand">exedra</div><div class="view-control"><label class="label" for="view">View</label><select id="view" class="quality"><option value="geometry">Geometry</option><option value="scene">Scene</option></select></div><div id="geometry-controls"><label class="label" for="sample">Sample</label><select id="sample" class="quality"><option value="housing">Machined housing</option><option value="panel" selected>Pocketed plate</option><option value="collar">Collar</option><option value="roundedRing">Rounded ring</option><option value="torus">Solid seal</option><option value="hollowTorus">Hollow seal / cutaway</option><option value="sleeve">Flanged sleeve</option><option value="fitting">Turned fitting</option><option value="sphere">Sphere</option><option value="dome">Spherical cap</option><option value="cone">Pointed cone</option><option value="rail">Swept rail</option><option value="hollowRail">Hollow swept rail</option><option value="loft">Variable-section loft</option><option value="fillet">Outer axial fillets</option><option value="chamfer">Inner axial chamfers</option><option value="bore">Angled bore</option></select><h1 id="study-title">Inputs</h1><p class="intro" id="study-intro"></p>
+ <aside><div class="brand">exedra</div><div class="view-control"><label class="label" for="view">View</label><select id="view" class="quality"><option value="geometry">Geometry</option><option value="scene">Scene</option></select></div><div id="geometry-controls"><label class="label" for="sample">Sample</label><select id="sample" class="quality"><option value="housing">Machined housing</option><option value="fusedHousing">Fused-lug housing</option><option value="panel" selected>Pocketed plate</option><option value="collar">Collar</option><option value="roundedRing">Rounded ring</option><option value="torus">Solid seal</option><option value="hollowTorus">Hollow seal / cutaway</option><option value="sleeve">Flanged sleeve</option><option value="fitting">Turned fitting</option><option value="sphere">Sphere</option><option value="dome">Spherical cap</option><option value="cone">Pointed cone</option><option value="rail">Swept rail</option><option value="hollowRail">Hollow swept rail</option><option value="loft">Variable-section loft</option><option value="fillet">Outer axial fillets</option><option value="chamfer">Inner axial chamfers</option><option value="bore">Angled bore</option></select><h1 id="study-title">Inputs</h1><p class="intro" id="study-intro"></p>
   <div id="panel-controls"><div class="control"><label class="label" for="width">Panel width <span class="value" id="width-value"></span></label><input id="width" type="range" min="100" max="160" step="1" value="120"></div>
   <div class="control"><label class="label" for="height">Panel height <span class="value" id="height-value"></span></label><input id="height" type="range" min="70" max="110" step="1" value="80"></div>
   <div class="control"><label class="label" for="thickness">Panel thickness <span class="value" id="thickness-value"></span></label><input id="thickness" type="range" min="8" max="20" step="0.5" value="12"></div>
@@ -67,7 +67,7 @@ app.innerHTML = `
    <div class="control"><label class="label" for="boreSeparation">Minimum edge clearance <span class="value" id="boreSeparation-value"></span></label><input id="boreSeparation" type="range" min="0.5" max="30" step="0.5" value="2"></div>
   </div>
   <div id="housing-controls" hidden>
-  <p class="hint">A flanged polygon blank, two mount holes, an oblique main passage and a service port. Every dimension is independent. Invalid or intersecting cuts retain the last valid model.</p>
+  <p class="hint" id="housing-hint">A flanged polygon blank, two mount holes, an oblique main passage and a service port. Every dimension is independent. Invalid or intersecting cuts retain the last valid model.</p>
    <div class="control"><label class="label" for="housingWidth">Flange width <span class="value" id="housingWidth-value"></span></label><input id="housingWidth" type="range" min="80" max="160" step="1" value="104"></div>
    <div class="control"><label class="label" for="housingBodyWidth">Body width <span class="value" id="housingBodyWidth-value"></span></label><input id="housingBodyWidth" type="range" min="40" max="100" step="1" value="64"></div>
    <div class="control"><label class="label" for="housingHeight">Total height <span class="value" id="housingHeight-value"></span></label><input id="housingHeight" type="range" min="65" max="130" step="1" value="90"></div>
@@ -138,6 +138,7 @@ const authorCurrent = (delta=0) => {
     case "loft":return authorVariableLoft({height:value("loftHeight")+delta,twist:value("loftTwist"),offset:value("loftOffset")});
     case "fillet":case "chamfer":return authorFinishedPlate({size:value("finishSize")+delta,height:value("finishHeight"),treatment:sample,inner:sample === "chamfer"});
     case "housing":return authorHousing(housingParameters(delta));
+    case "fusedHousing":return authorFusedHousing(housingParameters(delta));
     case "bore":return authorAngledBore(boreParameters(delta));
     case "collar": return authorCollar(p);
     case "roundedRing": case "torus": case "hollowTorus": return authorRoundedTurn(p,sample);
@@ -152,7 +153,7 @@ const authorCurrent = (delta=0) => {
 const tolerance = () => Number(element<HTMLSelectElement>("quality").value);
 const format = (n: number, digits = 2) => n.toLocaleString(undefined, { maximumFractionDigits: digits });
 const formatMeasure = (value: NativeMeasurement) => value.status === "available" ? format(value.value,3) : value.status === "unavailable" ? "Not available" : "Numeric limit";
-const featureColors: Record<string, string> = {stock:"#7eabb8","left mount":"#d7ab76","right mount":"#d7ab76","main passage":"#7ec9bb","service port":"#b9a1d6", shell:"#8bbbc4",base:"#c69c76",plate:"#4baca7",bore:"#bf9878",panel: "#4baca7", vents: "#6f9fdb", recess: "#d2a36d", pin: "#f1c77f", collar:"#8bbbc4" };
+const featureColors: Record<string, string> = {stock:"#7eabb8","left lug":"#d7ab76","right lug":"#bb9c76","left mount":"#d7ab76","right mount":"#d7ab76","main passage":"#7ec9bb","service port":"#b9a1d6", shell:"#8bbbc4",base:"#c69c76",plate:"#4baca7",bore:"#bf9878",panel: "#4baca7", vents: "#6f9fdb", recess: "#d2a36d", pin: "#f1c77f", collar:"#8bbbc4" };
 
 const renderer = new THREE.WebGLRenderer({ antialias: true, alpha: true });
 renderer.setPixelRatio(Math.min(devicePixelRatio, 2));
@@ -324,7 +325,7 @@ function evidence() {
   element("volume").textContent = formatMeasure(panel.measurements.volume);
   element("area").textContent = formatMeasure(panel.measurements.surfaceArea);
   for (const [id,value] of [["volume",panel.measurements.volume],["area",panel.measurements.surfaceArea]] as const)
-    element(id).title=value.status === "available" ? value.basis === "constructorAndAnalyticMachining" ? "Exact constructor integral plus analytic machining deltas" : "Native source integral" : value.diagnostic.message;
+    element(id).title=value.status === "available" ? value.basis ? `Exact analytic evaluation · ${value.basis}` : "Native source integral" : value.diagnostic.message;
   element("native-faces").textContent = String(panel.measurements.faces);
   element("native-edges").textContent = String(panel.measurements.edges);
   const report = drawn.entries.map(e => e.display.report);
@@ -349,7 +350,7 @@ function evidence() {
   } else if(panel.machining){
     element("workplane-time").textContent="—";
     const operations=panel.machining.operations;
-    element("attachment").textContent=`${operations.length} retained-body cylinder cuts. Minimum certified material clearance ${format(Math.min(...operations.map(operation=>operation.minimumClearance)),3)} mm. Exact analytic volume/area derive from the blank and machining deltas. Select each named passage to inspect its native surface.`;
+    element("attachment").textContent=`${panel.solidOperations?.operations.filter(operation=>operation.kind==="union").length?`${panel.solidOperations.operations.filter(operation=>operation.kind==="union").length} native unions fuse the mounting lugs. `:""}${operations.length} retained-body cylinder cuts. Minimum certified material clearance ${format(Math.min(...operations.map(operation=>operation.minimumClearance)),3)} mm. Exact analytic volume/area derive from the blank and machining deltas. Select each named passage to inspect its native surface.`;
   } else if(panel.bore){
     const bore=panel.bore;
     element("workplane-time").textContent="—";
@@ -428,7 +429,7 @@ element<HTMLSelectElement>("sample").onchange = () => {
   const sample=element<HTMLSelectElement>("sample").value, panel=sample === "panel", torus=sample === "torus" || sample === "hollowTorus";
   const rail=sample === "rail" || sample === "hollowRail", loft=sample === "loft", finish=sample === "fillet" || sample === "chamfer";
   const pole=sample === "sphere" || sample === "dome" || sample === "cone";
-  element("panel-controls").hidden=!panel; element("collar-controls").hidden=panel || rail || loft || finish || pole || sample === "sleeve" || sample === "bore" || sample === "housing";
+  element("panel-controls").hidden=!panel; element("collar-controls").hidden=panel || rail || loft || finish || pole || sample === "sleeve" || sample === "bore" || sample === "housing" || sample === "fusedHousing";
   element("pole-controls").hidden=!pole;element("poleHeight-control").hidden=sample === "sphere";
   if(pole){
     const height=sample === "dome"?12:40;
@@ -437,7 +438,8 @@ element<HTMLSelectElement>("sample").onchange = () => {
     element("poleRadius-label").textContent=sample === "cone"?"Base radius":"Sphere radius";
     element("pole-hint").textContent=sample === "dome"?"Cap height may reach the sphere diameter. Invalid dimensions retain the last valid model.":"Full revolutions with native poles. Show triangles to inspect the mesh near the tip.";
   }
-  element("housing-controls").hidden=sample!=="housing";
+  element("housing-controls").hidden=sample!=="housing"&&sample!=="fusedHousing";
+  element("housing-hint").textContent=sample==="fusedHousing"?"Three box blanks, two exact native unions and four independent cylinder cuts. Named lug features retain their source history through fusion and machining.":"A flanged polygon blank, two mount holes, an oblique main passage and a service port. Every dimension is independent. Invalid or intersecting cuts retain the last valid model.";
   element("flange-controls").hidden=sample!=="sleeve";element("bore-controls").hidden=sample!=="bore";
   element("rail-controls").hidden=!rail;element("loft-controls").hidden=!loft;element("finish-controls").hidden=!finish;
   for(const [key,initial] of [["railRadius",sample === "hollowRail"?8:6],["bendRadius",40],["turnAngle",135],["loftHeight",120],["loftTwist",14],["loftOffset",18],["finishSize",sample === "chamfer"?3:5],["finishHeight",30]] as const){element<HTMLInputElement>(key).value=String(initial);element(`${key}-value`).textContent=`${initial} ${["turnAngle","loftTwist"].includes(key)?"°":"mm"}`;}

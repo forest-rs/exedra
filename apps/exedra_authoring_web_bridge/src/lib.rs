@@ -566,6 +566,54 @@ struct ExchangeOptions {
     timestamp: String,
     tolerance: Option<f64>,
 }
+fn solid_operation_metadata(operation: &authoring::AuthoredSolidOperation) -> serde_json::Value {
+    use authoring::AuthoredSolidOperation;
+    use exedra_analytic::{
+        halfspace::ClipOutcome,
+        rectilinear::{BooleanOperation, Operand},
+    };
+    match operation {
+        AuthoredSolidOperation::Rectilinear {
+            node,
+            left,
+            right,
+            report,
+        } => serde_json::json!({
+            "kind":match report.operation {BooleanOperation::Union=>"union",BooleanOperation::Intersection=>"intersect",BooleanOperation::Difference=>"subtract"},
+            "node":node,"left":left,"right":right,"planes":report.planes,"cells":report.cells,"faceTests":report.face_tests,"faceTestBound":report.face_test_bound,
+            "materialCells":report.material_cells,"materialComponents":report.material_components,"cavities":report.cavities,"boundaryShells":report.boundary_shells,
+            "faceSources":report.face_sources.iter().map(|sources|sources.iter().map(|source|serde_json::json!({"operand":match source.operand{Operand::Left=>"left",Operand::Right=>"right"},"face":source.face.0,"reversed":source.reversed})).collect::<Vec<_>>()).collect::<Vec<_>>(),
+            "leftFaces":report.left_faces.iter().map(|ids|ids.iter().map(|id|id.0).collect::<Vec<_>>()).collect::<Vec<_>>(),
+            "rightFaces":report.right_faces.iter().map(|ids|ids.iter().map(|id|id.0).collect::<Vec<_>>()).collect::<Vec<_>>(),
+            "leftEdges":report.left_edges.iter().map(|ids|ids.iter().map(|id|id.0).collect::<Vec<_>>()).collect::<Vec<_>>(),
+            "rightEdges":report.right_edges.iter().map(|ids|ids.iter().map(|id|id.0).collect::<Vec<_>>()).collect::<Vec<_>>(),
+            "leftVertices":report.left_vertices.iter().map(|id|id.map(|id|id.0)).collect::<Vec<_>>(),
+            "rightVertices":report.right_vertices.iter().map(|id|id.map(|id|id.0)).collect::<Vec<_>>(),
+            "volume":report.volume,"volumeBounds":report.volume_bounds,"surfaceArea":report.surface_area,"surfaceAreaBounds":report.surface_area_bounds,"maxGap":report.max_gap,
+        }),
+        AuthoredSolidOperation::HalfSpace {
+            node,
+            base,
+            point,
+            normal,
+            feature,
+            report,
+        } => {
+            let mut value = serde_json::json!({
+                "kind":"intersectHalfSpace","node":node,"base":base,"point":point,"normal":normal,
+                "outcome":match report.outcome {ClipOutcome::Unchanged=>"unchanged",ClipOutcome::Empty=>"empty",ClipOutcome::Clipped=>"clipped"},
+                "faces":report.faces.iter().map(|face|serde_json::json!({"source":face.source.0,"result":face.result.map(|id|id.0),"trimmed":face.trimmed})).collect::<Vec<_>>(),
+                "edgeImages":report.edge_images.iter().map(|ids|ids.iter().map(|id|id.0).collect::<Vec<_>>()).collect::<Vec<_>>(),
+                "splits":report.splits.iter().map(|split|serde_json::json!({"source":split.source.0,"vertex":split.vertex.0,"fraction":split.fraction})).collect::<Vec<_>>(),
+                "cap":report.cap.map(|id|id.0),"capEdges":report.cap_edges.iter().map(|id|id.0).collect::<Vec<_>>(),"maxGap":report.max_gap,
+            });
+            if let Some(feature) = feature {
+                value["feature"] = serde_json::json!(feature);
+            }
+            value
+        }
+    }
+}
 impl Document {
     fn metadata(&self, id: u32) -> Result<String, Error> {
         let mut parts = Vec::with_capacity(self.parts.len());
@@ -579,11 +627,28 @@ impl Document {
                         "trimmedFaces":report.trimmed_faces.map(|id|id.0),"rims":report.rims.map(|id|id.0),"wallFace":report.wall.0,"seamEdge":report.seam.0,
                         "minimumClearance":report.min_clearance,"maxNativeGap":report.max_gap,"removedVolume":report.removed_volume,"surfaceAreaDelta":report.surface_area_delta,"faces":faces})
                 }).collect();
-                value["machining"] =
-                    serde_json::json!({"coordinateSpace":"construction","operations":operations});
+                if !evidence.reports.is_empty() {
+                    value["machining"] = serde_json::json!({"coordinateSpace":"construction","operations":operations});
+                }
+                if !evidence.operations.is_empty() {
+                    value["solidOperations"] = serde_json::json!({"coordinateSpace":"construction","operations":evidence.operations.iter().map(solid_operation_metadata).collect::<Vec<_>>()});
+                }
                 if let Some([volume, area]) = evidence.integrals {
-                    value["measurements"]["volume"] = serde_json::json!({"status":"available","value":volume,"basis":"constructorAndAnalyticMachining"});
-                    value["measurements"]["surfaceArea"] = serde_json::json!({"status":"available","value":area,"basis":"constructorAndAnalyticMachining"});
+                    let has_boolean = evidence.operations.iter().any(|operation| {
+                        matches!(
+                            operation,
+                            authoring::AuthoredSolidOperation::Rectilinear { .. }
+                        )
+                    });
+                    let basis = match (has_boolean, evidence.reports.is_empty()) {
+                        (true, true) => "nativeBoolean",
+                        (true, false) => "nativeBooleanAndAnalyticMachining",
+                        (false, _) => "constructorAndAnalyticMachining",
+                    };
+                    value["measurements"]["volume"] =
+                        serde_json::json!({"status":"available","value":volume,"basis":basis});
+                    value["measurements"]["surfaceArea"] =
+                        serde_json::json!({"status":"available","value":area,"basis":basis});
                 }
             }
             value["name"] = serde_json::json!(part.name);
@@ -1368,5 +1433,101 @@ mod tests {
         assert_eq!(session.documents.len(), 1);
         session.release(1);
         assert_eq!(session.compiler.native_storage().sources, 0);
+    }
+    #[test]
+    fn fused_lug_housing_serializes_native_union_history_and_correct_integral_basis() {
+        let mut nodes = alloc::vec![
+            serde_json::json!({"kind":"extrude","profile":1,"height":18}),
+            serde_json::json!({"kind":"extrude","profile":4,"height":18}),
+            serde_json::json!({"kind":"union","base":0,"other":1}),
+            serde_json::json!({"kind":"extrude","profile":6,"height":18}),
+            serde_json::json!({"kind":"union","base":2,"other":3})
+        ];
+        for (point, radius, feature) in [
+            ([-38.0, -33.0, 9.0], 5.0, "left mount"),
+            ([38.0, -33.0, 9.0], 5.0, "right mount"),
+            ([0.0, 15.0, 9.0], 12.0, "main passage"),
+            ([0.0, -10.0, 9.0], 5.0, "service port"),
+        ] {
+            let base = nodes.len() - 1;
+            nodes.push(serde_json::json!({"kind":"subtractThroughCylinder","base":base,"point":point,"direction":if feature=="main passage" {[0.364,0.0,1.0]} else {[0.0,0.0,1.0]},"radius":radius,"separation":1,"feature":feature}));
+        }
+        let request=decode(&json(&serde_json::json!({"units":"mm","separation":1e-6,"profiles":[{"kind":"rectangle","width":64,"height":90},{"kind":"tagged","profile":0,"name":"stock"},{"kind":"rectangle","width":20,"height":24},{"kind":"translated","profile":2,"offset":[-42,-33]},{"kind":"tagged","profile":3,"name":"left lug"},{"kind":"translated","profile":2,"offset":[42,-33]},{"kind":"tagged","profile":5,"name":"right lug"}],"nodes":nodes,"roots":[{"name":"blank","node":4},{"name":"housing","node":8}]}))).unwrap();
+        let mut session = Session::new();
+        let metadata = value(&session.build(request).unwrap());
+        let blank = &metadata["parts"][0];
+        let housing = &metadata["parts"][1];
+        assert_eq!(blank["measurements"]["volume"]["basis"], "nativeBoolean");
+        assert!(blank["machining"].is_null());
+        assert_eq!(
+            housing["measurements"]["volume"]["basis"],
+            "nativeBooleanAndAnalyticMachining"
+        );
+        assert_eq!(
+            housing["machining"]["operations"].as_array().unwrap().len(),
+            4
+        );
+        let operations = housing["solidOperations"]["operations"].as_array().unwrap();
+        assert_eq!(operations.len(), 2);
+        for operation in operations {
+            assert_eq!(operation["kind"], "union");
+            assert_eq!(operation["boundaryShells"], 1);
+            assert_eq!(operation["materialComponents"], 1);
+            assert!(operation["faceTests"].as_u64().unwrap() > 0);
+            assert!(operation["faceTests"].as_u64() <= operation["faceTestBound"].as_u64());
+            assert!(!operation["rightFaces"].as_array().unwrap().is_empty());
+        }
+        let features = housing["faces"].as_array().unwrap();
+        for feature in [
+            "left lug",
+            "right lug",
+            "left mount",
+            "right mount",
+            "main passage",
+            "service port",
+        ] {
+            assert!(
+                features.iter().any(|face| face["features"]
+                    .as_array()
+                    .unwrap()
+                    .iter()
+                    .any(|value| value == feature)),
+                "feature {feature} must survive native union/machining"
+            );
+        }
+        assert!(
+            session
+                .realize(
+                    1,
+                    1,
+                    DisplayOptions {
+                        tolerance: 0.035,
+                        max_vertices: 250000,
+                        chart: None
+                    }
+                )
+                .is_ok()
+        );
+        let file = session
+            .step(
+                1,
+                1,
+                ExchangeOptions {
+                    name: None,
+                    timestamp: "2026-10-29T00:00:00Z".to_string(),
+                    tolerance: None,
+                },
+            )
+            .unwrap();
+        assert!(file.text.contains("MANIFOLD_SOLID_BREP("));
+    }
+    #[test]
+    fn unlabeled_halfspace_metadata_omits_optional_feature_instead_of_returning_null() {
+        let request=decode(&json(&serde_json::json!({"units":"mm","separation":1e-6,"profiles":[{"kind":"rectangle","width":10,"height":8}],"nodes":[{"kind":"extrude","profile":0,"height":6},{"kind":"intersectHalfSpace","base":0,"point":[1,0,3],"normal":[1,0,1]}],"roots":[{"name":"clipped","node":1}]}))).unwrap();
+        let metadata = value(&Session::new().build(request).unwrap());
+        let operation = &metadata["parts"][0]["solidOperations"]["operations"][0];
+        assert_eq!(operation["kind"], "intersectHalfSpace");
+        assert_eq!(operation["outcome"], "clipped");
+        assert!(operation.get("feature").is_none());
     }
 }

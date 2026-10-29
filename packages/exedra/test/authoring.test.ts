@@ -268,6 +268,23 @@ test("generic boundary authoring snapshots exact geometry and feature tables", (
   session.dispose();
 });
 
+test("solid set operations share operands and snapshot body-local halfspace intent", () => {
+  const h=host(),session=new AuthoringSession(h.native,{units:"mm"});
+  const left=extrude(profiles.rectangle({width:10,height:10}).tagged("stock"),{height:10});
+  const right=extrude(profiles.rectangle({width:4,height:4}).tagged("lug"),{height:10,placement:{translation:[4,0,0]}});
+  const point:[number,number,number]=[0,0,5],normal:[number,number,number]=[0,0,1];
+  const clipped=left.union(right).intersectHalfSpace({point,normal,feature:"cut"});point[2]=99;normal[2]=-1;
+  const doc=session.build({clipped,overlap:left.intersect(right),difference:left.subtract(right)});
+  const graph=h.requests[0];
+  assert.equal(graph.nodes.filter((n:any)=>n.kind==="extrude").length,2);
+  assert.deepEqual(graph.nodes.find((n:any)=>n.kind==="union"),{kind:"union",base:0,other:1});
+  assert.deepEqual(graph.nodes.find((n:any)=>n.kind==="intersectHalfSpace"),{kind:"intersectHalfSpace",base:2,point:[0,0,5],normal:[0,0,1],feature:"cut"});
+  assert.equal(graph.nodes.find((n:any)=>n.kind==="intersect").other,1);
+  assert.equal(graph.nodes.find((n:any)=>n.kind==="subtract").base,0);
+  assert.throws(()=>left.intersectHalfSpace({point:[0,0,Infinity],normal:[0,0,1]}),code("input.nonFinite"));
+  doc.dispose();session.dispose();
+});
+
 test("native table budgets count nested references, tags, records and expanded coedge visits",()=>{
   const base={vertices:[],edges:[],loops:[],faces:[]} as const;
   assert.throws(()=>Solid.body({...base,loops:Array.from({length:8193},()=>[])}),code("budget.nativeSegments"));
