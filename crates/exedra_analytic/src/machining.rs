@@ -4,7 +4,7 @@
 //! Transactional analytic through-cylinder subtraction on retained boundaries.
 //!
 //! This module edits topology, not meshes or constructor histories. It accepts
-//! two parallel planar exit patches with polygonal or complete elliptic trims,
+//! two planar exit patches with polygonal or complete elliptic trims,
 //! and proves separation from every remaining planar or cylindrical face.
 //! Conservative bounds may refuse valid cuts. Tangency and intersecting bores
 //! are refused. Input must already represent an embedded, outward-oriented
@@ -113,7 +113,7 @@ pub struct MachiningReport {
     pub min_clearance: f64,
     /// Largest conservative support-agreement bound in model units.
     pub max_gap: f64,
-    /// Analytic removed volume, valid for the supported parallel exit planes.
+    /// Analytic removed volume between the two supported planar exits.
     pub removed_volume: f64,
     /// Analytic change to surface area (new wall minus two openings).
     pub surface_area_delta: f64,
@@ -182,8 +182,6 @@ pub enum MachiningError {
         /// Number found.
         found: usize,
     },
-    /// Exit supports must be parallel for this version of the operation.
-    NonparallelExits,
     /// Exact-form section construction was refused.
     Section(SectionError),
     /// Derived geometry was refused.
@@ -299,14 +297,16 @@ fn check_policy(policy: &MachiningPolicy) -> Result<(), MachiningError> {
     }
     Ok(())
 }
-fn subtract_owned<F: Clone, E: Clone>(
-    body: Body<F, E>,
+struct CylinderPlan {
+    exits: Vec<(FaceId, PlaneCylinderSection)>,
+    clearance: f64,
+    outward: [[f64; 3]; 2],
+}
+fn plan_cylinder<F, E>(
+    body: &Body<F, E>,
     tool: &CylinderTool,
     policy: &MachiningPolicy,
-    face_role: F,
-    edge_role: E,
-) -> Result<MachiningResult<F, E>, MachiningError> {
-    check_policy(policy)?;
+) -> Result<CylinderPlan, MachiningError> {
     let validation = ValidationPolicy {
         max_gap: policy.geometry_gap,
     };
@@ -339,7 +339,7 @@ fn subtract_owned<F: Clone, E: Clone>(
     for (index, face) in body.faces().iter().enumerate() {
         let id = FaceId(crate::usize_to_u32(index));
         let separated = match &face.surface {
-            Surface::Plane(_) => planar_radial_clearance(&body, id, origin, axis, radius)?,
+            Surface::Plane(_) => planar_radial_clearance(body, id, origin, axis, radius)?,
             Surface::Cylinder(other) => {
                 let of = other.frame();
                 let oa = col(of, 2);
@@ -378,7 +378,7 @@ fn subtract_owned<F: Clone, E: Clone>(
             },
         )
         .map_err(MachiningError::Section)?;
-        let bound = section_clearance(&body, id, &section)? - roundoff - section.max_gap();
+        let bound = section_clearance(body, id, &section)? - roundoff - section.max_gap();
         if bound < policy.separation {
             return Err(MachiningError::Clearance {
                 face: id,
@@ -402,15 +402,12 @@ fn subtract_owned<F: Clone, E: Clone>(
             col(p.frame(), 2)
         })
         .collect::<Vec<_>>();
-    if norm(cross(normals[0], normals[1])) > 64.0 * f64::EPSILON {
-        return Err(MachiningError::NonparallelExits);
-    }
-    // Parallel accepted frames must still yield the same canonical section phase.
-    if exits[0].1.phase() != exits[1].1.phase() || exits[0].1.reversed() != exits[1].1.reversed() {
-        return Err(MachiningError::NonparallelExits);
-    }
-    let height = exits[1].1.axial().coefficients()[0] - exits[0].1.axial().coefficients()[0];
-    if !height.is_finite() || height <= policy.separation {
+    let lower = exits[0].1.axial().coefficients();
+    let upper = exits[1].1.axial().coefficients();
+    let height = upper[0] - lower[0];
+    // Certify the complete difference, not merely the two center heights.
+    let minimum = height - (upper[1] - lower[1]).abs() - (upper[2] - lower[2]).abs();
+    if !minimum.is_finite() || minimum <= policy.separation + 2.0 * roundoff {
         return Err(MachiningError::NumericLimit);
     }
     let outward = core::array::from_fn::<_, 2, _>(|i| {
@@ -419,6 +416,38 @@ fn subtract_owned<F: Clone, E: Clone>(
     if dot(outward[0], axis) >= 0.0 || dot(outward[1], axis) <= 0.0 {
         return Err(MachiningError::OpenBoundary);
     }
+    Ok(CylinderPlan {
+        exits,
+        clearance,
+        outward,
+    })
+}
+fn subtract_owned<F: Clone, E: Clone>(
+    body: Body<F, E>,
+    tool: &CylinderTool,
+    policy: &MachiningPolicy,
+    face_role: F,
+    edge_role: E,
+) -> Result<MachiningResult<F, E>, MachiningError> {
+    check_policy(policy)?;
+    let CylinderPlan {
+        exits,
+        clearance,
+        outward,
+        ..
+    } = plan_cylinder(&body, tool, policy)?;
+    let validation = ValidationPolicy {
+        max_gap: policy.geometry_gap,
+    };
+    let Surface::Cylinder(cylinder) = &tool.surface else {
+        unreachable!()
+    };
+    let radius = cylinder.radius();
+    let height = exits[1].1.axial().coefficients()[0] - exits[0].1.axial().coefficients()[0];
+    // A common native azimuth keeps both copies of the axial seam aligned even
+    // when the two ellipses have different principal axes or opposite senses.
+    let shared_parameterization =
+        exits[0].1.phase() == exits[1].1.phase() && exits[0].1.reversed() == exits[1].1.reversed();
     let source_face_count = body.faces().len();
     let source_edge_count = body.edges().len();
     for (table, count, extra) in [
@@ -438,8 +467,14 @@ fn subtract_owned<F: Clone, E: Clone>(
         }
     }
     let mut parts = body.into_parts();
-    let range =
-        ParameterRange::new(0.0, core::f64::consts::TAU).map_err(MachiningError::Geometry)?;
+    let ranges = core::array::from_fn::<_, 2, _>(|i| {
+        let start = if shared_parameterization {
+            0.0
+        } else {
+            -if exits[i].1.reversed() { -1.0 } else { 1.0 } * exits[i].1.phase()
+        };
+        ParameterRange::new(start, start + core::f64::consts::TAU).expect("bounded section phase")
+    });
     let rims = core::array::from_fn(|i| EdgeId(crate::usize_to_u32(parts.edges.len() + i)));
     let vertices = core::array::from_fn::<_, 2, _>(|i| {
         VertexId(crate::usize_to_u32(parts.vertices.len() + i))
@@ -449,13 +484,13 @@ fn subtract_owned<F: Clone, E: Clone>(
         let curve = exits[i].1.curve().clone();
         parts.vertices.push(
             curve
-                .evaluate(0.0)
+                .evaluate(ranges[i].bounds()[0])
                 .ok_or(MachiningError::NumericLimit)?
                 .point,
         );
         parts.edges.push(Edge::new(
             curve,
-            range,
+            ranges[i],
             vertices[i],
             vertices[i],
             edge_role.clone(),
@@ -471,9 +506,6 @@ fn subtract_owned<F: Clone, E: Clone>(
         parts.faces[exits[i].0.index()].loops.push(loop_id);
         crate::operation_trims::append_planar_loop(&mut parts, exits[i].0, loop_id)
             .map_err(MachiningError::Geometry)?;
-    }
-    if reversed[0] == reversed[1] {
-        return Err(MachiningError::NonparallelExits);
     }
     let seam = EdgeId(crate::usize_to_u32(parts.edges.len()));
     let a = parts.vertices[vertices[0].index()];
@@ -506,19 +538,33 @@ fn subtract_owned<F: Clone, E: Clone>(
             }
         ],
     });
-    let rim_trims = [
-        section_trim(&exits[0].1, range),
-        section_trim(&exits[1].1, range),
-    ];
-    let first_fraction = if !reversed[0] { 0.0 } else { 1.0 };
-    let second_fraction = 1.0 - first_fraction;
-    let seam_trim = |fraction| -> Result<TrimCurve, MachiningError> {
+    let rim_trims = core::array::from_fn::<_, 2, _>(|i| {
+        let mut trim = section_trim(&exits[i].1, ranges[i]);
+        if !shared_parameterization
+            && exits[i].1.reversed()
+            && let TrimCurve::Harmonic { origin, .. } = &mut trim
+        {
+            origin[0] += core::f64::consts::TAU;
+        }
+        trim
+    });
+    let lower_fraction = if !reversed[0] { 0.0 } else { 1.0 };
+    let upper_fraction = if !reversed[1] { 1.0 } else { 0.0 };
+    let seam_trim = |opposite: bool| -> Result<TrimCurve, MachiningError> {
         Ok(TrimCurve::Line {
             start: rim_trims[0]
-                .evaluate(fraction)
+                .evaluate(if opposite {
+                    1.0 - lower_fraction
+                } else {
+                    lower_fraction
+                })
                 .ok_or(MachiningError::NumericLimit)?,
             end: rim_trims[1]
-                .evaluate(fraction)
+                .evaluate(if opposite {
+                    1.0 - upper_fraction
+                } else {
+                    upper_fraction
+                })
                 .ok_or(MachiningError::NumericLimit)?,
         })
     };
@@ -526,9 +572,9 @@ fn subtract_owned<F: Clone, E: Clone>(
         loop_id,
         curves: alloc::vec![
             rim_trims[0].clone(),
-            seam_trim(first_fraction)?,
+            seam_trim(false)?,
             rim_trims[1].clone(),
-            seam_trim(second_fraction)?
+            seam_trim(true)?
         ],
     });
     let ua = rim_trims[0]
@@ -566,11 +612,14 @@ fn subtract_owned<F: Clone, E: Clone>(
         .iter()
         .map(|e| e.1.max_gap())
         .fold(checked.max_gap, f64::max);
-    let area = core::f64::consts::PI
-        * exits[0].1.ellipse().semi_major()
-        * exits[0].1.ellipse().semi_minor();
+    let area = exits
+        .iter()
+        .map(|(_, section)| {
+            core::f64::consts::PI * section.ellipse().semi_major() * section.ellipse().semi_minor()
+        })
+        .sum::<f64>();
     let removed_volume = core::f64::consts::PI * radius * radius * height;
-    let surface_area_delta = core::f64::consts::TAU * radius * height - 2.0 * area;
+    let surface_area_delta = core::f64::consts::TAU * radius * height - area;
     if !removed_volume.is_finite() || !surface_area_delta.is_finite() {
         return Err(MachiningError::NumericLimit);
     }
@@ -873,6 +922,44 @@ mod tests {
                 .collect(),
         };
         Body::try_from_parts(parts, &ValidationPolicy { max_gap: 1e-9 }).unwrap()
+    }
+    #[test]
+    fn nonparallel_exits_keep_complete_trim_correspondence_and_exact_integrals() {
+        let wedge = crate::halfspace::intersect_half_space(
+            &stock(),
+            &crate::halfspace::HalfSpace::new([0.0, 0.0, 7.0], [-0.15, 0.1, 1.0]).unwrap(),
+            &crate::halfspace::ClipPolicy::default(),
+        )
+        .unwrap()
+        .body;
+        for sign in [-1.0, 1.0] {
+            let result = subtract_through_cylinder(
+                &wedge,
+                &CylinderTool::new([0.0; 3], [0.0, 0.0, sign], 2.0).unwrap(),
+                &MachiningPolicy::default(),
+            )
+            .unwrap();
+            assert!(result.body.is_closed());
+            assert!((result.report.removed_volume - core::f64::consts::PI * 28.0).abs() < 1e-10);
+            let expected_area = core::f64::consts::TAU * 14.0
+                - core::f64::consts::PI * 4.0 * (1.0 + libm::sqrt(1.0325));
+            assert!((result.report.surface_area_delta - expected_area).abs() < 1e-10);
+            let realized = result
+                .body
+                .realize(
+                    Placement3::IDENTITY,
+                    &crate::realize::RealizationPolicy {
+                        tolerance: 0.03,
+                        ..Default::default()
+                    },
+                )
+                .unwrap();
+            assert!(realized.mesh.validate_deep().is_empty());
+            assert!(realized.mesh.boundary_loops().unwrap().is_empty());
+            assert!(realized.report.within_tolerance(), "{:?}", realized.report);
+            assert_eq!(realized.report.work.trim_normal_corners, 0);
+            assert!(realized.report.work.completed_triangles < 1000);
+        }
     }
     #[test]
     fn annular_and_nonconvex_stock_are_edited_without_constructor_dispatch() {

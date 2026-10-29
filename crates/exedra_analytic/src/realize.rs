@@ -378,6 +378,7 @@ struct Strip {
     a: Coedge,
     b: Coedge,
     translation: [f64; 3],
+    variable_axial_rulings: bool,
     center: [f64; 3],
     radius_scale: f64,
     correspondence_gap: f64,
@@ -1123,7 +1124,36 @@ impl<F, E> Body<F, E> {
                     let upper = emitted[b_at(j) as usize].map(f64::from);
                     let radial_change =
                         exedra_math::sub(lower, center).map(|v| v * (patch.radius_scale - 1.0));
-                    let expected_delta = exedra_math::add(translation, radial_change);
+                    let expected_delta = if patch.variable_axial_rulings {
+                        // Complete radial coefficient agreement was established
+                        // by cylindrical_band. Unequal axial rim harmonics keep
+                        // the same exact cylinder generatrices; they do not need
+                        // interior chart refinement along an otherwise straight
+                        // ruling. Compare emitted samples to both exact rims.
+                        let fraction = j as f64 / (a.len() - 1) as f64;
+                        let af = if patch.a.reversed {
+                            1.0 - fraction
+                        } else {
+                            fraction
+                        };
+                        let bf = if patch.b.reversed {
+                            fraction
+                        } else {
+                            1.0 - fraction
+                        };
+                        exedra_math::sub(
+                            placement.transform_point(
+                                self.edge_point(patch.b.edge, bf)
+                                    .ok_or(RealizationError::DegenerateFace { face: id })?,
+                            ),
+                            placement.transform_point(
+                                self.edge_point(patch.a.edge, af)
+                                    .ok_or(RealizationError::DegenerateFace { face: id })?,
+                            ),
+                        )
+                    } else {
+                        exedra_math::add(translation, radial_change)
+                    };
                     let residual = distance(exedra_math::sub(upper, lower), expected_delta);
                     if !residual.is_finite() {
                         return Err(RealizationError::DegenerateFace { face: id });
@@ -1459,6 +1489,7 @@ impl<F, E> Body<F, E> {
                 a: band.pair[0],
                 b: band.pair[1],
                 translation: band.translation,
+                variable_axial_rulings: band.variable_axial_rulings,
                 center: band.center,
                 radius_scale: 1.0,
                 correspondence_gap: band.max_gap(),
@@ -1646,6 +1677,7 @@ impl<F, E> Body<F, E> {
             a,
             b,
             translation,
+            variable_axial_rulings: false,
             center: lower.frame().rows.map(|r| r[3]),
             radius_scale,
             correspondence_gap: 0.0,
