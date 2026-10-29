@@ -361,3 +361,25 @@ Complete source-to-profile curve coefficients bound conversion disagreement;
 clearance checks subtract that gap and the profile query's arithmetic allowance
 before trusting winding. This allows later disjoint machining on caps containing
 joined passage arcs, while preserving the native circles and shared vertices.
+
+## Native solid point queries
+
+`query::SolidQuery::prepare(&body, &policy)` prepares immutable line/conic trims
+and cylinder patches once. `query_point([x, y, z])` then returns material, void or
+boundary, a native face/edge witness for boundary results, and actual work counts.
+Queries allocate no scratch buffers; preparation reports its retained vector
+capacity and retains the local boundary-validation report for inspection.
+
+The supported subset is planar line/circle/ellipse trims and cylindrical faces
+with explicit polygon charts or complete harmonic graph bands. This includes
+joined parallel passages, oblique through bores and stepped blind bores on planar
+stock. A missing cylindrical chart is an explicit refusal; a face's rectangular
+parameter domain is not treated as its trim. Numeric uncertainty, work exhaustion,
+ray degeneracy and inconsistent signed winding are distinct typed refusals.
+Boundary tolerance covers the actual trimmed boundary, including rims and vertices.
+
+The caller must supply an embedded outward-oriented regular solid, with correctly
+oriented cavity shells. Local support/incidence/trim checks do not establish that
+premise, and a successful point query is not a global validity certificate.
+No mesh, construction history, role metadata, scene or tessellation is involved.
+See `examples/geometry_queries` for retained valve-block probes and section exports.

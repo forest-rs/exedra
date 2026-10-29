@@ -32,6 +32,7 @@ pub mod machining;
 mod operation_trims;
 mod planar;
 mod profile_geometry;
+pub mod query;
 pub mod realize;
 pub mod rectilinear;
 pub mod revolve;
