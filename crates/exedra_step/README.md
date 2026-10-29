@@ -10,8 +10,26 @@ family is one connected, oriented closed shell with planar, cylindrical, conical
 spherical and regular ring-toroidal supporting faces and line/circle/ellipse edges. This
 covers exact extrusions, through holes, blind pockets, supported axial finishes,
 and supported line/arc revolutions. Certified spherical pole boundaries
-have explicit point topology. Other surfaces, multiple shells/cavities,
-open incidence and ambiguous multiple-turn circle ranges are typed refusals.
+have explicit point topology. Multiple boundary shells are supported for exact
+rectilinear solids: one connected material component with disjoint closed
+cavities. Other multi-shell support families, disconnected solids, touching or
+nested void boundaries, open incidence and ambiguous multiple-turn ranges are
+typed refusals.
+
+Multiple-shell export independently certifies whole material membership in the
+finite exact coordinate-plane arrangement, matches every input face patch to
+its outward material transition, and checks geometric boundary links and void
+ownership. It does not reconstruct a Boolean or mesh. `shell_validation` bounds
+native topology/trim work, arrangement cells and face scans separately. Flat
+scratch memory is reported, including the plane-vertex link table (at most eight
+vertices per arrangement cell). This certificate is restricted to axis-aligned
+plane/line boundaries; it makes no claim about arbitrary curved solids.
+
+The writer emits `BREP_WITH_VOIDS`, one base `CLOSED_SHELL` per boundary, and one
+`ORIENTED_CLOSED_SHELL` with orientation `FALSE` per void. Void base face and bound
+senses are reversed deliberately; the wrapper restores native material-outward
+orientation. `correspondence.reversed_faces` records that distinction. Counts
+include boundary shells, not the extra oriented wrappers, and always one solid.
 
 Length units state the physical meaning of one source coordinate: millimetres
 or metres. Geometry is not silently rescaled. Occurrence placement is explicit
@@ -21,10 +39,11 @@ by the caller; the default epoch placeholder keeps default exports deterministic
 
 The report separates input support agreement, a conservative allowance for
 normalized STEP frame directions and placed f64 arithmetic, and support-parameter
-conversion error. Their sum must fit
-the declared uncertainty. Defining geometry remains analytic; no curve fitting
-or tessellation approximation is introduced. These checks do not establish
-global solid validity, trim nesting or shell containment, and do not represent
+conversion error. Their sum and the independent material certificate's support/arithmetic
+allowance must both fit the declared uncertainty. Defining geometry remains analytic; no curve fitting
+or tessellation approximation is introduced. Single-shell support checks do not establish
+global solid validity, trim nesting or shell containment. The distinct multi-shell
+material evidence is included in the report. Neither form represents
 independent-reader certification. A successful core export is bounded native
 serialization with the stated checks.
 

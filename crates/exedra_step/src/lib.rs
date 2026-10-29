@@ -5,12 +5,14 @@
 //!
 //! The exporter owns serialization, explicit exchange units and bounded output.
 //! The analytic head owns geometry and incidence; callers own scene hierarchy,
-//! feature metadata and occurrence placement. This first family exports one
-//! connected closed shell of planes, cylinders, cones, spheres and regular ring tori,
+//! feature metadata and occurrence placement. Single-shell export supports
+//! planes, cylinders, cones, spheres and regular ring tori,
 //! bounded by lines, circles and ellipses.
 //!
 //! Input incidence and conservative support agreement are checked. Those checks
-//! do not certify global solid validity, trim nesting or shell containment.
+//! do not certify general solid validity or trim nesting. Multiple-shell export
+//! additionally requires an independent rectilinear material certificate: one
+//! connected solid, disjoint strictly owned cavities and exact face transitions.
 //! The declared schema is AP214 `AUTOMOTIVE_DESIGN`; an independent STEP reader
 //! is an integration validation tool rather than a core dependency.
 
@@ -65,6 +67,8 @@ pub struct StepOptions<'a> {
     pub max_entities: u32,
     /// Largest complete UTF-8/ASCII STEP text buffer, including header and trailer.
     pub max_bytes: usize,
+    /// Independent material/shell certificate limits, used only for multiple shells.
+    pub shell_validation: exedra_analytic::rectilinear::MaterialValidationPolicy,
 }
 impl Default for StepOptions<'_> {
     fn default() -> Self {
@@ -75,6 +79,7 @@ impl Default for StepOptions<'_> {
             tolerance: 1e-7,
             max_entities: 1_000_000,
             max_bytes: 64 * 1024 * 1024,
+            shell_validation: exedra_analytic::rectilinear::MaterialValidationPolicy::default(),
         }
     }
 }
@@ -127,6 +132,9 @@ pub struct StepCorrespondence {
     pub loops: Vec<Option<StepEntityId>>,
     /// Native faces to `ADVANCED_FACE` entities.
     pub faces: Vec<Option<StepEntityId>>,
+    /// Faces whose base closed-shell sense opposes the native material sense.
+    /// The enclosing void wrapper reverses them back in the represented solid.
+    pub reversed_faces: Vec<FaceId>,
 }
 impl StepCorrespondence {
     /// Exported topological entity for a native vertex, if used.
@@ -145,9 +153,17 @@ impl StepCorrespondence {
         self.loops.get(id.index()).copied().flatten()
     }
     /// Exported supporting face for a native face, if used.
+    /// For voids, [`Self::face_reversed`] describes its base-shell orientation.
     #[must_use]
     pub fn face(&self, id: FaceId) -> Option<StepEntityId> {
         self.faces.get(id.index()).copied().flatten()
+    }
+    /// Whether a used face's base shell is reversed relative to native material.
+    /// The enclosing `ORIENTED_CLOSED_SHELL` restores material orientation.
+    #[must_use]
+    pub fn face_reversed(&self, id: FaceId) -> Option<bool> {
+        self.face(id)
+            .map(|_| self.reversed_faces.binary_search(&id).is_ok())
     }
 }
 
@@ -166,7 +182,7 @@ pub struct StepCounts {
     pub loops: u32,
     /// Native supporting faces.
     pub faces: u32,
-    /// Connected closed shells; one in the initial supported family.
+    /// Connected closed shells, including certified cavity boundaries.
     pub shells: u32,
     /// Exported manifold-solid records; one in the initial supported family.
     pub solids: u32,
@@ -188,12 +204,16 @@ pub struct StepReport {
     /// Length allowance for converting native support parameters to STEP parameters.
     /// Zero for surfaces whose defining parameters are serialized unchanged.
     pub parameter_roundoff_bound: f64,
-    /// Sum of input support agreement, frame/coordinate and support-parameter allowances.
+    /// Maximum of serialized support/frame/parameter agreement and the independent
+    /// multi-shell material certificate's support/arithmetic allowance.
     pub max_deviation: f64,
     /// Output work counts.
     pub counts: StepCounts,
     /// Source-to-output topological correspondence.
     pub correspondence: StepCorrespondence,
+    /// Independent exact rectilinear material evidence for multiple shells.
+    /// Single-shell export retains its existing local-support validation envelope.
+    pub material_validation: Option<exedra_analytic::rectilinear::MaterialValidationReport>,
 }
 
 /// Complete exchange text and its evidence. Failure never returns partial text.
@@ -226,11 +246,8 @@ pub enum StepError {
         /// Uses in increasing and decreasing curve direction.
         uses: [u32; 2],
     },
-    /// Multiple shells require explicit solid/cavity ownership, outside this family.
-    ShellCount {
-        /// Connected components found among the faces.
-        found: usize,
-    },
+    /// Multiple shells did not establish one bounded rectilinear solid with voids.
+    ShellValidation(exedra_analytic::rectilinear::MaterialValidationError),
     /// Supporting surface is outside this exact exchange family.
     UnsupportedSurface {
         /// Refused source face.
@@ -307,9 +324,7 @@ impl core::fmt::Display for StepError {
                 f,
                 "STEP edge {edge:?} needs one use in each direction, found {uses:?}"
             ),
-            Self::ShellCount { found } => {
-                write!(f, "STEP export needs one connected shell, found {found}")
-            }
+            Self::ShellValidation(error) => write!(f, "STEP shell ownership: {error}"),
             Self::UnsupportedSurface { face, family } => {
                 write!(f, "STEP face {face:?} has unsupported {family} support")
             }
@@ -386,13 +401,15 @@ pub fn check_geometry_support<F, E>(body: &Body<F, E>) -> Result<(), StepError> 
     Ok(())
 }
 
-/// Exports one connected, closed native shell with exact supported defining geometry.
+/// Exports one native solid with exact supported defining geometry.
 ///
 /// Applies the complete rigid occurrence placement in f64. Output units state
 /// the physical meaning of one source coordinate; no implicit conversion occurs.
 /// The exporter preserves shared native topology and serializes supported
 /// elementary surfaces and line/circle/ellipse curves directly. It does not read a display mesh, approximate
-/// unsupported supports, heal input, or establish global solid validity.
+/// unsupported supports or heal input. Single shells retain local support checks;
+/// multiple shells require a separate exact rectilinear material certificate
+/// establishing a connected solid and disjoint cavity ownership.
 /// Elliptic edges can emit exact shared arc chains to mitigate observed reader
 /// reconstruction errors. Reported deviation covers the serialized defining
 /// geometry, not a reader's subsequently reconstructed surface parameter curves.

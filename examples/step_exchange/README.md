@@ -45,7 +45,7 @@ python3 -m venv /tmp/step-oracle
 
 The script refuses model syntax/semantic checks and transfer warnings/failures,
 then checks the imported boundary with OCCT's `BRepCheck_Analyzer`. It requires
-one solid and shell, preserved unique face/edge/vertex counts, exact reference
+one solid and the declared boundary-shell count, preserved unique face/edge/vertex counts, exact reference
 volume and area within numeric tolerance, retained elementary support families,
 positive canonical cone angles, placed bounds and metre-to-millimetre scaling.
 Bounding-box comparisons report OCCT's separate extrema-padding allowance;
@@ -101,3 +101,10 @@ starts after source/request/container preparation and warmup. Checkpoints retain
 all outputs, release display meshes/STEP text while retaining native models, then
 release models. Original Extrusion copies inside each result are included;
 the shared preauthored input is excluded.
+
+`native_rectilinear` also exports a closed box cavity and a nonconvex lug housing
+with two separate cavities. The OCCT oracle checks their shell counts, material
+volume and points in each void and the retained material. The example prints
+certificate time separately from complete export time (which includes that
+certificate), cells/face scans, plane vertices, link bytes and flat scratch bytes.
+Single-shell fixtures retain the existing support-agreement path.

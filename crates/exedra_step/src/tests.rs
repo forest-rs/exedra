@@ -373,7 +373,9 @@ fn unsupported_supports_and_open_or_multiple_shells_have_distinct_refusals() {
     .unwrap();
     assert!(matches!(
         export_body(&multiple, Placement3::IDENTITY, &StepOptions::default()),
-        Err(StepError::ShellCount { found: 2 })
+        Err(StepError::ShellValidation(
+            exedra_analytic::rectilinear::MaterialValidationError::MaterialComponents { found: 2 }
+        ))
     ));
 }
 
@@ -648,4 +650,86 @@ fn ellipse_fragment_policy_tracks_physical_units_and_exact_equal_axes() {
     assert_eq!(doc.text.matches("=CIRCLE(").count(), 2);
     assert_eq!(doc.report.counts.edges, 15);
     assert_eq!(doc.report.counts.vertices, 10);
+}
+
+#[test]
+fn cavities_preserve_shells_face_senses_and_material_accuracy_evidence() {
+    let outer = cube();
+    let mut inner = cube().into_parts();
+    let transform =
+        |p: [f64; 3]| core::array::from_fn(|axis| p[axis] * 0.25 + [0.75, 1.125, 1.5][axis]);
+    for p in &mut inner.vertices {
+        *p = transform(*p);
+    }
+    for edge in &mut inner.edges {
+        let (curve, _) = edge.regular_mut().unwrap();
+        let Curve::Line(line) = curve else {
+            panic!("cube line");
+        };
+        *curve = Curve::line(transform(line.origin()), line.direction().map(|v| v * 0.25)).unwrap();
+    }
+    for face in &mut inner.faces {
+        let mut frame = face.surface.frame();
+        let origin = transform(frame.rows.map(|r| r[3]));
+        for (row, value) in frame.rows.iter_mut().zip(origin) {
+            row[3] = value;
+        }
+        face.surface = Surface::plane(frame).unwrap();
+        let range = |range: ParameterRange| {
+            let [a, b] = range.bounds();
+            ParameterRange::new(a * 0.25, b * 0.25).unwrap()
+        };
+        face.domain = ParameterDomain {
+            u: range(face.domain.u),
+            v: range(face.domain.v),
+        };
+    }
+    inner.trims.clear();
+    let inner = Body::try_from_parts(
+        inner,
+        &exedra_analytic::body::ValidationPolicy { max_gap: 1e-9 },
+    )
+    .unwrap();
+    let body = exedra_analytic::rectilinear::boolean_rectilinear(
+        &outer,
+        &inner,
+        exedra_analytic::rectilinear::BooleanOperation::Difference,
+        &exedra_analytic::rectilinear::RectilinearPolicy::default(),
+    )
+    .unwrap()
+    .body;
+    let file = export_body(&body, Placement3::IDENTITY, &StepOptions::default()).unwrap();
+    assert!(file.text.contains("BREP_WITH_VOIDS("));
+    assert_eq!(file.text.matches("ORIENTED_CLOSED_SHELL('',*,").count(), 1);
+    assert_eq!(file.report.counts.shells, 2);
+    assert_eq!(file.report.counts.solids, 1);
+    let certificate = file.report.material_validation.as_ref().unwrap();
+    assert_eq!(certificate.volume, 24.0 - 24.0 / 64.0);
+    assert!(
+        file.report.max_deviation
+            >= certificate.boundary.geometry.max_gap + certificate.arithmetic_allowance
+    );
+    assert!(certificate.plane_vertices <= 8 * certificate.cells);
+    assert!(certificate.arrangement_scratch_bytes >= certificate.link_bytes);
+    for (shell, entry) in certificate.boundary.shells.iter().enumerate() {
+        for &face in &entry.faces {
+            assert_eq!(
+                file.report.correspondence.face_reversed(face),
+                Some(shell != certificate.outer_shell)
+            );
+        }
+    }
+    let mut options = StepOptions::default();
+    options.shell_validation.arrangement.max_cells = 1;
+    assert!(matches!(
+        export_body(&body, Placement3::IDENTITY, &options),
+        Err(StepError::ShellValidation(
+            exedra_analytic::rectilinear::MaterialValidationError::Arrangement(
+                exedra_analytic::rectilinear::RectilinearError::CellBudget { .. }
+            )
+        ))
+    ));
+    let ordinary = export_body(&outer, Placement3::IDENTITY, &StepOptions::default()).unwrap();
+    assert!(ordinary.report.material_validation.is_none());
+    assert!(ordinary.report.correspondence.reversed_faces.is_empty());
 }

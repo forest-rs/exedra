@@ -76,6 +76,9 @@ pub(super) struct Prepared {
     pub gap: f64,
     pub allowance: f64,
     pub parameter_allowance: f64,
+    pub max_deviation: f64,
+    pub material: Option<exedra_analytic::rectilinear::MaterialValidationReport>,
+    pub reversed_faces: Vec<bool>,
 }
 
 pub(super) fn prepare<F, E>(
@@ -317,8 +320,22 @@ pub(super) fn prepare<F, E>(
             components += 1;
         }
     }
-    if components != 1 {
-        return Err(StepError::ShellCount { found: components });
+    let material = if components == 1 {
+        None
+    } else {
+        Some(
+            exedra_analytic::rectilinear::validate_material(body, &options.shell_validation)
+                .map_err(StepError::ShellValidation)?,
+        )
+    };
+    let mut reversed_faces = Vec::new();
+    if let Some(material) = &material {
+        reversed_faces.resize(body.faces().len(), false);
+        for &shell in &material.void_shells {
+            for &face in &material.boundary.shells[shell].faces {
+                reversed_faces[face.index()] = true;
+            }
+        }
     }
     for (&active, &point) in vertices.iter().zip(body.vertices()) {
         if active {
@@ -338,7 +355,10 @@ pub(super) fn prepare<F, E>(
     // This headroom covers that correction plus placed coordinate arithmetic;
     // no curve fitting or mesh approximation is introduced.
     let allowance = 32.0 * FRAME_TOLERANCE * scale + 128.0 * f64::EPSILON * world;
-    let required = validation.max_gap + allowance + parameter_allowance;
+    let material_bound = material.as_ref().map_or(0.0, |evidence| {
+        evidence.boundary.geometry.max_gap + evidence.arithmetic_allowance
+    });
+    let required = (validation.max_gap + allowance + parameter_allowance).max(material_bound);
     if !required.is_finite() {
         return Err(StepError::Numeric);
     }
@@ -364,7 +384,7 @@ pub(super) fn prepare<F, E>(
         coedges,
         loops: count(&loops),
         faces: u32::try_from(body.faces().len()).expect("input budget"),
-        shells: 1,
+        shells: u32::try_from(components).expect("input budget"),
         solids: 1,
     };
     Ok(Prepared {
@@ -375,6 +395,9 @@ pub(super) fn prepare<F, E>(
         gap: validation.max_gap,
         allowance,
         parameter_allowance,
+        max_deviation: required,
+        material,
+        reversed_faces,
     })
 }
 
