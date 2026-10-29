@@ -325,3 +325,20 @@ removed volume/area change. Failed entry, clearance or numeric checks preserve
 the source body. The current conservative planner requires the outer cylinder's
 complete corridor to fit between two planar source exits, even for finite cuts;
 intersecting existing passages remain outside this operation.
+
+`machining::subtract_parallel_passages` subtracts the union of up to 32 parallel
+through cylinders, including overlapping passages. Their common planar exits
+must be perpendicular to the tool axes. A complete circle arrangement splits
+exposed rim arcs and cylinder faces at shared intersection lines; overlapping
+tools leave no internal wall. The report names each wall's original tool,
+connected openings, pair work, native gap and union volume/area changes. Fully
+contained tools contribute no duplicate cavity. Tangencies, unresolved multiple
+junctions and a tool union surrounding an uncut material island are refused.
+This bounded intersection/split/classify operation retains ordinary circle and
+line edges; it does not approximate general skew cylinder intersections.
+
+Planar line/circle loops can be queried through a checked shared profile view.
+Complete source-to-profile curve coefficients bound conversion disagreement;
+clearance checks subtract that gap and the profile query's arithmetic allowance
+before trusting winding. This allows later disjoint machining on caps containing
+joined passage arcs, while preserving the native circles and shared vertices.

@@ -301,6 +301,11 @@ pub fn subtract_bore_with_roles<F: Clone, E: Clone>(
     let source_faces = body.faces().len();
     let source_edges = body.edges().len();
     let mut parts = body.clone().into_parts();
+    parts.vertices.reserve(2 * n);
+    parts.edges.reserve(3 * n);
+    parts.loops.reserve(3 * n);
+    parts.faces.reserve(2 * n);
+    parts.trims.reserve(3 * n);
     let mut report = BoreReport {
         faces: Vec::new(),
         retained_edges: (0..source_edges)
