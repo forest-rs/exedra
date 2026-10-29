@@ -552,14 +552,26 @@ Ordinary inputs keep their original triangle output and allocation event counts;
 the compact optional strip descriptor adds eight bytes per planned patch.
 
 The sphere remains a substantive generic-chart workload: 3,840 triangles at about
-5.3ms for tolerance 0.025. The report exposes refinement batches, triangle error
+5.9ms for tolerance 0.025, including exact analytic corner normals. The report exposes refinement batches, triangle error
 tests and generated vertices. Across its coarse/fine cases, 7–8 batches perform
 4.9–5.2 error tests per final triangle. These inputs do not show quadratic scan
 amplification; worst-case total scanning remains data dependent. Interior edge
 incidence uses deterministic ordered maps. Skipping that map on the final
 accepted pass and reserving exact split-triangle cardinality reduced the matched
 sphere window from 5,087 to 4,173 allocation events and from 3,535,312 to
-3,093,560 traffic bytes. Peak tracked heap is 1,132,120 bytes (eight bytes more
-than the earlier patch descriptor), with 663,552 bytes retained by the output
-and zero tracked bytes after release. These are allocation traffic/live-heap
+3,093,560 traffic bytes before analytic normal overrides were added.
+
+Generic chart triangles now retain exact support normals through the ordinary
+corner-normal override layer, selected by `CustomOrDerived`. On two independent
+spherical patches the regression bounds normal-vector error below 2e-6 at display
+tolerances 0.025 and 0.005; previously derived normals differed by up to 0.345 and
+0.573. Positional tolerance alone does not constrain derived-normal error on thin
+triangles. Evaluating each local UV normal once reduces the matched coarse/fine
+normal-producing medians from 1.10/6.93ms to 0.88/5.92ms, compared with the original
+derived-only 0.73/5.32ms. Topology and positional-error bounds are identical.
+Temporary normal-table capacity peaks at 85,120/394,240 bytes; retained normal
+value payload is 35,328/184,320 bytes, excluding sparse spare capacity. The fine
+isolated output now retains 925,696 bytes (262,144 added normal-capacity bytes),
+peaks at 1,363,800 bytes, and produces 4,199 allocation events with 4,199,416 traffic
+bytes. All tracked bytes are released on output drop. These are allocation traffic/live-heap
 measurements, not RSS or whole-process residency.

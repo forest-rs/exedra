@@ -21,6 +21,12 @@ pub(super) struct Work {
     pub batches: usize,
     pub triangle_tests: usize,
     pub vertices: usize,
+    pub normal_scratch_bytes: usize,
+}
+
+pub(super) struct TriangleNormals {
+    pub triangle: u32,
+    pub normals: [[f32; 3]; 3],
 }
 
 /// Uniform bounds on the norms of `S_uu`, `S_uv`, `S_vv` throughout a face domain.
@@ -156,6 +162,7 @@ pub(super) fn emit_face<F, E>(
     triangles: &mut Vec<[u32; 3]>,
     regions: &mut Vec<u32>,
     faces: &mut Vec<FaceId>,
+    normals: &mut Vec<TriangleNormals>,
     work: &mut Work,
 ) -> Result<f64, RealizationError> {
     let face = &body.faces()[id.index()];
@@ -338,6 +345,19 @@ pub(super) fn emit_face<F, E>(
         }
         cover = refined;
     }
+    super::check_table_capacity::<[f32; 3]>("trim parameter normals", points.len())?;
+    let mut parameter_normals = Vec::with_capacity(points.len());
+    for &parameter in &points {
+        let field = body
+            .evaluate_support(id, parameter)
+            .and_then(|e| crate::geometry::transformed_normal(placement, e.normal))
+            .ok_or(RealizationError::DegenerateFace { face: id })?;
+        let normal = narrow(field);
+        if !normal.iter().all(|value| value.is_finite()) {
+            return Err(RealizationError::DegenerateFace { face: id });
+        }
+        parameter_normals.push(normal);
+    }
     let mut bound = 0.0_f64;
     for t in cover {
         bound = bound.max(deviation(&points, t, h));
@@ -367,8 +387,32 @@ pub(super) fn emit_face<F, E>(
                 maximum: u32::MAX,
             });
         }
+        let mut corner_normals = t.map(|j| parameter_normals[j as usize]);
+        if face.sense == Sense::Reverse {
+            corner_normals.swap(1, 2);
+        }
+        let normal_corners = normals.len().saturating_add(1).saturating_mul(3);
+        if normal_corners > u32::MAX as usize {
+            return Err(RealizationError::Budget {
+                storage: "trim corner normals",
+                required: normal_corners,
+                maximum: u32::MAX,
+            });
+        }
+        super::check_table_capacity::<TriangleNormals>(
+            "trim triangle normals",
+            normals.len().saturating_add(1),
+        )?;
+        normals.push(TriangleNormals {
+            triangle: crate::usize_to_u32(triangles.len()),
+            normals: corner_normals,
+        });
         emit(triangles, corners, id, region, emitted, regions, faces)?;
     }
+    work.normal_scratch_bytes = work.normal_scratch_bytes.max(
+        parameter_normals.capacity() * size_of::<[f32; 3]>()
+            + normals.capacity() * size_of::<TriangleNormals>(),
+    );
     work.vertices += emitted.len() - initial_vertices;
     Ok(bound)
 }

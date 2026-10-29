@@ -318,7 +318,12 @@ fn main() -> Result<(), Box<dyn Error>> {
                 }
                 drop(candidate);
             }
-            rows.push(json!({"fixture":mode,"tolerance":tolerance,"native_faces":body.faces().len(),"native_edges":body.edges().len(),"trimmed_coedges":validation.trimmed_coedges,"max_trim_gap":validation.max_trim_gap,"vertices":output.mesh_vertices.len(),"triangles":output.mesh_faces.len(),"max_deviation":output.report.max_deviation,"refinement_batches":output.report.work.trim_refinement_batches,"triangle_error_tests":output.report.work.trim_triangle_tests,"generated_vertices":output.report.work.trim_generated_vertices,"validate_us_p50":median(validate),"realize_us_p50":median(realize)}));
+            let normal_values = output
+                .mesh
+                .attrs()
+                .sparse(exedra_mesh::attr::CORNER_NORMAL_OVERRIDE)
+                .map_or(0, |layer| layer.entries().len());
+            rows.push(json!({"fixture":mode,"tolerance":tolerance,"native_faces":body.faces().len(),"native_edges":body.edges().len(),"trimmed_coedges":validation.trimmed_coedges,"max_trim_gap":validation.max_trim_gap,"vertices":output.mesh_vertices.len(),"triangles":output.mesh_faces.len(),"max_deviation":output.report.max_deviation,"refinement_batches":output.report.work.trim_refinement_batches,"triangle_error_tests":output.report.work.trim_triangle_tests,"generated_vertices":output.report.work.trim_generated_vertices,"analytic_normal_corners":output.report.work.trim_normal_corners,"normal_scratch_capacity_bytes":output.report.work.trim_normal_scratch_bytes,"retained_normal_payload_bytes":normal_values*size_of::<(u32,[f32;3])>(),"validate_us_p50":median(validate),"realize_us_p50":median(realize)}));
         }
     }
     println!(

@@ -52,7 +52,11 @@ split vertex without refining the whole strip; only adjacent panels change.
 Other elementary curved faces with complete explicit trims use chart polygon
 triangulation and conforming interior-edge refinement. Uniform second-partial
 bounds certify the surface interpolation error. Shared boundary chains remain
-fixed, including periodic seam copies and hole boundaries. Multi-period charts,
+fixed, including periodic seam copies and hole boundaries. Generic chart triangles
+retain exact supporting-surface corner normals through the mesh's ordinary normal
+override layer; extraction selects them with `NormalsSource::CustomOrDerived`.
+The work report counts evaluated normal corners and peak temporary normal-table
+capacity bytes. Multi-period charts,
 unsupported pole patches and exhausted sampling/storage budgets are typed
 refusals. Recognized patches keep their optimized path even when explicit trim
 records are present.
