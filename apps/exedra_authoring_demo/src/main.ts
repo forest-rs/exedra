@@ -29,13 +29,15 @@ import {
   authorAngledBore,
   authorHousing,
   authorFusedHousing,
+  authorValveBlock,
   constructionChart,
   type PanelParameters,
   type CollarParameters,
   type FlangeParameters,
   type HousingParameters,
+  type ValveBlockParameters,
 } from "./sample.js";
-import sampleHtml from "./sample.ts?highlighted";
+import sampleHtml, { authorSections } from "./sample.ts?highlighted";
 import { mountViews } from "./views.js";
 import { meshTriangles } from "./mesh-overlay.js";
 
@@ -54,6 +56,7 @@ app.innerHTML = /* HTML */ `
       <div id="geometry-controls">
         <label class="label" for="sample">Sample</label>
         <select id="sample" class="quality">
+          <option value="valveBlock">Machined valve block</option>
           <option value="housing">Machined housing</option>
           <option value="fusedHousing">Fused-lug housing</option>
           <option value="panel" selected>Pocketed plate</option>
@@ -602,6 +605,167 @@ app.innerHTML = /* HTML */ `
             />
           </div>
         </div>
+        <div id="valve-controls" hidden>
+          <p class="hint">
+            Joined horizontal passages, a sloping stepped port and four blind
+            holes. Depths follow the inward bore axis. Invalid cuts retain the
+            last valid model.
+          </p>
+          <div class="control">
+            <label class="label" for="valveWidth">
+              Block width
+              <span class="value" id="valveWidth-value"></span>
+            </label>
+            <input
+              id="valveWidth"
+              type="range"
+              min="96"
+              max="140"
+              step="1"
+              value="112"
+            />
+          </div>
+          <div class="control">
+            <label class="label" for="valveDepth">
+              Block depth
+              <span class="value" id="valveDepth-value"></span>
+            </label>
+            <input
+              id="valveDepth"
+              type="range"
+              min="60"
+              max="100"
+              step="1"
+              value="72"
+            />
+          </div>
+          <div class="control">
+            <label class="label" for="valveHeight">
+              Midpoint height
+              <span class="value" id="valveHeight-value"></span>
+            </label>
+            <input
+              id="valveHeight"
+              type="range"
+              min="32"
+              max="60"
+              step="1"
+              value="42"
+            />
+          </div>
+          <div class="control">
+            <label class="label" for="valveTopAngle">
+              Mounting face angle
+              <span class="value" id="valveTopAngle-value"></span>
+            </label>
+            <input
+              id="valveTopAngle"
+              type="range"
+              min="0"
+              max="25"
+              step="1"
+              value="12"
+            />
+          </div>
+          <div class="control">
+            <label class="label" for="valvePortRadius">
+              Through port radius
+              <span class="value" id="valvePortRadius-value"></span>
+            </label>
+            <input
+              id="valvePortRadius"
+              type="range"
+              min="4"
+              max="12"
+              step="0.5"
+              value="8"
+            />
+          </div>
+          <div class="control">
+            <label class="label" for="valveCounterboreRadius">
+              Counterbore radius
+              <span class="value" id="valveCounterboreRadius-value"></span>
+            </label>
+            <input
+              id="valveCounterboreRadius"
+              type="range"
+              min="10"
+              max="20"
+              step="0.5"
+              value="14"
+            />
+          </div>
+          <div class="control">
+            <label class="label" for="valveCounterboreDepth">
+              Shoulder depth
+              <span class="value" id="valveCounterboreDepth-value"></span>
+            </label>
+            <input
+              id="valveCounterboreDepth"
+              type="range"
+              min="4"
+              max="24"
+              step="0.5"
+              value="10"
+            />
+          </div>
+          <div class="control">
+            <label class="label" for="valveBlindDepth">
+              Fastener depth
+              <span class="value" id="valveBlindDepth-value"></span>
+            </label>
+            <input
+              id="valveBlindDepth"
+              type="range"
+              min="6"
+              max="40"
+              step="0.5"
+              value="14"
+            />
+          </div>
+          <div class="control">
+            <label class="label" for="valveChamberRadius">
+              Chamber radius
+              <span class="value" id="valveChamberRadius-value"></span>
+            </label>
+            <input
+              id="valveChamberRadius"
+              type="range"
+              min="4"
+              max="10"
+              step="0.5"
+              value="7"
+            />
+          </div>
+          <div class="control">
+            <label class="label" for="valveChamberSpacing">
+              Chamber center spacing
+              <span class="value" id="valveChamberSpacing-value"></span>
+            </label>
+            <input
+              id="valveChamberSpacing"
+              type="range"
+              min="4"
+              max="20"
+              step="0.5"
+              value="10"
+            />
+          </div>
+          <div class="control">
+            <label class="label" for="valveChamberHeight">
+              Chamber center height
+              <span class="value" id="valveChamberHeight-value"></span>
+            </label>
+            <input
+              id="valveChamberHeight"
+              type="range"
+              min="10"
+              max="24"
+              step="0.5"
+              value="14"
+            />
+          </div>
+        </div>
         <div id="housing-controls" hidden>
           <p class="hint" id="housing-hint">
             A flanged polygon blank, two mount holes, an oblique main passage
@@ -879,6 +1043,10 @@ app.innerHTML = /* HTML */ `
         <span class="revision" id="revision">Loading kernel</span>
       </div>
       <div class="code" id="code" hidden>
+        <div class="code-navigation">
+          <strong id="code-title">Selected author</strong>
+          <button id="code-scope" aria-pressed="false">Full source</button>
+        </div>
         <pre><code></code></pre>
       </div>
       <div class="status" id="status" role="status">
@@ -979,6 +1147,10 @@ app.innerHTML = /* HTML */ `
       <div id="selection" class="selection">No selection.</div>
       <p id="selection-notice" class="notice"></p>
       <h2>Construction</h2>
+      <button id="boundary-check" disabled>Inspect native boundary</button>
+      <div id="boundary-result" class="hint">
+        Checks topology and supported trims on request.
+      </div>
       <div id="attachment" class="hint">
         The gold pin is placed from the tagged recess floor.
       </div>
@@ -999,8 +1171,45 @@ app.innerHTML = /* HTML */ `
 const element = <T extends HTMLElement>(id: string) =>
   document.getElementById(id) as T;
 const viewport = element<HTMLElement>("viewport");
-// The build plugin escapes every source slice before adding token spans.
-element("code").querySelector("code")!.innerHTML = sampleHtml;
+// The build plugin escapes all excerpts and the complete source before adding
+// token spans. Runtime navigation only selects those precompiled source views.
+const sampleAuthors: Record<string, string> = {
+  panel: "authorPanel",
+  collar: "authorCollar",
+  roundedRing: "authorRoundedTurn",
+  torus: "authorRoundedTurn",
+  hollowTorus: "authorRoundedTurn",
+  sleeve: "authorFlangedSleeve",
+  fitting: "authorTurnedFitting",
+  sphere: "authorSphere",
+  dome: "authorDome",
+  cone: "authorPointedCone",
+  rail: "authorRail",
+  hollowRail: "authorRail",
+  loft: "authorVariableLoft",
+  fillet: "authorFinishedPlate",
+  chamfer: "authorFinishedPlate",
+  bore: "authorAngledBore",
+  housing: "authorHousing",
+  fusedHousing: "authorFusedHousing",
+  valveBlock: "authorValveBlock",
+};
+let fullCodeSource = false;
+function showAuthorCode() {
+  const author = sampleAuthors[element<HTMLSelectElement>("sample").value];
+  const section = authorSections[author];
+  element("code").querySelector("code")!.innerHTML =
+    fullCodeSource || !section ? sampleHtml : section.html;
+  element("code-title").textContent = fullCodeSource
+    ? "sample.ts · full source"
+    : author;
+  element("code-scope").textContent = fullCodeSource
+    ? "Selected author"
+    : "Full source";
+  element("code-scope").setAttribute("aria-pressed", String(fullCodeSource));
+  element("code").scrollTo(0, 0);
+}
+showAuthorCode();
 const controlsNames = [
   "width",
   "height",
@@ -1088,6 +1297,32 @@ const housingParameters = (delta = 0): HousingParameters => ({
   portRadius: value("housingPortRadius"),
   clearance: value("housingClearance"),
 });
+const valveNames = [
+  "valveWidth",
+  "valveDepth",
+  "valveHeight",
+  "valveTopAngle",
+  "valvePortRadius",
+  "valveCounterboreRadius",
+  "valveCounterboreDepth",
+  "valveBlindDepth",
+  "valveChamberRadius",
+  "valveChamberSpacing",
+  "valveChamberHeight",
+] as const;
+const valveParameters = (delta = 0): ValveBlockParameters => ({
+  width: value("valveWidth") + delta,
+  depth: value("valveDepth"),
+  height: value("valveHeight"),
+  topAngle: value("valveTopAngle"),
+  portRadius: value("valvePortRadius"),
+  counterboreRadius: value("valveCounterboreRadius"),
+  counterboreDepth: value("valveCounterboreDepth"),
+  blindDepth: value("valveBlindDepth"),
+  chamberRadius: value("valveChamberRadius"),
+  chamberSpacing: value("valveChamberSpacing"),
+  chamberHeight: value("valveChamberHeight"),
+});
 const flangeNames = [
   "flangeBore",
   "sleeveOuter",
@@ -1143,6 +1378,8 @@ const authorCurrent = (delta = 0) => {
         treatment: sample,
         inner: sample === "chamfer",
       });
+    case "valveBlock":
+      return authorValveBlock(valveParameters(delta));
     case "housing":
       return authorHousing(housingParameters(delta));
     case "fusedHousing":
@@ -1183,6 +1420,10 @@ const formatMeasure = (value: NativeMeasurement) =>
       : "Numeric limit";
 const featureColors: Record<string, string> = {
   stock: "#7eabb8",
+  block: "#7eabb8",
+  "joined chamber": "#7ec9bb",
+  "stepped port": "#d7ab76",
+  "blind fasteners": "#b9a1d6",
   "left lug": "#d7ab76",
   "right lug": "#bb9c76",
   "left mount": "#d7ab76",
@@ -1548,11 +1789,17 @@ function fit() {
   if (!drawn) return;
   const bounds = new THREE.Box3().setFromObject(drawn.group),
     center = bounds.getCenter(new THREE.Vector3());
-  const size = bounds.getSize(new THREE.Vector3());
-  const scale = Math.max(size.x, size.y * camera.aspect, size.z * 1.2, 20);
-  camera.position
-    .copy(center)
-    .add(new THREE.Vector3(scale * 0.94, -scale * 1.32, scale * 1.24));
+  const sphere = bounds.getBoundingSphere(new THREE.Sphere());
+  // Fit the complete model in the tighter field of view. The previous longest-
+  // axis heuristic clipped tall blocks and narrow viewports at near corners.
+  const verticalHalfAngle =
+    THREE.MathUtils.degToRad(camera.getEffectiveFOV()) / 2;
+  const halfAngle = Math.atan(
+    Math.tan(verticalHalfAngle) * Math.min(camera.aspect, 1),
+  );
+  const distance = (Math.max(sphere.radius, 10) / Math.sin(halfAngle)) * 1.12;
+  const direction = new THREE.Vector3(0.94, -1.32, 1.24).normalize();
+  camera.position.copy(center).addScaledVector(direction, distance);
   orbit.target.copy(center);
   orbit.update();
   hasCamera = true;
@@ -1642,6 +1889,22 @@ function evidence() {
     const operations = panel.machining.operations;
     element("attachment").textContent =
       `${panel.solidOperations?.operations.filter((operation) => operation.kind === "union").length ? `${panel.solidOperations.operations.filter((operation) => operation.kind === "union").length} native unions fuse the mounting lugs. ` : ""}${operations.length} retained-body cylinder cuts. Minimum certified material clearance ${format(Math.min(...operations.map((operation) => operation.minimumClearance)), 3)} mm. Exact analytic volume/area derive from the blank and machining deltas. Select each named passage to inspect its native surface.`;
+  } else if (
+    panel.solidOperations?.operations.some(
+      (operation) => operation.kind === "subtractBore",
+    )
+  ) {
+    element("workplane-time").textContent = "—";
+    const bores = panel.solidOperations.operations.filter(
+      (operation) => operation.kind === "subtractBore",
+    );
+    const shoulders = bores.reduce(
+      (sum, bore) => sum + bore.shoulders.length,
+      0,
+    );
+    const floors = bores.filter((bore) => bore.floor !== null).length;
+    element("attachment").textContent =
+      `${panel.solidOperations.operations.some((operation) => operation.kind === "subtractParallelPassages") ? "Joined chamber + " : ""}${bores.length} native bore operations · ${shoulders} annular shoulder · ${floors} blind floors. Minimum certified clearance ${format(Math.min(...bores.map((bore) => bore.minimumClearance)), 3)} mm. Select the port or fasteners to inspect their walls and floors.`;
   } else if (panel.bore) {
     const bore = panel.bore;
     element("workplane-time").textContent = "—";
@@ -1718,6 +1981,9 @@ function accept(document: NativeDocument, view: Drawn, edited: boolean) {
     dispose(prior);
   }
   current = document;
+  element<HTMLButtonElement>("boundary-check").disabled = false;
+  element("boundary-result").textContent =
+    "Checks topology and supported trims on request.";
   drawn = view;
   scene.add(view.group);
   if (edited && selected) {
@@ -1788,11 +2054,12 @@ for (const key of [
   ...boreNames,
   ...poleNames,
   ...housingNames,
+  ...valveNames,
 ]) {
   const input = element<HTMLInputElement>(key);
   const label = () => {
     element(`${key}-value`).textContent =
-      `${input.value} ${["angle", "turnAngle", "loftTwist", "flangeAngle", "boreAngle", "housingPassageAngle"].includes(key) ? "°" : "mm"}`;
+      `${input.value} ${["angle", "turnAngle", "loftTwist", "flangeAngle", "boreAngle", "housingPassageAngle", "valveTopAngle"].includes(key) ? "°" : "mm"}`;
   };
   label();
   input.addEventListener("input", () => {
@@ -1808,6 +2075,8 @@ element<HTMLSelectElement>("shoulderFinish").onchange = () => {
   scheduleBuild();
 };
 element<HTMLSelectElement>("sample").onchange = () => {
+  fullCodeSource = false;
+  showAuthorCode();
   const sample = element<HTMLSelectElement>("sample").value,
     panel = sample === "panel",
     torus = sample === "torus" || sample === "hollowTorus";
@@ -1825,7 +2094,8 @@ element<HTMLSelectElement>("sample").onchange = () => {
     sample === "sleeve" ||
     sample === "bore" ||
     sample === "housing" ||
-    sample === "fusedHousing";
+    sample === "fusedHousing" ||
+    sample === "valveBlock";
   element("pole-controls").hidden = !pole;
   element("poleHeight-control").hidden = sample === "sphere";
   if (pole) {
@@ -1841,6 +2111,7 @@ element<HTMLSelectElement>("sample").onchange = () => {
         ? "Cap height may reach the sphere diameter. Invalid dimensions retain the last valid model."
         : "Full revolutions with native poles. Show triangles to inspect the mesh near the tip.";
   }
+  element("valve-controls").hidden = sample !== "valveBlock";
   element("housing-controls").hidden =
     sample !== "housing" && sample !== "fusedHousing";
   element("housing-hint").textContent =
@@ -1892,7 +2163,7 @@ element<HTMLSelectElement>("sample").onchange = () => {
   ].entries()) {
     element<HTMLInputElement>(key).value = String(defaults[i]);
     element(`${key}-value`).textContent =
-      `${defaults[i]} ${["angle", "turnAngle", "loftTwist", "flangeAngle", "boreAngle", "housingPassageAngle"].includes(key) ? "°" : "mm"}`;
+      `${defaults[i]} ${["angle", "turnAngle", "loftTwist", "flangeAngle", "boreAngle", "housingPassageAngle", "valveTopAngle"].includes(key) ? "°" : "mm"}`;
   }
   for (const [key, value] of [
     ["rounding", 2],
@@ -1936,11 +2207,41 @@ element<HTMLInputElement>("wireframe").onchange = () => {
     e.triangles.setVisible(element<HTMLInputElement>("wireframe").checked);
   invalidate();
 };
+element("boundary-check").onclick = () => {
+  if (!current) return;
+  try {
+    const lines = Object.values(current.parts).map((part) => {
+      const report = part.validateBoundary();
+      const certified = report.faceTrims.filter(
+        (trim) => trim.status === "certified",
+      ).length;
+      const unsupported = report.faceTrims.length - certified;
+      return `${part.name}: ${report.shells.length} boundary shell(s), ${certified}/${report.faceTrims.length} trim arrangements certified${unsupported ? `, ${unsupported} unsupported` : ""}; kernel ${format(report.timing.kernelMs, 2)} ms.`;
+    });
+    element("boundary-result").textContent =
+      `${lines.join(" ")} Global solid validity is not checked.`;
+  } catch (error) {
+    const diagnostic =
+      error instanceof ExedraError
+        ? error.diagnostic
+        : { code: "unexpected", message: String(error) };
+    element("boundary-result").textContent =
+      `${diagnostic.code}: ${diagnostic.message}`;
+  }
+};
 element("fit").onclick = fit;
 element("code-toggle").onclick = () => {
   const code = element("code");
   code.hidden = !code.hidden;
+  if (!code.hidden) {
+    fullCodeSource = false;
+    showAuthorCode();
+  }
   element("code-toggle").setAttribute("aria-expanded", String(!code.hidden));
+};
+element("code-scope").onclick = () => {
+  fullCodeSource = !fullCodeSource;
+  showAuthorCode();
 };
 const raycaster = new THREE.Raycaster();
 let down: [number, number] | null = null;
@@ -2097,6 +2398,8 @@ if (
   element<HTMLSelectElement>("sample").value = requestedSample;
   element("sample").dispatchEvent(new Event("change"));
 }
+if (new URL(location.href).searchParams.get("wireframe") === "1")
+  element<HTMLInputElement>("wireframe").checked = true;
 if (new URL(location.href).searchParams.get("checker") === "1")
   element<HTMLInputElement>("checker").checked = true;
 try {

@@ -277,6 +277,18 @@ h2 {
 .code[hidden] {
   display: none;
 }
+.code-navigation {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 16px;
+  position: sticky;
+  top: -18px;
+  padding: 10px 0 16px;
+  background: #111b25;
+  color: #a6bec9;
+  font-size: 12px;
+}
 .code pre {
   font-family: "IBM Plex Mono", monospace;
   font-size: 13px;

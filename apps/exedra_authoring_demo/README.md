@@ -3,7 +3,7 @@
 Editable TypeScript samples: a pocketed plate, collar, rounded ring, solid and
 hollow toroidal seals, a flanged sleeve, a turned fitting, solid/hollow swept rails,
 a four-section loft, selected outer fillets/inner chamfers, spheres, spherical caps,
-pointed cones, and machined/fused-lug housings. Controls rebuild actual
+pointed cones, machined/fused-lug housings and a machined valve block. Controls rebuild actual
 Rust/Wasm geometry. Slider input coalesces to one latest-value build before the
 next frame is drawn, without a trailing debounce or reduced interaction quality.
 Rendering is requested for edits, display changes, picking, resize and camera
@@ -30,8 +30,10 @@ tool. `npm run build` creates the production app; `npm run preview` serves it.
 `npm run test:wasm` exercises every sample through the generated Wasm, including
 cached/fresh correspondence, held documents, accuracy outcomes and STEP support.
 
-[The actual authoring function](src/sample.ts) is also available through **View
-TypeScript** in the app. Geometry/validation live in Rust, reusable descriptions
+**View TypeScript** opens the selected sample's actual author function, its
+parameter types and local helper functions. **Full source** keeps the complete
+[authoring file](src/sample.ts) available. Both views are extracted and highlighted
+at build time; the browser does not load a TypeScript parser. Geometry/validation live in Rust, reusable descriptions
 and lifetimes live in the [SDK](../../packages/exedra/README.md), and Three.js
 owns the camera, materials, picking presentation and GPU resource disposal.
 
@@ -189,3 +191,24 @@ disjoint cylindrical passages through two parallel planar exit patches.
 cuts, cavities/disconnected outputs, placed operands and refused-edit recovery.
 Native archive save/reopen is separately available through the Rust
 `exedra_scene::native` adapter; the browser scene view does not yet expose it.
+
+
+The **Machined valve block** sample combines a union of overlapping horizontal
+cylinders, a stepped vertical passage through nonparallel planar faces and four
+blind fastener holes. Eleven controls change its actual retained geometry. The
+joined chamber has no internal wall; the counterbore has a shared annular shoulder
+and each blind hole has a native floor. Select each named feature, vary display
+quality, or open `/?sample=valveBlock&wireframe=1` to inspect its mesh triangles.
+Near-tangent chambers and invalid bore depths retain the last valid revision.
+`smoke-machining.mjs` checks every control, typed recovery, feature correspondence,
+STEP export and the fractional-width fused-lug regression using release Wasm.
+
+**Inspect native boundary** runs an explicit timed topology/trim inspection.
+Certified and unsupported trim arrangements are counted separately; a local
+manifold result does not certify global self-intersection, outward shell
+orientation or material containment. Inspection never runs implicitly on slider
+edits. The SDK exposes the full per-face report and effective work policy.
+The Rust `native_scene --bin native_archive` example saves this compound valve
+as retained native geometry in USDA, reopens it in a fresh store with exact-bit
+comparisons, adds another blind service bore and exports STEP. This native
+archive witness is separate from the gallery's scene layer download.

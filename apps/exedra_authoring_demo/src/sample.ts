@@ -572,21 +572,31 @@ export function authorFusedHousing(parameters: HousingParameters) {
       .tagged("stock"),
     { height: parameters.thickness },
   );
-  const lugWidth = (parameters.width - parameters.bodyWidth) / 2;
-  const lugY = -parameters.height / 2 + parameters.flangeDepth / 2;
-  const lugX = (parameters.width + parameters.bodyWidth) / 4;
-
+  // Reuse the body's exact edge coordinates at both joins. Computing a lug
+  // center and half-width separately can leave a one-ULP gap during slider edits.
+  const bodyEdge = parameters.bodyWidth / 2;
+  const outerEdge = parameters.width / 2;
+  const bottom = -parameters.height / 2;
+  const shoulder = bottom + parameters.flangeDepth;
   const leftLug = extrude(
     profiles
-      .rectangle({ width: lugWidth, height: parameters.flangeDepth })
-      .translated([-lugX, lugY])
+      .polygon([
+        [-outerEdge, bottom],
+        [-bodyEdge, bottom],
+        [-bodyEdge, shoulder],
+        [-outerEdge, shoulder],
+      ])
       .tagged("left lug"),
     { height: parameters.thickness },
   );
   const rightLug = extrude(
     profiles
-      .rectangle({ width: lugWidth, height: parameters.flangeDepth })
-      .translated([lugX, lugY])
+      .polygon([
+        [bodyEdge, bottom],
+        [outerEdge, bottom],
+        [outerEdge, shoulder],
+        [bodyEdge, shoulder],
+      ])
       .tagged("right lug"),
     { height: parameters.thickness },
   );
@@ -632,4 +642,100 @@ function machineHousing(stock: Solid, parameters: HousingParameters) {
   });
 
   return { housing };
+}
+
+export interface ValveBlockParameters {
+  width: number;
+  depth: number;
+  height: number;
+  topAngle: number;
+  portRadius: number;
+  counterboreRadius: number;
+  counterboreDepth: number;
+  blindDepth: number;
+  chamberRadius: number;
+  chamberSpacing: number;
+  chamberHeight: number;
+}
+
+/** Joined horizontal passages, a sloping counterbored port and four blind fasteners. */
+export function authorValveBlock(parameters: ValveBlockParameters) {
+  const halfWidth = parameters.width / 2;
+  const slope = Math.tan((parameters.topAngle * Math.PI) / 180);
+  const entryHeight = (x: number) => parameters.height + slope * x;
+
+  // Author the side elevation in XY, then extrude its depth. Placement turns
+  // local Y into world Z; machining coordinates stay in the source frame.
+  const blank = extrude(
+    profiles
+      .polygon([
+        [-halfWidth, 0],
+        [halfWidth, 0],
+        [halfWidth, entryHeight(halfWidth)],
+        [-halfWidth, entryHeight(-halfWidth)],
+      ])
+      .tagged("block"),
+    {
+      height: parameters.depth,
+      placement: placement({
+        rotationXYZ: [Math.PI / 2, 0, 0],
+        translation: [0, parameters.depth / 2, 0],
+      }),
+    },
+  );
+
+  // Depths are cumulative from the sloping entry face along the inward axis.
+  // One cut retains the annular shoulder shared by its two cylindrical walls.
+  // Subtract the union of two overlapping cylinders first. Their exposed arcs
+  // share vertical intersection edges; the overlap contains no internal wall.
+  const chamberX = -parameters.width / 5;
+  const chamber = blank.subtractParallelPassages(
+    [
+      {
+        point: [chamberX, parameters.chamberHeight, 0],
+        direction: [0, 0, 1],
+        radius: parameters.chamberRadius,
+      },
+      {
+        point: [
+          chamberX + parameters.chamberSpacing,
+          parameters.chamberHeight,
+          0,
+        ],
+        direction: [0, 0, 1],
+        radius: parameters.chamberRadius,
+      },
+    ],
+    { separation: 0.5, feature: "joined chamber" },
+  );
+
+  const portX = parameters.width * 0.23;
+  let block = chamber.subtractBore({
+    entry: [portX, entryHeight(portX), parameters.depth / 2],
+    direction: [0, -1, 0],
+    steps: [
+      {
+        radius: parameters.counterboreRadius,
+        depth: parameters.counterboreDepth,
+      },
+      { radius: parameters.portRadius, depth: "through" },
+    ],
+    separation: 0.5,
+    feature: "stepped port",
+  });
+
+  // Each fastener ends in a retained planar floor. Reuse the same cutting
+  // profile at four entry points; the source-local axis points into material.
+  for (const x of [-parameters.width * 0.38, parameters.width * 0.38]) {
+    for (const z of [parameters.depth / 6, (parameters.depth * 5) / 6]) {
+      block = block.subtractBore({
+        entry: [x, entryHeight(x), z],
+        direction: [0, -1, 0],
+        steps: [{ radius: 4, depth: parameters.blindDepth }],
+        separation: 0.5,
+        feature: "blind fasteners",
+      });
+    }
+  }
+  return { block };
 }

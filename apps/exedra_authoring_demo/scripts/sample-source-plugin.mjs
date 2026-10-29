@@ -4,7 +4,10 @@
 import { readFile } from "node:fs/promises";
 import { dirname, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
-import { highlightTypeScript } from "./highlight-typescript.mjs";
+import {
+  highlightTypeScript,
+  highlightAuthorSections,
+} from "./highlight-typescript.mjs";
 
 const samplePath = fileURLToPath(new URL("../src/sample.ts", import.meta.url));
 const virtualId = "\0exedra-highlighted-sample";
@@ -25,8 +28,11 @@ export function sampleSourcePlugin() {
     async load(id) {
       if (id !== virtualId) return;
       this.addWatchFile(samplePath);
-      const html = highlightTypeScript(await readFile(samplePath, "utf8"));
-      return `export default ${JSON.stringify(html)};`;
+      const source = await readFile(samplePath, "utf8");
+      const html = highlightTypeScript(source);
+      const sections = highlightAuthorSections(source);
+      return `export const authorSections = ${JSON.stringify(sections)};
+export default ${JSON.stringify(html)};`;
     },
   };
 }
