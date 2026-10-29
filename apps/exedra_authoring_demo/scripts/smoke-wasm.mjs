@@ -100,8 +100,14 @@ for(const sample of galleryCases) {
         assert.equal(file.text,old.text);assert.equal(file.report.units,"mm");assert.equal(file.report.faces,part.measurements.faces);
         for(const entity of file.report.correspondence.faces)if(entity!==null)assert.match(file.text,new RegExp(`#${entity}=ADVANCED_FACE\\(`));
         for(const edge of file.report.correspondence.edges)if(edge!==null){
-          assert.ok(edge.kind==="curve"||edge.kind==="collapsedVertex");
-          assert.match(file.text,new RegExp(`#${edge.entity}=${edge.kind==="curve"?"EDGE_CURVE":"VERTEX_POINT"}\\(`));
+          if(edge.kind==="curveChain") {
+            assert.ok(edge.entities.length>=2&&edge.entities.length<=128);
+            assert.equal(new Set(edge.entities).size,edge.entities.length);
+            for(const entity of edge.entities)assert.match(file.text,new RegExp(`#${entity}=EDGE_CURVE\\(`));
+          } else {
+            assert.ok(edge.kind==="curve"||edge.kind==="collapsedVertex");
+            assert.match(file.text,new RegExp(`#${edge.entity}=${edge.kind==="curve"?"EDGE_CURVE":"VERTEX_POINT"}\\(`));
+          }
         }
         assert.equal(file.timing.outcome,"success");
       } else {

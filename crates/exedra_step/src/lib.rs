@@ -88,9 +88,31 @@ pub struct StepEntityId(pub u32);
 pub enum StepEdgeEntity {
     /// A regular shared `EDGE_CURVE` entity.
     Curve(StepEntityId),
+    /// Exact shared curve fragments emitted in canonical native-edge order.
+    /// Fragment IDs are consecutive within this document; use
+    /// [`Self::curve_entities`] to enumerate them.
+    CurveChain {
+        /// First emitted `EDGE_CURVE` fragment.
+        first: StepEntityId,
+        /// Number of fragments, between two and 128 for exporter output.
+        count: u32,
+    },
     /// A certified collapsed boundary represented by its authoritative
     /// `VERTEX_POINT`; no fictitious three-dimensional curve is emitted.
     CollapsedVertex(StepEntityId),
+}
+impl StepEdgeEntity {
+    /// All regular `EDGE_CURVE` entities in native start-to-end order.
+    /// Collapsed boundaries return an empty iterator. Coedge reversal changes
+    /// traversal of this sequence, never the shared fragment identities.
+    pub fn curve_entities(self) -> impl DoubleEndedIterator<Item = StepEntityId> {
+        let (first, count) = match self {
+            Self::Curve(id) => (id, 1),
+            Self::CurveChain { first, count } => (first, count),
+            Self::CollapsedVertex(_) => (StepEntityId(0), 0),
+        };
+        (0..count).filter_map(move |offset| first.0.checked_add(offset).map(StepEntityId))
+    }
 }
 
 /// Native table indices mapped to exported topological entity IDs.
@@ -99,7 +121,7 @@ pub enum StepEdgeEntity {
 pub struct StepCorrespondence {
     /// Native vertices to `VERTEX_POINT` entities.
     pub vertices: Vec<Option<StepEntityId>>,
-    /// Native edges to regular curves or explicitly collapsed vertices.
+    /// Native edges to regular curves/chains or explicitly collapsed vertices.
     pub edges: Vec<Option<StepEdgeEntity>>,
     /// Native loops to `EDGE_LOOP` or pole-only `VERTEX_LOOP` entities.
     pub loops: Vec<Option<StepEntityId>>,
@@ -112,7 +134,7 @@ impl StepCorrespondence {
     pub fn vertex(&self, id: VertexId) -> Option<StepEntityId> {
         self.vertices.get(id.index()).copied().flatten()
     }
-    /// Exported regular curve or collapsed vertex for a native edge, if used.
+    /// Exported regular curve/chain or collapsed vertex for a native edge, if used.
     #[must_use]
     pub fn edge(&self, id: EdgeId) -> Option<StepEdgeEntity> {
         self.edges.get(id.index()).copied().flatten()
@@ -134,7 +156,7 @@ impl StepCorrespondence {
 pub struct StepCounts {
     /// All STEP data-section entities, including geometry, topology and product metadata.
     pub entities: u32,
-    /// Used authoritative native vertices.
+    /// Emitted topological vertices, including exact elliptic-arc subdivision points.
     pub vertices: u32,
     /// Emitted regular `EDGE_CURVE` entities; collapsed boundaries map to vertices.
     pub edges: u32,
@@ -371,6 +393,9 @@ pub fn check_geometry_support<F, E>(body: &Body<F, E>) -> Result<(), StepError> 
 /// The exporter preserves shared native topology and serializes supported
 /// elementary surfaces and line/circle/ellipse curves directly. It does not read a display mesh, approximate
 /// unsupported supports, heal input, or establish global solid validity.
+/// Elliptic edges can emit exact shared arc chains to mitigate observed reader
+/// reconstruction errors. Reported deviation covers the serialized defining
+/// geometry, not a reader's subsequently reconstructed surface parameter curves.
 ///
 /// ```
 /// use exedra_analytic::body::Body;

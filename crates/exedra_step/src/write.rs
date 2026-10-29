@@ -13,6 +13,12 @@ use exedra_analytic::{
 };
 use exedra_math::{Placement3, norm};
 
+// Empirical reader reconstruction mitigation, not a validity/accuracy certificate
+// for a reader. The fixed cap bounds serialization work for every input scale.
+const ELLIPSE_BASE_FRAGMENTS: u32 = 8;
+const ELLIPSE_MAX_FRAGMENTS: u32 = 128;
+const ELLIPSE_REFERENCE_MM: f64 = 2.0;
+
 struct Buffer {
     text: String,
     next: u64,
@@ -66,6 +72,17 @@ impl Buffer {
             Real(p[0]),
             Real(p[1]),
             Real(p[2])
+        ))
+    }
+    fn oriented_edge(
+        &mut self,
+        curve: StepEntityId,
+        forward: bool,
+    ) -> Result<StepEntityId, StepError> {
+        self.entity(format_args!(
+            "ORIENTED_EDGE('',*,*,{},{})",
+            Id(curve),
+            boolean(forward)
         ))
     }
     fn frame(&mut self, frame: Placement3) -> Result<StepEntityId, StepError> {
@@ -160,7 +177,7 @@ pub(super) fn export<F, E>(
         if !active {
             continue;
         }
-        let Some((geometry, _)) = edge.regular() else {
+        let Some((geometry, range)) = edge.regular() else {
             map.edges[i] = Some(StepEdgeEntity::CollapsedVertex(
                 map.vertices[edge.start.index()].expect("used"),
             ));
@@ -192,20 +209,104 @@ pub(super) fn export<F, E>(
             }
             Curve::Ellipse(ellipse) => {
                 let frame = out.frame(placement * ellipse.frame())?;
-                out.entity(format_args!(
-                    "ELLIPSE('',{},{},{})",
-                    Id(frame),
-                    Real(ellipse.semi_major()),
-                    Real(ellipse.semi_minor())
-                ))?
+                if ellipse.semi_major() == ellipse.semi_minor() {
+                    // Exact identity, not tolerance-based snapping: an equal-axis
+                    // native ellipse is the same circle with the same parameters.
+                    out.entity(format_args!(
+                        "CIRCLE('',{},{})",
+                        Id(frame),
+                        Real(ellipse.semi_major())
+                    ))?
+                } else {
+                    out.entity(format_args!(
+                        "ELLIPSE('',{},{},{})",
+                        Id(frame),
+                        Real(ellipse.semi_major()),
+                        Real(ellipse.semi_minor())
+                    ))?
+                }
             }
         };
-        map.edges[i] = Some(StepEdgeEntity::Curve(out.entity(format_args!(
-            "EDGE_CURVE('',{},{},{},.T.)",
-            Id(map.vertices[edge.start.index()].expect("used")),
-            Id(map.vertices[edge.end.index()].expect("used")),
-            Id(curve)
-        ))?));
+        // Some readers reconstruct a closed ellipse's surface parameter curve
+        // outside the declared tolerance when its seam is rephased. Short exact
+        // elliptic arcs bound that reconstruction work without changing any
+        // supporting geometry or duplicating an edge between its two faces.
+        let count = match geometry {
+            Curve::Ellipse(ellipse) if ellipse.semi_major() != ellipse.semi_minor() => {
+                // OCCT reconstructs trims with a fixed physical confusion floor
+                // in millimetres, even for metre-valued STEP coordinates. Scale
+                // this empirically verified reconstruction guard with physical
+                // axial excursion and aspect ratio; it is not an interval certificate
+                // for a reader.
+                // Fourth-power growth matches the observed cubic interpolation
+                // sensitivity while powers of two retain a simple bounded policy.
+                let axial_excursion =
+                    exedra_math::Real::sqrt(ellipse.semi_major() - ellipse.semi_minor())
+                        * exedra_math::Real::sqrt(ellipse.semi_major() + ellipse.semi_minor());
+                let axial_excursion_mm = axial_excursion * options.units.metres_per_unit() * 1000.0;
+                let aspect_ratio = ellipse.semi_major() / ellipse.semi_minor();
+                let trim_scale_mm = axial_excursion_mm * aspect_ratio;
+                if !trim_scale_mm.is_finite() {
+                    return Err(StepError::Numeric);
+                }
+                let mut full = ELLIPSE_BASE_FRAGMENTS;
+                while full < ELLIPSE_MAX_FRAGMENTS {
+                    let ratio = f64::from(full) / f64::from(ELLIPSE_BASE_FRAGMENTS);
+                    if trim_scale_mm <= ELLIPSE_REFERENCE_MM * ratio * ratio * ratio * ratio {
+                        break;
+                    }
+                    full *= 2;
+                }
+                let step = core::f64::consts::TAU / f64::from(full);
+                (1..=full)
+                    .find(|n| range.span() <= f64::from(*n) * step * (1.0 + 64.0 * f64::EPSILON))
+                    .unwrap_or(full)
+            }
+            _ => 1,
+        };
+        let mut vertices = [StepEntityId(0); ELLIPSE_MAX_FRAGMENTS as usize + 1];
+        vertices[0] = map.vertices[edge.start.index()].expect("used");
+        for fragment in 1..count {
+            let fraction = f64::from(fragment) / f64::from(count);
+            let p = geometry
+                .evaluate(range.at(fraction).ok_or(StepError::Numeric)?)
+                .ok_or(StepError::Numeric)?
+                .point;
+            let p = placement.transform_point(p);
+            if !p.into_iter().all(f64::is_finite) {
+                return Err(StepError::Numeric);
+            }
+            let point = out.point(p)?;
+            vertices[fragment as usize] =
+                out.entity(format_args!("VERTEX_POINT('',{})", Id(point)))?;
+        }
+        vertices[count as usize] = map.vertices[edge.end.index()].expect("used");
+        let mut first = None;
+        for pair in vertices[..=count as usize].windows(2) {
+            let id = out.entity(format_args!(
+                "EDGE_CURVE('',{},{},{},.T.)",
+                Id(pair[0]),
+                Id(pair[1]),
+                Id(curve)
+            ))?;
+            first.get_or_insert(id);
+        }
+        let first = first.expect("positive fragment count");
+        map.edges[i] = Some(if count == 1 {
+            StepEdgeEntity::Curve(first)
+        } else {
+            StepEdgeEntity::CurveChain { first, count }
+        });
+        prepared.counts.vertices = prepared
+            .counts
+            .vertices
+            .checked_add(count - 1)
+            .ok_or(StepError::Numeric)?;
+        prepared.counts.edges = prepared
+            .counts
+            .edges
+            .checked_add(count - 1)
+            .ok_or(StepError::Numeric)?;
     }
     let mut refs = Vec::new();
     for (i, (&active, ring)) in prepared.loops.iter().zip(body.loops()).enumerate() {
@@ -215,14 +316,24 @@ pub(super) fn export<F, E>(
         refs.clear();
         refs.reserve(ring.coedges.len());
         for c in &ring.coedges {
-            let StepEdgeEntity::Curve(curve) = map.edges[c.edge.index()].expect("used") else {
-                continue;
-            };
-            refs.push(out.entity(format_args!(
-                "ORIENTED_EDGE('',*,*,{},{})",
-                Id(curve),
-                boolean(!c.reversed)
-            ))?);
+            let entity = map.edges[c.edge.index()].expect("used");
+            let curves = entity.curve_entities();
+            if c.reversed {
+                for curve in curves.rev() {
+                    refs.push(out.oriented_edge(curve, false)?);
+                }
+            } else {
+                for curve in curves {
+                    refs.push(out.oriented_edge(curve, true)?);
+                }
+            }
+            if let StepEdgeEntity::CurveChain { count, .. } = entity {
+                prepared.counts.coedges = prepared
+                    .counts
+                    .coedges
+                    .checked_add(count - 1)
+                    .ok_or(StepError::Numeric)?;
+            }
         }
         map.loops[i] = Some(if refs.is_empty() {
             let edge = &body.edges()[ring.coedges[0].edge.index()];
