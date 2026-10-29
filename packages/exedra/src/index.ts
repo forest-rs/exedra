@@ -516,6 +516,13 @@ export interface RealizationWork {
   readonly attempts:number;
   readonly completedBoundarySamples:number;
   readonly completedTriangles:number;
+  readonly trimRefinementBatches:number;
+  readonly trimTriangleTests:number;
+  readonly trimGeneratedVertices:number;
+  /** Analytic normal values attached to explicit-chart triangle corners, across completed attempts. */
+  readonly trimNormalCorners:number;
+  /** Peak temporary normal-table capacity bytes in a completed attempt; excludes allocator overhead and retained attributes. */
+  readonly trimNormalScratchBytes:number;
 }
 /** A bounded optional retry. Improved does not imply that the final tolerance was met. */
 export interface CurveRefinement {

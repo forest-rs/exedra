@@ -568,6 +568,170 @@ fn generic_body_tags_are_distinct_in_authored_order_and_content_identity() {
 }
 
 #[test]
+fn refined_generic_spherical_faces_keep_render_normals_correspondence_and_cache_scopes() {
+    use exedra_analytic::body::{
+        Body, BodyParts, BoundaryLoop, Coedge, Edge, EdgeId, Face, LoopId, LoopTrims, Sense,
+        TrimCurve, ValidationPolicy, VertexId,
+    };
+    use exedra_analytic::geometry::{Curve, ParameterDomain, ParameterRange, Surface};
+    let surface = Surface::sphere(Placement3::IDENTITY, 2.0).unwrap();
+    let mut parts = BodyParts::default();
+    for (patch, [umin, umax]) in [[0.2_f64, 1.0], [1.5, 2.3]].into_iter().enumerate() {
+        let u = ParameterRange::new(umin, umax).unwrap();
+        let v = ParameterRange::new(-0.3, 0.4).unwrap();
+        let corners = [[umin, -0.3], [umax, -0.3], [umax, 0.4], [umin, 0.4]];
+        parts
+            .vertices
+            .extend(corners.map(|uv| surface.evaluate(uv).unwrap().point));
+        let latitude = |lat: f64| {
+            Curve::circle(
+                Placement3::translate(0.0, 0.0, 2.0 * lat.sin()),
+                2.0 * lat.cos(),
+            )
+            .unwrap()
+        };
+        let meridian = |angle: f64| {
+            Curve::circle(
+                Placement3::from_axes(
+                    [angle.cos(), angle.sin(), 0.0],
+                    [0.0, 0.0, 1.0],
+                    [angle.sin(), -angle.cos(), 0.0],
+                    [0.0; 3],
+                ),
+                2.0,
+            )
+            .unwrap()
+        };
+        let base = u32::try_from(patch * 4).unwrap();
+        for (curve, range, start, end) in [
+            (latitude(-0.3), u, 0, 1),
+            (meridian(umax), v, 1, 2),
+            (latitude(0.4), u, 3, 2),
+            (meridian(umin), v, 0, 3),
+        ] {
+            parts.edges.push(Edge::new(
+                curve,
+                range,
+                VertexId(base + start),
+                VertexId(base + end),
+                (),
+            ));
+        }
+        let loop_id = LoopId(u32::try_from(patch).unwrap());
+        parts.loops.push(BoundaryLoop {
+            coedges: (0..4)
+                .map(|i| Coedge {
+                    edge: EdgeId(base + i),
+                    reversed: i >= 2,
+                })
+                .collect(),
+        });
+        parts.faces.push(Face {
+            surface: surface.clone(),
+            domain: ParameterDomain { u, v },
+            sense: Sense::Forward,
+            loops: vec![loop_id],
+            role: vec![SegTag(17 + loop_id.0)],
+        });
+        parts.trims.push(LoopTrims {
+            loop_id,
+            curves: [(0, 1), (1, 2), (3, 2), (0, 3)]
+                .map(|(a, b)| TrimCurve::Line {
+                    start: corners[a],
+                    end: corners[b],
+                })
+                .into(),
+        });
+    }
+    let body = Body::try_from_parts(parts, &ValidationPolicy { max_gap: 1e-9 }).unwrap();
+    let first = NativeSource::from_body(body.clone(), Placement3::IDENTITY).unwrap();
+    let equal = NativeSource::from_body(body, Placement3::IDENTITY).unwrap();
+    let sources = [
+        PartSource::Native(first.clone()),
+        PartSource::Native(equal.clone()),
+    ];
+    let inputs = [
+        PartInput::new("first", &sources[0]),
+        PartInput::new("equal", &sources[1]),
+    ];
+    let mut policy = CompilePolicy {
+        normals: NormalsSource::CustomOrDerived,
+        ..Default::default()
+    };
+    let mut compiler = PartCompiler::new();
+    for (attempt, tolerance) in [0.025, 0.005].into_iter().enumerate() {
+        policy.native.tolerance = tolerance;
+        let snapshot = compiler.compile_snapshot(&inputs, &policy).unwrap();
+        assert_eq!(
+            compiler.counters().native_realizations,
+            u64::try_from(attempt + 1).unwrap()
+        );
+        assert!(Arc::ptr_eq(
+            snapshot.compiled().part(PartId(0)).unwrap(),
+            snapshot.compiled().part(PartId(1)).unwrap()
+        ));
+        let installed = snapshot.body(PartId(0), 0).unwrap();
+        let native = installed.native_realization().unwrap();
+        assert!(native.report.work.trim_generated_vertices > 0);
+        assert!(native.report.work.trim_refinement_batches > 0);
+        assert!(native.report.within_tolerance());
+        let tri = &snapshot.compiled().part(PartId(0)).unwrap().bodies[0].tri;
+        assert_eq!(tri.positions.len(), tri.normals.len());
+        assert_eq!(native.report.work.trim_normal_corners, tri.indices.len());
+        assert!(native.report.work.trim_normal_scratch_bytes > 0);
+        let mut max_normal_error = 0.0_f64;
+        for (p, n) in tri.positions.iter().zip(&tri.normals) {
+            let p = p.map(f64::from);
+            let n = n.map(f64::from);
+            assert!((norm(n) - 1.0).abs() < 1e-6);
+            let radial = p.map(|v| v / norm(p));
+            max_normal_error = max_normal_error.max(norm(sub(n, radial)));
+        }
+        assert!(
+            max_normal_error < 2e-6,
+            "max normal error: {max_normal_error}"
+        );
+        assert_eq!(native.render_faces().len(), tri.indices.len() / 3);
+        let mut seen = [false; 2];
+        for (ordinal, indices) in tri.indices.as_chunks::<3>().0.iter().enumerate() {
+            let center_x = indices
+                .iter()
+                .map(|&i| f64::from(tri.positions[i as usize][0]) / 3.0)
+                .sum::<f64>();
+            let expected = usize::from(center_x < 0.7);
+            assert_eq!(
+                native.render_face(ordinal),
+                Some(FaceId(u32::try_from(expected).unwrap()))
+            );
+            seen[expected] = true;
+        }
+        assert_eq!(seen, [true; 2]);
+        let selection = first.select_face(FaceId(0)).unwrap();
+        assert_eq!(
+            installed.native().unwrap().resolve_face(&selection),
+            Ok(FaceId(0))
+        );
+        assert!(
+            snapshot
+                .body(PartId(1), 0)
+                .unwrap()
+                .native()
+                .unwrap()
+                .same_installation(&equal)
+        );
+        assert_eq!(
+            snapshot
+                .body(PartId(1), 0)
+                .unwrap()
+                .native()
+                .unwrap()
+                .resolve_face(&selection),
+            Err(NativeSelectionError::SourceMismatch)
+        );
+    }
+}
+
+#[test]
 fn explicit_periodic_chart_trims_participate_in_identity_and_survive_role_mapping() {
     use exedra_analytic::body::{
         Body, BodyParts, BoundaryLoop, Coedge, Edge, EdgeId, Face, LoopId, LoopTrims, Sense,
