@@ -363,3 +363,56 @@ Output faces combine all contributing source tags from `faceSources`, including
 reversed difference faces. Boolean volume/area are native measurements;
 clipped generic bodies deliberately report integral measurements unavailable.
 No display mesh is used for any operation or integral evidence.
+
+
+`solid.subtractBore` authors a blind, counterbored or stepped passage in one
+native transaction. Entry lies on the source entry plane; direction points into
+material. Depths are cumulative distances along the normalized inward axis,
+before occurrence placement. A single finite step ends in a planar floor:
+
+```ts
+const machined = blank.subtractBore({
+  entry: [0, 0, 30],
+  direction: [0, 0, -1],
+  steps: [
+    { radius: 8, depth: 6 },
+    { radius: 4, depth: "through" },
+  ],
+  separation: 0.5,
+  feature: "service port",
+});
+```
+
+Radii decrease; finite depths increase; only the final step may use `"through"`.
+The operation retains cylindrical walls, annular shoulders and an optional blind
+floor, with their IDs in `part.solidOperations`. Numerical/support checks and
+material clearance are separate from display tolerance. The current planner
+requires a separated outer-radius corridor between two planar faces, even for a
+blind cut; valid finite cuts outside that corridor are refused. Nonparallel
+planar exits are supported by `subtractThroughCylinder` and `subtractBore`.
+`bore.invalidStep`, `bore.entry` and `bore.depthClearance` diagnostics identify
+the offending portion or face and the relevant distance bounds. A failed build
+leaves installed documents and their selections usable.
+
+
+`solid.subtractParallelPassages(tools, { separation, feature })` subtracts the
+union of up to 32 parallel through cylinders. Overlapping circles become one
+opening with shared native wall fragments and no internal wall. The tools need
+common perpendicular planar exits and must stay separated from existing
+openings. Tangency, coincidence, close junctions and an enclosed material island
+are typed refusals. `part.solidOperations` reports each wall fragment's tool
+index, connected openings, pair tests, intersection vertices, native integral
+deltas and source-face correspondence. These tools use body-local coordinates.
+A joined chamber can then receive further separated blind or stepped cuts.
+
+
+`part.validateBoundary()` explicitly inspects oriented manifold topology and
+supported continuous trim arrangements without meshing. The timed immutable
+report lists each boundary shell, every certified or unsupported face-trim
+arrangement, support gaps and admitted pair work. `globalSolidValidity` remains
+`"notChecked"`: local manifold checks do not establish distant self-intersection,
+outward orientation or shell containment. Unsupported trim families are
+unverified, not silently accepted. `chartSeparation` is in native surface
+parameter units (cylinder U radians, V model lengths); `maxCoedges` and
+`maxPairTests` bound inspection work. Inspection never changes the installed
+part or disables a valid export.

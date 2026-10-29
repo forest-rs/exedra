@@ -86,6 +86,34 @@ function host() {
         cacheEntries: 0,
       });
     },
+    validate_boundary_json() {
+      return JSON.stringify({
+        scope: "localBoundary",
+        policy: {
+          maxGap: 1e-6,
+          chartSeparation: 1e-8,
+          maxCoedges: 250000,
+          maxPairTests: 2000000,
+        },
+        globalSolidValidity: "notChecked",
+        orientedManifold: true,
+        allTrimsChecked: false,
+        faceTrims: [{ face: 0, status: "unsupported", reason: "curveFamily" }],
+        shells: [
+          {
+            faces: [0, 1],
+            vertices: 4,
+            regularEdges: 3,
+            eulerCharacteristic: 2,
+          },
+        ],
+        coedges: 6,
+        pairTestBound: 4,
+        maxGap: 0,
+        explicitTrimCoedges: 0,
+        maxTrimGap: 0,
+      });
+    },
     workplane_json() {
       return JSON.stringify({
         origin: [0, 0, 7],
@@ -879,4 +907,107 @@ test("native table budgets count nested references, tags, records and expanded c
       }),
     code("budget.nativeSegments"),
   );
+});
+
+test("stepped bores snapshot cumulative depth profiles and share the source node", () => {
+  const h = host();
+  const session = new AuthoringSession(h.native, { units: "mm" });
+  const stock = extrude(profiles.rectangle({ width: 40, height: 30 }), {
+    height: 20,
+  });
+  const entry: [number, number, number] = [0, 0, 20];
+  const direction: [number, number, number] = [0, 0, -1];
+  const steps: { radius: number; depth: number | "through" }[] = [
+    { radius: 6, depth: 5 },
+    { radius: 3, depth: "through" },
+  ];
+  const cut = stock.subtractBore({
+    entry,
+    direction,
+    steps,
+    separation: 0.5,
+    feature: "port",
+  });
+  entry[0] = 99;
+  direction[2] = 99;
+  steps[0].depth = 99;
+  steps.push({ radius: 1, depth: 99 });
+  const document = session.build({ stock, cut });
+  try {
+    const graph = h.requests[0];
+    assert.equal(graph.nodes.length, 2);
+    assert.deepEqual(graph.nodes[1], {
+      kind: "subtractBore",
+      base: 0,
+      entry: [0, 0, 20],
+      direction: [0, 0, -1],
+      steps: [
+        { radius: 6, depth: 5 },
+        { radius: 3, depth: "through" },
+      ],
+      separation: 0.5,
+      feature: "port",
+    });
+  } finally {
+    document.dispose();
+    session.dispose();
+  }
+});
+
+test("parallel passage tools snapshot independent caller arrays before lowering", () => {
+  const h = host();
+  const session = new AuthoringSession(h.native, { units: "mm" });
+  const point: [number, number, number] = [-3, 0, 0];
+  const direction: [number, number, number] = [0, 0, 1];
+  const tools = [
+    { point, direction, radius: 4 },
+    { point: [3, 0, 0] as const, direction: [0, 0, 1] as const, radius: 4 },
+  ];
+  const solid = extrude(profiles.rectangle({ width: 30, height: 20 }), {
+    height: 10,
+  }).subtractParallelPassages(tools, { separation: 0.5, feature: "chamber" });
+  point[0] = 99;
+  direction[2] = 99;
+  tools[0].radius = 99;
+  const document = session.build({ solid });
+  try {
+    const node = h.requests[0].nodes[1];
+    assert.equal(node.kind, "subtractParallelPassages");
+    assert.deepEqual(node.tools, [
+      { point: [-3, 0, 0], direction: [0, 0, 1], radius: 4 },
+      { point: [3, 0, 0], direction: [0, 0, 1], radius: 4 },
+    ]);
+    assert.equal(node.feature, "chamber");
+  } finally {
+    document.dispose();
+    session.dispose();
+  }
+});
+
+test("explicit boundary inspection keeps unsupported scope and immutable timed evidence", () => {
+  const h = host(),
+    session = new AuthoringSession(h.native, { units: "mm" });
+  const document = session.build(sample());
+  try {
+    const report = document.parts.panel.validateBoundary();
+    assert.equal(report.scope, "localBoundary");
+    assert.equal(report.globalSolidValidity, "notChecked");
+    assert.equal(report.allTrimsChecked, false);
+    assert.deepEqual(report.faceTrims[0], {
+      face: 0,
+      status: "unsupported",
+      reason: "curveFamily",
+    });
+    assert.ok(Object.isFrozen(report.shells[0].faces));
+    assert.equal(report.timing.operation, "part.validateBoundary");
+    assert.equal(report.timing.partId, document.parts.panel.id);
+    assert.equal(report.timing.outcome, "success");
+    assert.throws(
+      () => document.parts.panel.validateBoundary({ maxCoedges: Number.NaN }),
+      code("input.validationBudget"),
+    );
+  } finally {
+    document.dispose();
+    session.dispose();
+  }
 });

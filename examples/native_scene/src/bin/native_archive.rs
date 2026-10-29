@@ -6,7 +6,10 @@
 use exedra_analytic::{
     body::ValidationPolicy,
     extrusion::Extrusion,
-    machining::{CylinderTool, MachiningPolicy, subtract_through_cylinder_with_roles},
+    machining::{
+        BoreDepth, BoreStep, BoreTool, CylinderTool, MachiningPolicy, subtract_bore_with_roles,
+        subtract_parallel_passages_with_roles, subtract_through_cylinder_with_roles,
+    },
     realize::RealizationPolicy,
 };
 use exedra_compile::NativeSource;
@@ -62,6 +65,7 @@ fn other_support_sources(
     let torus = builders::circle(0.1)?.translated((1.0, 0.0))?;
     let section = builders::rect_centered(0.7, 0.9)?.tagged(SegTag(102));
     Ok(vec![
+        ("/Valve", valve_source()?),
         (
             "/Cone",
             NativeSource::from(Revolution::new(cone, frame, core::f64::consts::TAU)?),
@@ -91,6 +95,87 @@ fn other_support_sources(
             )?),
         ),
     ])
+}
+
+/// Same retained geometry as the browser's default machined valve block.
+fn valve_source() -> Result<NativeSource, Box<dyn Error>> {
+    let (width, depth, height) = (112.0, 72.0, 42.0);
+    let slope = (12.0_f64.to_radians()).tan();
+    let entry_height = |x: f64| height + slope * x;
+    let outline = exedra_profile::Profile::new(
+        exedra_profile::Loop::new(vec![
+            exedra_profile::Segment::line([-width / 2.0, 0.0]),
+            exedra_profile::Segment::line([width / 2.0, 0.0]),
+            exedra_profile::Segment::line([width / 2.0, entry_height(width / 2.0)]),
+            exedra_profile::Segment::line([-width / 2.0, entry_height(-width / 2.0)]),
+        ])?,
+        vec![],
+        &exedra_profile::ProfilePolicy::new(1e-9),
+    )?;
+    let stock = Extrusion::new(outline, Placement3::IDENTITY, depth)?
+        .body()
+        .clone()
+        .map_roles(|_| vec![SegTag(201)], |_| ());
+    let policy = MachiningPolicy {
+        separation: 0.5,
+        ..Default::default()
+    };
+    let chamber_x = -width / 5.0;
+    let chamber = subtract_parallel_passages_with_roles(
+        &stock,
+        &[
+            CylinderTool::new([chamber_x, 14.0, 0.0], [0.0, 0.0, 1.0], 7.0)?,
+            CylinderTool::new([chamber_x + 10.0, 14.0, 0.0], [0.0, 0.0, 1.0], 7.0)?,
+        ],
+        &policy,
+        vec![SegTag(202)],
+        (),
+    )?;
+    let port_x = width * 0.23;
+    let mut body = subtract_bore_with_roles(
+        &chamber.body,
+        &BoreTool::new(
+            [port_x, entry_height(port_x), depth / 2.0],
+            [0.0, -1.0, 0.0],
+            &[
+                BoreStep {
+                    radius: 14.0,
+                    end: BoreDepth::ToDepth(10.0),
+                },
+                BoreStep {
+                    radius: 8.0,
+                    end: BoreDepth::Through,
+                },
+            ],
+        )?,
+        &policy,
+        vec![SegTag(203)],
+        (),
+    )?
+    .body;
+    for x in [-width * 0.38, width * 0.38] {
+        for z in [depth / 6.0, depth * 5.0 / 6.0] {
+            body = subtract_bore_with_roles(
+                &body,
+                &BoreTool::new(
+                    [x, entry_height(x), z],
+                    [0.0, -1.0, 0.0],
+                    &[BoreStep {
+                        radius: 4.0,
+                        end: BoreDepth::ToDepth(14.0),
+                    }],
+                )?,
+                &policy,
+                vec![SegTag(204)],
+                (),
+            )?
+            .body;
+        }
+    }
+    Ok(NativeSource::from_body(
+        body,
+        Placement3::rotate_x_then_translate(core::f64::consts::FRAC_PI_2, 0.0, depth / 2.0, 0.0),
+    )?)
 }
 
 fn main() -> Result<(), Box<dyn Error>> {
@@ -234,9 +319,71 @@ fn run(output: &Path) -> Result<(), Box<dyn Error>> {
             "every support geometry bit must survive USDA: {name}"
         );
     }
-    let second = subtract_through_cylinder_with_roles(
+    // Continue with the new machining operation after reopening: two shared
+    // cylindrical walls, one annular shoulder and a blind terminal floor.
+    // Reopen the actual compound valve sample, compare every stored native bit
+    // above, then add a small service bore to its retained mixed-arc boundary.
+    let valve_path = fresh.path("/Valve");
+    let reopened_valve = read_native_body(&stage, &fresh, valve_path, &validation, &limits)?;
+    let serviced = subtract_bore_with_roles(
+        &reopened_valve.to_body(),
+        &BoreTool::new(
+            [0.0, 42.0, 36.0],
+            [0.0, -1.0, 0.0],
+            &[BoreStep {
+                radius: 2.0,
+                end: BoreDepth::ToDepth(7.0),
+            }],
+        )?,
+        &MachiningPolicy {
+            separation: 0.5,
+            ..Default::default()
+        },
+        vec![SegTag(205)],
+        (),
+    )?;
+    let valve_display = serviced
+        .body
+        .realize(Placement3::IDENTITY, &RealizationPolicy::default())?;
+    assert!(
+        valve_display.report.within_tolerance(),
+        "Reopened valve service cut must realize within tolerance"
+    );
+    assert!(
+        valve_display.mesh.boundary_loops()?.is_empty(),
+        "Reopened valve remains a closed display after another native cut"
+    );
+    assert!(
+        serviced.report.floor.is_some(),
+        "Service bore must retain its native blind floor"
+    );
+    let valve_step = exedra_step::export_body(
+        &serviced.body,
+        reopened_valve.frame(),
+        &exedra_step::StepOptions {
+            name: "Reopened machined valve",
+            timestamp: "2026-10-29T00:00:00Z",
+            tolerance: 1e-6,
+            ..Default::default()
+        },
+    )?;
+    std::fs::write(output.join("valve-service-bore.step"), &valve_step.text)?;
+    let second = subtract_bore_with_roles(
         &restored.to_body(),
-        &CylinderTool::new([4.0, 0.0, 0.0], [0.15, 0.0, 1.0], 0.65)?,
+        &BoreTool::new(
+            [4.0, 0.0, 5.0],
+            [-0.15, 0.0, -1.0],
+            &[
+                BoreStep {
+                    radius: 0.65,
+                    end: BoreDepth::ToDepth(1.2),
+                },
+                BoreStep {
+                    radius: 0.4,
+                    end: BoreDepth::ToDepth(2.8),
+                },
+            ],
+        )?,
         &policy,
         vec![SegTag(91)],
         (),
@@ -267,7 +414,7 @@ fn run(output: &Path) -> Result<(), Box<dyn Error>> {
     std::fs::write(output.join("housing-second-bore.step"), &step.text)?;
     println!(
         "{}",
-        serde_json::json!({"native_faces":second.body.faces().len(),"trim_records":second.body.trims().len(),"triangles":realized.mesh_faces.len(),"exact_f64_values":actual.geometry.len(),"topology_words":actual.topology.len(),"fresh_store":true,"all_support_variants":true,"continued_operation":true,"step_bytes":step.text.len()})
+        serde_json::json!({"native_faces":second.body.faces().len(),"trim_records":second.body.trims().len(),"triangles":realized.mesh_faces.len(),"exact_f64_values":actual.geometry.len(),"topology_words":actual.topology.len(),"fresh_store":true,"all_support_variants":true,"compound_valve_reopened":true,"valve_continued_faces":serviced.body.faces().len(),"continued_operation":true,"continued_operation_kind":"steppedBlindBore","shoulders":second.report.shoulders.len(),"blind_floor":second.report.floor.map(|face|face.0),"step_bytes":step.text.len()})
     );
     Ok(())
 }

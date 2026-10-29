@@ -15,6 +15,11 @@ declare module "*exedra_authoring_web_bridge.js" {
       part: number,
       request: string,
     ): NativeStepFile;
+    validate_boundary_json(
+      document: number,
+      part: number,
+      options: string,
+    ): string;
     stats_json(): string;
     workplane_json(document: number, part: number, face: number): string;
     free(): void;

@@ -26,6 +26,7 @@ mod authoring;
 mod body;
 mod chart;
 mod inspect;
+mod validation;
 use authoring::{Request, Units};
 
 #[derive(Debug, Serialize)]
@@ -46,6 +47,25 @@ struct CornerLocation {
 }
 #[derive(Debug, Default, Serialize)]
 struct ErrorContext {
+    #[serde(skip_serializing_if = "Option::is_none")]
+    edge: Option<u32>,
+    #[serde(rename = "loop", skip_serializing_if = "Option::is_none")]
+    boundary_loop: Option<u32>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    tool: Option<usize>,
+    #[serde(rename = "leftTool", skip_serializing_if = "Option::is_none")]
+    left_tool: Option<usize>,
+    #[serde(rename = "rightTool", skip_serializing_if = "Option::is_none")]
+    right_tool: Option<usize>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    step: Option<usize>,
+    #[serde(rename = "entryDistance", skip_serializing_if = "Option::is_none")]
+    entry_distance: Option<f64>,
+    #[serde(
+        rename = "allowedEntryDistance",
+        skip_serializing_if = "Option::is_none"
+    )]
+    allowed_entry_distance: Option<f64>,
     #[serde(skip_serializing_if = "Option::is_none")]
     operand: Option<&'static str>,
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -574,6 +594,52 @@ fn solid_operation_metadata(operation: &authoring::AuthoredSolidOperation) -> se
         rectilinear::{BooleanOperation, Operand},
     };
     match operation {
+        AuthoredSolidOperation::Passages {
+            node,
+            base,
+            tools,
+            feature,
+            report,
+        } => {
+            use exedra_analytic::machining::FaceChangeKind;
+            serde_json::json!({"kind":"subtractParallelPassages","node":node,"base":base,"feature":feature,
+                "tools":tools.iter().map(|tool|serde_json::json!({"point":tool.point,"direction":tool.direction,"radius":tool.radius})).collect::<Vec<_>>(),
+                "trimmedFaces":report.trimmed_faces.map(|id|id.0),
+                "walls":report.walls.iter().map(|id|id.0).collect::<Vec<_>>(),"wallTools":report.wall_tools,
+                "openingComponents":report.opening_components,"pairTests":report.pair_tests,
+                "intersectionVertices":report.intersection_vertices,"removedSectionArea":report.removed_section_area,
+                "removedVolume":report.removed_volume,"surfaceAreaDelta":report.surface_area_delta,
+                "minimumClearance":report.min_clearance,"maxGap":report.max_gap,
+                "faces":report.faces.iter().map(|face|serde_json::json!({"source":face.source.0,"result":face.result.0,
+                    "change":match face.kind{FaceChangeKind::Retained=>"retained",FaceChangeKind::Trimmed=>"trimmed"}})).collect::<Vec<_>>()
+            })
+        }
+        AuthoredSolidOperation::Bore {
+            node,
+            base,
+            entry,
+            direction,
+            steps,
+            feature,
+            report,
+        } => {
+            use exedra_analytic::machining::{BoreDepth, FaceChangeKind};
+            serde_json::json!({
+                "kind":"subtractBore", "node":node, "base":base,
+                "entry":entry, "direction":direction, "feature":feature,
+                "steps":steps.iter().map(|step| serde_json::json!({"radius":step.radius,
+                    "depth":match step.end {BoreDepth::ToDepth(depth)=>serde_json::json!(depth), BoreDepth::Through=>serde_json::json!("through")}})).collect::<Vec<_>>(),
+                "entryFace":report.entry.0,"exitFace":report.exit.map(|id|id.0),
+                "rims":report.rims.iter().map(|id|id.0).collect::<Vec<_>>(),
+                "walls":report.walls.iter().map(|id|id.0).collect::<Vec<_>>(),
+                "shoulders":report.shoulders.iter().map(|id|id.0).collect::<Vec<_>>(),
+                "floor":report.floor.map(|id|id.0),"minimumClearance":report.min_clearance,
+                "maxGap":report.max_gap,"removedVolume":report.removed_volume,
+                "surfaceAreaDelta":report.surface_area_delta,
+                "faces":report.faces.iter().map(|face|serde_json::json!({"source":face.source.0,"result":face.result.0,
+                    "change":match face.kind{FaceChangeKind::Retained=>"retained",FaceChangeKind::Trimmed=>"trimmed"}})).collect::<Vec<_>>()
+            })
+        }
         AuthoredSolidOperation::Rectilinear {
             node,
             left,
@@ -641,7 +707,15 @@ impl Document {
                             authoring::AuthoredSolidOperation::Rectilinear { .. }
                         )
                     });
-                    let basis = match (has_boolean, evidence.reports.is_empty()) {
+                    let has_machining = !evidence.reports.is_empty()
+                        || evidence.operations.iter().any(|operation| {
+                            matches!(
+                                operation,
+                                authoring::AuthoredSolidOperation::Bore { .. }
+                                    | authoring::AuthoredSolidOperation::Passages { .. }
+                            )
+                        });
+                    let basis = match (has_boolean, !has_machining) {
                         (true, true) => "nativeBoolean",
                         (true, false) => "nativeBooleanAndAnalyticMachining",
                         (false, _) => "constructorAndAnalyticMachining",
@@ -716,6 +790,24 @@ impl AuthoringKernel {
         self.session
             .workplane(document, part, face)
             .map_err(Error::js)
+    }
+    /// Checks oriented boundary topology and supported continuous trim arrangements.
+    /// Does not certify global self-intersection, shell containment or material.
+    /// # Errors
+    /// Returns scoped geometry/topology diagnoses or explicit work refusals.
+    pub fn validate_boundary_json(
+        &self,
+        document: u32,
+        part: u32,
+        options: &str,
+    ) -> Result<String, JsValue> {
+        let (document, part) = self.session.part(document, part).map_err(Error::js)?;
+        validation::inspect(
+            part.native(),
+            document.separation,
+            decode(options).map_err(Error::js)?,
+        )
+        .map_err(Error::js)
     }
     /// Exports one installed native part with document units and caller timestamp.
     /// # Errors
@@ -1530,5 +1622,118 @@ mod tests {
         assert_eq!(operation["kind"], "intersectHalfSpace");
         assert_eq!(operation["outcome"], "clipped");
         assert!(operation.get("feature").is_none());
+    }
+    fn stepped_bore_request(depth: f64, radius: f64) -> Request {
+        decode(&json(&serde_json::json!({"units":"mm","separation":1e-9,
+            "profiles":[{"kind":"rectangle","width":60,"height":40}],
+            "nodes":[{"kind":"extrude","profile":0,"height":30},
+              {"kind":"subtractBore","base":0,"entry":[0,0,30],"direction":[0,0,-1],
+               "steps":[{"radius":8,"depth":6},{"radius":4,"depth":"through"}],"separation":0.5,"feature":"counterbore"},
+              {"kind":"subtractBore","base":1,"entry":[-20,0,30],"direction":[0,0,-1],
+               "steps":[{"radius":radius,"depth":depth}],"separation":0.5,"feature":"fastener"}],
+            "roots":[{"name":"block","node":2}]}))).unwrap()
+    }
+    #[test]
+    fn stepped_bore_authoring_retains_shoulders_floors_and_actionable_refusals() {
+        let mut session = Session::new();
+        let good = session.build(stepped_bore_request(12.0, 3.0)).unwrap();
+        let metadata = value(&good);
+        let block = &metadata["parts"][0];
+        let operations = block["solidOperations"]["operations"].as_array().unwrap();
+        assert_eq!(operations.len(), 2);
+        assert_eq!(operations[0]["kind"], "subtractBore");
+        assert_eq!(operations[0]["walls"].as_array().unwrap().len(), 2);
+        assert_eq!(operations[0]["shoulders"].as_array().unwrap().len(), 1);
+        assert!(operations[0]["floor"].is_null());
+        assert!(operations[0]["exitFace"].is_number());
+        assert!(operations[1]["exitFace"].is_null());
+        assert!(operations[1]["floor"].is_number());
+        assert_eq!(
+            operations[1]["direction"],
+            serde_json::json!([0.0, 0.0, -1.0])
+        );
+        assert_eq!(
+            block["measurements"]["volume"]["basis"],
+            "constructorAndAnalyticMachining"
+        );
+        let expected = 72000.0 - core::f64::consts::PI * (64.0 * 6.0 + 16.0 * 24.0 + 9.0 * 12.0);
+        assert!(
+            (block["measurements"]["volume"]["value"].as_f64().unwrap() - expected).abs() < 1e-8
+        );
+        assert_eq!(
+            block["faces"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .filter(|face| face["features"]
+                    .as_array()
+                    .unwrap()
+                    .iter()
+                    .any(|f| f == "counterbore"))
+                .count(),
+            3
+        );
+        assert_eq!(
+            block["faces"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .filter(|face| face["features"]
+                    .as_array()
+                    .unwrap()
+                    .iter()
+                    .any(|f| f == "fastener"))
+                .count(),
+            2
+        );
+        let checked = validation::inspect(
+            session.documents[&1].parts[0].native(),
+            1e-9,
+            validation::Options::default(),
+        )
+        .unwrap();
+        assert_eq!(value(&checked)["scope"], "localBoundary");
+        assert_eq!(value(&checked)["orientedManifold"], true);
+        assert_eq!(value(&checked)["globalSolidValidity"], "notChecked");
+        let display = session
+            .realize(
+                1,
+                0,
+                DisplayOptions {
+                    tolerance: 0.12,
+                    max_vertices: 250_000,
+                    chart: None,
+                },
+            )
+            .unwrap();
+        assert_eq!(value(&display.report)["withinTolerance"], true);
+        let floor = u32::try_from(operations[1]["floor"].as_u64().unwrap()).unwrap();
+        assert!(display.native_faces.contains(&floor));
+        let step = session
+            .step(
+                1,
+                0,
+                ExchangeOptions {
+                    name: None,
+                    timestamp: "2026-10-29T00:00:00Z".into(),
+                    tolerance: Some(1e-6),
+                },
+            )
+            .unwrap();
+        assert!(step.text.contains("MANIFOLD_SOLID_BREP("));
+        for (depth, radius, code) in [
+            (30.0, 3.0, "bore.depthClearance"),
+            (12.0, -1.0, "bore.invalidStep"),
+        ] {
+            let error = session
+                .build(stepped_bore_request(depth, radius))
+                .unwrap_err();
+            assert_eq!(error.code, code);
+            let context = error.context.as_ref().unwrap();
+            assert_eq!(context.step, Some(0));
+            assert_eq!(context.feature.as_deref(), Some("fastener"));
+            assert_eq!(session.documents.len(), 1);
+            assert_eq!(session.documents[&1].metadata(1).unwrap(), good);
+        }
     }
 }
