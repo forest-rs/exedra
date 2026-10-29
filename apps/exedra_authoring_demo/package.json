@@ -15,7 +15,7 @@
     "build": "npm run prepare:sdk && tsc --noEmit && vite build",
     "preview": "vite preview --host 127.0.0.1 --port 5174 --strictPort",
     "test:sdk": "node --experimental-strip-types --test ../../packages/exedra/test/*.test.ts",
-    "test:wasm": "node --experimental-strip-types scripts/smoke-wasm.mjs",
+    "test:wasm": "node --experimental-strip-types scripts/smoke-wasm.mjs && node --experimental-strip-types scripts/smoke-solid-operations.mjs",
     "test:scene-wasm": "node --experimental-strip-types scripts/smoke-scene-wasm.mjs",
     "bench:wasm": "node --experimental-strip-types scripts/bench-wasm.mjs",
     "test:views": "node --experimental-strip-types --test scripts/views.test.ts"

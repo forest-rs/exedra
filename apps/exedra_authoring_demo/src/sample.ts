@@ -1,7 +1,7 @@
 // Copyright 2026 the Exedra Authors
 // SPDX-License-Identifier: Apache-2.0 OR MIT
 
-import { ExedraError, extrude, profiles, revolve, sphericalCap, sweep, loft, paths, placement, charts, uvTransform, type NativePart, type ConstructionChart } from "@exedra/authoring";
+import { ExedraError, extrude, profiles, revolve, sphericalCap, sweep, loft, paths, placement, charts, uvTransform, type NativePart, type Solid, type ConstructionChart } from "@exedra/authoring";
 
 export interface PanelParameters {
   width: number;
@@ -199,6 +199,18 @@ export interface HousingParameters {
 export function authorHousing(p:HousingParameters) {
   const x=p.width/2,b=p.bodyWidth/2,y=p.height/2,shoulder=-y+p.flangeDepth;
   const stock=extrude(profiles.polygon([[-x,-y],[x,-y],[x,shoulder],[b,shoulder],[b,y],[-b,y],[-b,shoulder],[-x,shoulder]]).tagged("stock"),{height:p.thickness});
+  return machineHousing(stock,p);
+}
+/** Two actual native box unions attach mounting lugs before the same machining sequence. */
+export function authorFusedHousing(p:HousingParameters) {
+  const body=extrude(profiles.rectangle({width:p.bodyWidth,height:p.height}).tagged("stock"),{height:p.thickness});
+  const width=(p.width-p.bodyWidth)/2,y=-p.height/2+p.flangeDepth/2,x=(p.width+p.bodyWidth)/4;
+  const left=extrude(profiles.rectangle({width,height:p.flangeDepth}).translated([-x,y]).tagged("left lug"),{height:p.thickness});
+  const right=extrude(profiles.rectangle({width,height:p.flangeDepth}).translated([x,y]).tagged("right lug"),{height:p.thickness});
+  return machineHousing(body.union(left).union(right),p);
+}
+function machineHousing(stock:Solid,p:HousingParameters) {
+  const y=p.height/2;
   const mountY=-y+p.flangeDepth/2;
   const left=stock.subtractThroughCylinder({point:[-p.mountSpacing/2,mountY,p.thickness/2],direction:[0,0,1],radius:p.mountRadius,separation:p.clearance,feature:"left mount"});
   const right=left.subtractThroughCylinder({point:[p.mountSpacing/2,mountY,p.thickness/2],direction:[0,0,1],radius:p.mountRadius,separation:p.clearance,feature:"right mount"});

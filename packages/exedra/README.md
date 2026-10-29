@@ -315,3 +315,51 @@ exact integrals, `part.measurements` carries
 plus the validated analytic operation deltas. A generic `NativeSource` by itself
 has no construction-history evidence and continues to report those integrals as
 unavailable; importing arbitrary `nativeBody` tables does not fabricate them.
+
+Retained planar solids support exact native set operations:
+
+```ts
+const stock = extrude(profiles.rectangle({ width: 40, height: 30 }).tagged("stock"), { height: 12 });
+const lug = extrude(profiles.rectangle({ width: 12, height: 10 }).tagged("lug"), {
+  height: 12, placement: { translation: [22, 0, 0] },
+});
+const fused = stock.union(lug);
+const common = stock.intersect(lug);
+const remaining = stock.subtract(lug);
+const clipped = stock.intersectHalfSpace({
+  point: [0, 0, 6], normal: [0, 0, 1], feature: "cut-plane",
+});
+const document = session.build({ fused, common, remaining, clipped });
+const evidence = document.parts.fused.solidOperations;
+```
+
+`union`, `intersect` and `subtract` operate on axis-aligned orthogonal planar
+polygons with line boundaries in the left operand's construction space. Both
+operands must have exactly equal orientation matrices; independent translations
+are converted into that space once. A shared placement is applied once to the
+result. Different orientations return `boolean.frameMismatch`, including
+near-axis trigonometric rotations; no coordinate is snapped. Curves, oblique
+faces, insufficient distinct-plane spacing and nonmanifold contacts are explicit
+refusals. Input bodies must already represent embedded, outward-oriented regular
+solids. The bridge admits at most 32,768 arrangement cells and 4,000,000 source
+face tests per operation. Its numeric gap and minimum spacing use the session's
+separation, independently of display tessellation.
+
+`intersectHalfSpace` retains points satisfying
+`dot(position - point, normal) <= 0` in the body's local construction space.
+It accepts a strictly convex planar solid with convex line faces; holes, curves,
+nonconvexity and planes within session separation of existing vertices are
+refused. The new cap receives `feature`. Source tags survive through native face
+correspondence. A complete removal returns `halfspace.empty`; an empty Boolean
+returns `boolean.empty`, because document parts require positive geometry.
+Failed builds leave previously installed documents usable.
+
+`part.solidOperations` exposes native work, outcome and typed source
+correspondence. Each entry identifies its authoring graph node and operands;
+face/edge/vertex IDs belong to those intermediate operation bodies, not
+necessarily the final part. Boolean evidence includes material components,
+cavities, shells, exact volume/area and outward-rounded arithmetic bounds.
+Output faces combine all contributing source tags from `faceSources`, including
+reversed difference faces. Boolean volume/area are native measurements;
+clipped generic bodies deliberately report integral measurements unavailable.
+No display mesh is used for any operation or integral evidence.

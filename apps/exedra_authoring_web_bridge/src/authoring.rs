@@ -31,6 +31,9 @@ use exedra_profile::{
 };
 use serde::Deserialize;
 
+#[path = "solid_operations.rs"]
+mod solid_operations;
+
 const UNNAMED: SegTag = SegTag(u32::MAX);
 const MAX_PROFILES: usize = 256;
 const MAX_NODES: usize = 256;
@@ -174,6 +177,7 @@ enum Model {
         body: exedra_analytic::body::Body<Vec<SegTag>>,
         frame: Placement3,
         machining: Vec<AuthoredMachining>,
+        operations: Vec<AuthoredSolidOperation>,
         integrals: Option<[f64; 2]>,
     },
 }
@@ -264,6 +268,24 @@ enum FinishKind {
 #[derive(Debug, Deserialize)]
 #[serde(tag = "kind", rename_all = "camelCase", deny_unknown_fields)]
 enum Node {
+    Union {
+        base: u32,
+        other: u32,
+    },
+    Intersect {
+        base: u32,
+        other: u32,
+    },
+    Subtract {
+        base: u32,
+        other: u32,
+    },
+    IntersectHalfSpace {
+        base: u32,
+        point: [f64; 3],
+        normal: [f64; 3],
+        feature: Option<String>,
+    },
     Body {
         body: crate::body::InputBody,
         #[serde(default)]
@@ -364,8 +386,33 @@ pub(crate) struct AuthoredMachining {
     pub feature: Option<String>,
 }
 #[derive(Clone, Debug)]
+pub(crate) enum AuthoredSolidOperation {
+    Rectilinear {
+        node: usize,
+        left: u32,
+        right: u32,
+        report: exedra_analytic::rectilinear::RectilinearReport,
+    },
+    HalfSpace {
+        node: usize,
+        base: u32,
+        point: [f64; 3],
+        normal: [f64; 3],
+        feature: Option<String>,
+        report: exedra_analytic::halfspace::ClipReport,
+    },
+}
+impl AuthoredSolidOperation {
+    fn node(&self) -> usize {
+        match self {
+            Self::Rectilinear { node, .. } | Self::HalfSpace { node, .. } => *node,
+        }
+    }
+}
+#[derive(Clone, Debug)]
 pub(crate) struct MachiningEvidence {
     pub reports: Vec<AuthoredMachining>,
+    pub operations: Vec<AuthoredSolidOperation>,
     pub integrals: Option<[f64; 2]>,
 }
 #[derive(Debug)]
@@ -685,6 +732,28 @@ impl Request {
                     (Vec::new(), None, 1)
                 }
                 Node::SphericalCap { .. } => (Vec::new(), None, 1),
+                Node::Union { base, other }
+                | Node::Intersect { base, other }
+                | Node::Subtract { base, other } => {
+                    if *other as usize >= i {
+                        return Err(Error::new(
+                            "graph.nodeReference",
+                            "document.validate",
+                            "Boolean operands must reference earlier nodes",
+                        )
+                        .node(i));
+                    }
+                    (Vec::new(), Some(*base), 1)
+                }
+                Node::IntersectHalfSpace { base, feature, .. } => {
+                    if let Some(feature) = feature {
+                        if !label(feature) {
+                            return Err(Error::new("input.name","document.validate","Halfspace feature names must contain text and fit in 128 UTF-8 bytes").node(i));
+                        }
+                        labels.insert(feature.clone());
+                    }
+                    (Vec::new(), Some(*base), 1)
+                }
                 Node::Extrude { profile, .. } | Node::Revolve { profile, .. } => {
                     (alloc::vec![*profile], None, 1)
                 }
@@ -765,7 +834,14 @@ impl Request {
                     )
                     .node(i));
                 }
-                depths[parent as usize] + 1
+                (if let Node::Union { other, .. }
+                | Node::Intersect { other, .. }
+                | Node::Subtract { other, .. } = node
+                {
+                    depths[parent as usize].max(depths[*other as usize])
+                } else {
+                    depths[parent as usize]
+                }) + 1
             } else {
                 1
             };
@@ -795,6 +871,10 @@ impl Request {
                     if matches!(
                         node,
                         Node::Pocket { .. }
+                            | Node::Union { .. }
+                            | Node::Intersect { .. }
+                            | Node::Subtract { .. }
+                            | Node::IntersectHalfSpace { .. }
                             | Node::AxialFinish { .. }
                             | Node::ThroughBore { .. }
                             | Node::SubtractThroughCylinder { .. }
@@ -804,6 +884,16 @@ impl Request {
                         0
                     },
                 );
+            let count = count.saturating_add(
+                if let Node::Union { other, .. }
+                | Node::Intersect { other, .. }
+                | Node::Subtract { other, .. } = node
+                {
+                    body_counts[*other as usize]
+                } else {
+                    0
+                },
+            );
             native_work = native_work.saturating_add(count);
             if native_work > 8192 {
                 return Err(Error::new(
@@ -1046,10 +1136,50 @@ impl Request {
                             .map_err(|e| failure(e.code, e.operation, e.message))?,
                         frame,
                         machining: Vec::new(),
+                        operations: Vec::new(),
                         integrals: None,
                     }
                 }
 
+                Node::Union { base, other } => solid_operations::boolean(
+                    &models,
+                    base,
+                    other,
+                    exedra_analytic::rectilinear::BooleanOperation::Union,
+                    self.separation,
+                    i,
+                )?,
+                Node::Intersect { base, other } => solid_operations::boolean(
+                    &models,
+                    base,
+                    other,
+                    exedra_analytic::rectilinear::BooleanOperation::Intersection,
+                    self.separation,
+                    i,
+                )?,
+                Node::Subtract { base, other } => solid_operations::boolean(
+                    &models,
+                    base,
+                    other,
+                    exedra_analytic::rectilinear::BooleanOperation::Difference,
+                    self.separation,
+                    i,
+                )?,
+                Node::IntersectHalfSpace {
+                    base,
+                    point,
+                    normal,
+                    feature,
+                } => solid_operations::halfspace(
+                    &models[base as usize],
+                    base,
+                    point,
+                    normal,
+                    feature,
+                    &labels,
+                    self.separation,
+                    i,
+                )?,
                 Node::ThroughBore {
                     base,
                     point,
@@ -1205,6 +1335,11 @@ impl Request {
                         body: result.body,
                         frame: source.geometry().frame(),
                         machining,
+                        operations: if let Model::Body { operations, .. } = source {
+                            operations.clone()
+                        } else {
+                            Vec::new()
+                        },
                         integrals,
                     }
                 }
@@ -1406,15 +1541,17 @@ impl Request {
             .filter_map(|(id, model)| {
                 if let Model::Body {
                     machining,
+                    operations,
                     integrals,
                     ..
                 } = model
-                    && !machining.is_empty()
+                    && (!machining.is_empty() || !operations.is_empty())
                 {
                     return Some((
                         id,
                         MachiningEvidence {
                             reports: machining.clone(),
+                            operations: operations.clone(),
                             integrals: *integrals,
                         },
                     ));
@@ -1459,6 +1596,142 @@ impl Request {
 #[cfg(test)]
 mod tests {
     use super::*;
+    fn set_operation_request(kind: &str, translation: [f64; 3]) -> serde_json::Value {
+        serde_json::json!({"units":"mm","separation":1e-9,
+            "profiles":[{"kind":"rectangle","width":10.,"height":10.},{"kind":"tagged","profile":0,"name":"left"},{"kind":"tagged","profile":0,"name":"right"}],
+            "nodes":[{"kind":"extrude","profile":1,"height":10.},{"kind":"extrude","profile":2,"height":10.,"placement":{"translation":translation}},{"kind":kind,"base":0,"other":1}],
+            "roots":[{"name":"result","node":2}]})
+    }
+    #[test]
+    fn rectilinear_graph_reports_exact_integrals_tags_and_local_history() {
+        for (kind, volume, area) in [
+            ("union", 1500., 800.),
+            ("intersect", 500., 400.),
+            ("subtract", 500., 400.),
+        ] {
+            let request: Request =
+                serde_json::from_value(set_operation_request(kind, [5., 0., 0.])).unwrap();
+            let built = request.build().unwrap();
+            let evidence = &built.machining["result"];
+            assert_eq!(evidence.integrals, Some([volume, area]));
+            let AuthoredSolidOperation::Rectilinear {
+                node,
+                left,
+                right,
+                report,
+            } = &evidence.operations[0]
+            else {
+                panic!("Boolean report")
+            };
+            assert_eq!((*node, *left, *right), (2, 0, 1));
+            assert_eq!(report.material_components, 1);
+            assert_eq!(report.cavities, 0);
+            let body = built.roots[0].1.geometry().to_body();
+            for (face, sources) in body.faces().iter().zip(&report.face_sources) {
+                let expected: BTreeSet<_> = sources
+                    .iter()
+                    .filter(|source| source.face.index() >= 2)
+                    .map(|source| match source.operand {
+                        exedra_analytic::rectilinear::Operand::Left => SegTag(1),
+                        exedra_analytic::rectilinear::Operand::Right => SegTag(2),
+                    })
+                    .collect();
+                assert_eq!(face.role.iter().copied().collect::<BTreeSet<_>>(), expected);
+            }
+        }
+    }
+    #[test]
+    fn shared_rotated_placement_is_applied_once_after_local_boolean() {
+        let mut value = set_operation_request("union", [0., 0., 0.]);
+        value["nodes"][0]["placement"] =
+            serde_json::json!({"translation":[20.,30.,40.],"rotationXYZ":[0.,0.,0.7]});
+        value["nodes"][1]["placement"] =
+            serde_json::json!({"translation":[20.,30.,45.],"rotationXYZ":[0.,0.,0.7]});
+        let built = serde_json::from_value::<Request>(value)
+            .unwrap()
+            .build()
+            .unwrap();
+        assert_eq!(built.machining["result"].integrals, Some([1500., 800.]));
+        let frame = built.roots[0].1.geometry().frame();
+        assert_eq!(frame.rows.map(|row| row[3]), [20., 30., 40.]);
+        let body = built.roots[0].1.geometry().to_body();
+        assert_eq!(
+            body.vertices()
+                .iter()
+                .map(|point| point[2])
+                .fold(f64::NEG_INFINITY, f64::max),
+            15.
+        );
+    }
+    #[test]
+    fn boolean_frames_empty_results_and_curve_refusals_are_explicit() {
+        let mut value = set_operation_request("union", [5., 0., 0.]);
+        value["nodes"][1]["placement"]["rotationXYZ"] =
+            serde_json::json!([0., 0., core::f64::consts::FRAC_PI_2]);
+        let error = serde_json::from_value::<Request>(value)
+            .unwrap()
+            .build()
+            .unwrap_err();
+        assert_eq!(error.code, "boolean.frameMismatch");
+        assert_eq!(error.context.unwrap().operand, Some("right"));
+        let error =
+            serde_json::from_value::<Request>(set_operation_request("intersect", [20., 0., 0.]))
+                .unwrap()
+                .build()
+                .unwrap_err();
+        assert_eq!(error.code, "boolean.empty");
+        assert_eq!(error.operation, "solid.intersect");
+        let mut value = set_operation_request("union", [0., 0., 0.]);
+        value["profiles"][0] = serde_json::json!({"kind":"circle","radius":5.});
+        let error = serde_json::from_value::<Request>(value)
+            .unwrap()
+            .build()
+            .unwrap_err();
+        assert_eq!(error.code, "boolean.unsupportedFace");
+        assert!(error.context.unwrap().face.is_some());
+    }
+    #[test]
+    fn halfspace_graph_preserves_source_tags_and_labels_the_new_cap() {
+        let mut value = set_operation_request("union", [5., 0., 0.]);
+        value["nodes"][2] = serde_json::json!({"kind":"intersectHalfSpace","base":0,"point":[0.,0.,5.],"normal":[0.,0.,1.],"feature":"cut"});
+        let built = serde_json::from_value::<Request>(value.clone())
+            .unwrap()
+            .build()
+            .unwrap();
+        let evidence = &built.machining["result"];
+        assert_eq!(evidence.integrals, None);
+        let AuthoredSolidOperation::HalfSpace { report, .. } = &evidence.operations[0] else {
+            panic!("halfspace report")
+        };
+        assert_eq!(
+            report.outcome,
+            exedra_analytic::halfspace::ClipOutcome::Clipped
+        );
+        let body = built.roots[0].1.geometry().to_body();
+        let cap = report.cap.unwrap();
+        assert_eq!(body.faces()[cap.index()].role, alloc::vec![SegTag(1)]);
+        for face in &report.faces {
+            if let Some(result) = face.result {
+                assert_eq!(
+                    body.faces()[result.index()].role,
+                    if face.source.index() >= 2 {
+                        alloc::vec![SegTag(2)]
+                    } else {
+                        Vec::new()
+                    }
+                );
+            }
+        }
+        value["nodes"][2]["point"] = serde_json::json!([0., 0., -1.]);
+        assert_eq!(
+            serde_json::from_value::<Request>(value)
+                .unwrap()
+                .build()
+                .unwrap_err()
+                .code,
+            "halfspace.empty"
+        );
+    }
     #[test]
     fn spherical_caps_preserve_dimensions_and_remain_native_revolutions() {
         let input = |radius, height| serde_json::json!({"units":"mm","separation":1e-9,"profiles":[],"nodes":[{"kind":"sphericalCap","radius":radius,"height":height}],"roots":[{"name":"dome","node":0}]});
