@@ -1270,7 +1270,6 @@ impl Request {
                                 MachiningError::UnsupportedFace{..}=>"machining.unsupportedFace",
                                 MachiningError::Clearance{..}=>"machining.clearance",
                                 MachiningError::ExitCount{..}=>"machining.exitCount",
-                                MachiningError::NonparallelExits=>"machining.nonparallelExits",
                                 MachiningError::NumericLimit=>"machining.numericLimit",
                                 MachiningError::Section(exedra_analytic::geometry::intersection::SectionError::NearParallel{..})=>"machining.nearParallel",
                                 _=>"machining.invalid",

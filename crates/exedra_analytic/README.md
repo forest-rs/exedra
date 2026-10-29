@@ -85,9 +85,10 @@ Sweeps in `(0, TAU]` produce closed native boundaries: full turns share a seam;
 partial turns include planar end caps. Profile holes, segment tags, rigid
 placement, exact volume and surface area are retained. Arcs generate regular
 toroidal walls; their whole swept radius is checked, including interior extrema.
-Axis contact and arcs requiring a nonregular torus are named refusals.
-`Revolution::from_profile` accepts authored profiles with separate conversion and
-construction errors. Spherical walls and poles are not implemented.
+Arcs requiring a nonregular torus are named refusals. Supported axis-contact
+profiles retain spherical poles and conical apices as explicit collapsed
+boundaries. `Revolution::from_profile` accepts authored profiles with separate
+conversion and construction errors.
 
 `Revolution::realize_with_uvs` supplies each triangle's construction coordinates
 to a caller mapper. Walls use `(angle, distance along the profile loop)`; caps
@@ -227,8 +228,11 @@ for face-level region and opening edits, and `TessellatedShell` for the mesh
 plus its analytic-face provenance and emitted vertex displacement.
 Its builder shares edges by vertex identity and validates on `build()`.
 
-This crate is deliberately not a full CAD kernel: no surface intersections,
-booleans, general edge fillets, healing or reverse conversion from meshes.
+This crate provides bounded retained-body operations, including planar/cylinder
+sections, native through-cylinder machining, convex planar halfspace clipping and
+rectilinear solid Booleans. It is not a general CAD Boolean or healing kernel;
+arbitrary surface intersections, general edge fillets and reverse conversion
+from meshes are not provided.
 
 The default `std` feature selects native floating-point support. For `no_std`,
 disable defaults and enable `libm`. Realization trig always uses `libm`.
@@ -300,3 +304,12 @@ the attempted budget, typed outcome, attempt count and completed-output work;
 partial planning work in a refused attempt is excluded from those counters.
 Ordinary target-achieving results take their original path. Each attempt obeys
 the policy limits; a retry can retain two bounded outputs concurrently.
+
+`machining::subtract_through_cylinder` accepts two complete planar exits, including
+nonparallel faces, while proving separation from all untouched faces and trims.
+Each exit retains its exact elliptic section. Rephased edge intervals and explicit
+harmonic pcurves share one cylinder seam even when the ellipses have different
+principal axes. A whole-period harmonic width bound keeps the two rims apart.
+Realization pairs the rims by complete radial coefficients and retains efficient
+straight cylinder rulings instead of refining the entire chart. Native removed
+volume and surface-area change integrate the two distinct planar sections.

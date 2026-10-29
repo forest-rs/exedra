@@ -10,7 +10,7 @@ use crate::geometry::{
 };
 use exedra_math::{Placement3, add, scale, sub};
 
-/// A checked full-turn cylinder face between two translated circular/elliptic rims.
+/// A checked full-turn cylinder face between two circular/elliptic graph rims.
 ///
 /// This is a derived view: the body's curves, ranges and coedges remain authoritative.
 /// Coordinates are native cylinder parameters, never texture coordinates.
@@ -23,6 +23,7 @@ pub struct CylindricalBand {
     seam: EdgeId,
     pub(crate) pair: [Coedge; 2],
     pub(crate) translation: [f64; 3],
+    pub(crate) variable_axial_rulings: bool,
     pub(crate) center: [f64; 3],
     max_gap: f64,
 }
@@ -69,7 +70,7 @@ impl CylindricalBand {
     }
 }
 
-/// A face does not establish the bounded translated-rim cylinder contract.
+/// A face does not establish the bounded cylinder graph-band contract.
 #[derive(Copy, Clone, Debug, PartialEq)]
 pub enum CylindricalBandError {
     /// Agreement policy must be finite and nonnegative.
@@ -116,7 +117,7 @@ impl<F, E> Body<F, E> {
     /// Derives a full-turn trim band from a cylinder's exact two rims and shared seam.
     ///
     /// Whole harmonic coefficients establish the angle/height relationship and
-    /// translated-rim pairing. Agreeing endpoints or a few sampled positions are
+    /// complete radial pairing. Agreeing endpoints or a few sampled positions are
     /// insufficient. No input geometry or face domain is repaired or normalized.
     /// # Errors
     /// Refuses unsupported topology, mismatched complete rims, nonpositive width,
@@ -265,7 +266,30 @@ impl<F, E> Body<F, E> {
             .map_err(|_| refuse())?;
         let upper = CurveSpan::new(upper_curve.clone(), upper_range, !pair[1].reversed)
             .map_err(|_| refuse())?;
-        let gap = a.gap.max(b.gap) + lower.alignment(&upper) + endpoint_gap;
+        // Complete radial coefficients must agree at matching traversal fractions.
+        // Axial coefficients may differ: each rim is a separate planar section.
+        let coefficients = |span: &CurveSpan| -> Option<[[f64; 2]; 3]> {
+            let (frame, [major, minor]) = span.curve().harmonic()?;
+            let phase = span.range().bounds()[usize::from(span.reversed())];
+            let (sin, cos) = (libm::sin(phase), libm::cos(phase));
+            let sign = if span.reversed() { -1.0 } else { 1.0 };
+            let center = frame_coordinates(cf, frame.rows.map(|r| r[3]))?;
+            let a = frame_coordinates(zero, frame.rows.map(|r| r[0] * major))?;
+            let b = frame_coordinates(zero, frame.rows.map(|r| r[1] * minor))?;
+            Some([
+                [center[0], center[1]],
+                core::array::from_fn(|i| a[i] * cos + b[i] * sin),
+                core::array::from_fn(|i| sign * (-a[i] * sin + b[i] * cos)),
+            ])
+        };
+        let radial_gap = coefficients(&lower)
+            .ok_or_else(refuse)?
+            .into_iter()
+            .zip(coefficients(&upper).ok_or_else(refuse)?)
+            .map(|(a, b)| libm::hypot(a[0] - b[0], a[1] - b[1]))
+            .sum::<f64>()
+            + 64.0 * f64::EPSILON * cylinder.radius();
+        let gap = a.gap.max(b.gap) + radial_gap + endpoint_gap;
         if !gap.is_finite() || gap > policy.max_gap {
             return Err(Error::Agreement {
                 face: id,
@@ -273,6 +297,7 @@ impl<F, E> Body<F, E> {
                 allowed: policy.max_gap,
             });
         }
+        let variable_axial_rulings = lower.alignment(&upper) > policy.max_gap;
         let (lower, upper, edges) = if a.axial.coefficients()[0] < b.axial.coefficients()[0] {
             (a.axial, b.axial, [pair[0].edge, pair[1].edge])
         } else {
@@ -302,6 +327,7 @@ impl<F, E> Body<F, E> {
             seam: seams[0].edge,
             pair,
             translation,
+            variable_axial_rulings,
             center: a.center,
             max_gap: gap,
         })
