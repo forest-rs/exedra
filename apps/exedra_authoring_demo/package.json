@@ -12,13 +12,16 @@
     "prepare:sdk": "npm run check:partner && npm run build:sdk && npm run build:wasm && npm run build:scene-wasm",
     "dev": "vite --host 127.0.0.1 --port 5174 --strictPort",
     "predev": "npm run prepare:sdk",
-    "build": "npm run prepare:sdk && tsc --noEmit && vite build",
+    "build": "npm run format:check && npm run test:highlight && npm run prepare:sdk && tsc --noEmit && vite build",
     "preview": "vite preview --host 127.0.0.1 --port 5174 --strictPort",
     "test:sdk": "node --experimental-strip-types --test ../../packages/exedra/test/*.test.ts",
     "test:wasm": "node --experimental-strip-types scripts/smoke-wasm.mjs && node --experimental-strip-types scripts/smoke-solid-operations.mjs",
     "test:scene-wasm": "node --experimental-strip-types scripts/smoke-scene-wasm.mjs",
     "bench:wasm": "node --experimental-strip-types scripts/bench-wasm.mjs",
-    "test:views": "node --experimental-strip-types --test scripts/views.test.ts"
+    "test:views": "node --experimental-strip-types --test scripts/views.test.ts",
+    "format": "prettier --write \"src/**/*.{ts,css}\" \"scripts/*.ts\" scripts/highlight-typescript.mjs scripts/highlight-typescript.test.mjs scripts/sample-source-plugin.mjs vite.config.ts package.json package-lock.json tsconfig.json \"../../packages/exedra/{src,test}/**/*.ts\" ../../packages/exedra/package.json ../../packages/exedra/tsconfig.json .prettierrc.json",
+    "format:check": "prettier --check \"src/**/*.{ts,css}\" \"scripts/*.ts\" scripts/highlight-typescript.mjs scripts/highlight-typescript.test.mjs scripts/sample-source-plugin.mjs vite.config.ts package.json package-lock.json tsconfig.json \"../../packages/exedra/{src,test}/**/*.ts\" ../../packages/exedra/package.json ../../packages/exedra/tsconfig.json .prettierrc.json",
+    "test:highlight": "node --test scripts/highlight-typescript.test.mjs"
   },
   "dependencies": {
     "@exedra/authoring": "file:../../packages/exedra",
@@ -27,6 +30,7 @@
   },
   "devDependencies": {
     "@types/three": "^0.179.0",
+    "prettier": "3.9.10",
     "typescript": "^5.9.2",
     "vite": "^7.1.3"
   }
