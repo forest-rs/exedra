@@ -101,3 +101,63 @@ export function highlightTypeScript(source) {
   trivia(position, source.length);
   return html.join("");
 }
+
+/** Build focused author excerpts from actual declarations, including their local
+ * type/helper dependencies. The complete source is still highlighted separately.
+ */
+export function highlightAuthorSections(source) {
+  const file = ts.createSourceFile(
+    "sample.ts",
+    source,
+    ts.ScriptTarget.Latest,
+    true,
+    ts.ScriptKind.TS,
+  );
+  const declarations = new Map();
+  for (const node of file.statements) {
+    if (
+      ((ts.isFunctionDeclaration(node) && node.body) ||
+        ts.isInterfaceDeclaration(node) ||
+        ts.isTypeAliasDeclaration(node)) &&
+      node.name
+    ) {
+      declarations.set(node.name.text, node);
+    }
+  }
+  const sections = {};
+  for (const [name, author] of declarations) {
+    if (!ts.isFunctionDeclaration(author) || !name.startsWith("author"))
+      continue;
+    const needed = new Set([name]);
+    function collect(node) {
+      function visit(child) {
+        if (
+          ts.isIdentifier(child) &&
+          declarations.has(child.text) &&
+          !needed.has(child.text)
+        ) {
+          needed.add(child.text);
+          collect(declarations.get(child.text));
+        }
+        ts.forEachChild(child, visit);
+      }
+      ts.forEachChild(node, visit);
+    }
+    collect(author);
+    const types = [],
+      helpers = [];
+    for (const [dependency, node] of declarations) {
+      if (!needed.has(dependency) || dependency === name) continue;
+      (ts.isFunctionDeclaration(node) ? helpers : types).push(node);
+    }
+    const nodes = [...types, author, ...helpers];
+    const excerpt = nodes
+      .map((node) => source.slice(node.getFullStart(), node.end).trim())
+      .join("\n\n");
+    sections[name] = {
+      html: highlightTypeScript(excerpt),
+      declarations: nodes.map((node) => node.name.text),
+    };
+  }
+  return sections;
+}

@@ -5,7 +5,10 @@ import assert from "node:assert/strict";
 import { readFile } from "node:fs/promises";
 import test from "node:test";
 import { fileURLToPath } from "node:url";
-import { highlightTypeScript } from "./highlight-typescript.mjs";
+import {
+  highlightTypeScript,
+  highlightAuthorSections,
+} from "./highlight-typescript.mjs";
 import { sampleSourcePlugin } from "./sample-source-plugin.mjs";
 
 function renderedText(html) {
@@ -85,6 +88,56 @@ test("Vite exposes only the demo sample and generates HTML from its actual sourc
     id,
   );
   assert.deepEqual(watched, [sample]);
-  const html = JSON.parse(module.slice("export default ".length, -1));
+  const html = JSON.parse(module.match(/export default (.+);$/)[1]);
+  const sections = JSON.parse(
+    module.match(/^export const authorSections = (.+);/)[1],
+  );
+  assert.ok(sections.authorValveBlock);
+  assert.ok(
+    renderedText(sections.authorValveBlock.html).startsWith(
+      "export interface ValveBlockParameters",
+    ),
+  );
+  assert.ok(
+    renderedText(sections.authorValveBlock.html).includes(
+      "export function authorValveBlock",
+    ),
+  );
+  assert.ok(
+    !renderedText(sections.authorValveBlock.html).includes(
+      "export function authorPanel",
+    ),
+  );
+  assert.ok(
+    sections.authorFusedHousing.declarations.includes("machineHousing"),
+  );
   assert.equal(renderedText(html), await readFile(sample, "utf8"));
+});
+
+test("author excerpts retain actual parameter types and local helpers without unrelated samples", () => {
+  const source = `import { extrude } from "kernel";
+export type Finish = "round" | "sharp";
+export interface BlockParameters { height: number; finish: Finish }
+/** <actual author> */
+export function authorBlock(parameters: BlockParameters) { return finish(extrude(parameters)); }
+function finish(value: unknown) { return value; }
+export function authorOther() { return 3; }
+`;
+  const sections = highlightAuthorSections(source);
+  const text = renderedText(sections.authorBlock.html);
+  assert.deepEqual(sections.authorBlock.declarations, [
+    "Finish",
+    "BlockParameters",
+    "authorBlock",
+    "finish",
+  ]);
+  for (const declaration of [
+    "export type Finish",
+    "export interface BlockParameters",
+    "/** <actual author> */",
+    "function finish",
+  ])
+    assert.ok(text.includes(declaration));
+  assert.ok(!text.includes("authorOther"));
+  assert.ok(!sections.authorBlock.html.includes("<actual author>"));
 });
