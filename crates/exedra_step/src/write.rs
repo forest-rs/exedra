@@ -8,7 +8,7 @@ use crate::{
 use alloc::{string::String, vec, vec::Vec};
 use core::fmt::{self, Write};
 use exedra_analytic::{
-    body::{Body, Sense},
+    body::{Body, FaceId, Sense},
     geometry::{Curve, Surface},
 };
 use exedra_math::{Placement3, norm};
@@ -165,6 +165,7 @@ pub(super) fn export<F, E>(
         edges: vec![None; body.edges().len()],
         loops: vec![None; body.loops().len()],
         faces: vec![None; body.faces().len()],
+        reversed_faces: Vec::new(),
     };
     for (i, (&active, &p)) in prepared.vertices.iter().zip(body.vertices()).enumerate() {
         if !active {
@@ -346,6 +347,11 @@ pub(super) fn export<F, E>(
         });
     }
     for (i, face) in body.faces().iter().enumerate() {
+        let reverse = prepared.reversed_faces.get(i).copied().unwrap_or(false);
+        if reverse {
+            map.reversed_faces
+                .push(FaceId(u32::try_from(i).expect("input budget")));
+        }
         let native_frame = face.surface.frame();
         // Canonical positive cone angle also works with readers that clamp a
         // negative STEP angle. Flipping Y and Z maps (u,v) to (-u,-v): two
@@ -407,26 +413,59 @@ pub(super) fn export<F, E>(
                 "FACE_BOUND"
             };
             refs.push(out.entity(format_args!(
-                "{}('',{},.T.)",
+                "{}('',{},{})",
                 kind,
-                Id(map.loops[loop_id.index()].expect("used"))
+                Id(map.loops[loop_id.index()].expect("used")),
+                boolean(!reverse)
             ))?);
         }
         map.faces[i] = Some(out.entity(format_args!(
             "ADVANCED_FACE('',{},{},{})",
             Refs(&refs),
             Id(surface),
-            boolean(face.sense == Sense::Forward)
+            boolean((face.sense == Sense::Forward) != reverse)
         ))?);
     }
-    refs.clear();
-    refs.extend(map.faces.iter().map(|&id| id.expect("all faces used")));
-    let shell = out.entity(format_args!("CLOSED_SHELL('',{})", Refs(&refs)))?;
-    let solid = out.entity(format_args!(
-        "MANIFOLD_SOLID_BREP({},{})",
-        Quoted(options.name),
-        Id(shell)
-    ))?;
+    let solid = if let Some(material) = &prepared.material {
+        let mut outer = None;
+        let mut voids = Vec::with_capacity(material.void_shells.len());
+        for (index, shell) in material.boundary.shells.iter().enumerate() {
+            refs.clear();
+            refs.extend(
+                shell
+                    .faces
+                    .iter()
+                    .map(|face| map.faces[face.index()].expect("used")),
+            );
+            let entity = out.entity(format_args!("CLOSED_SHELL('',{})", Refs(&refs)))?;
+            if index == material.outer_shell {
+                outer = Some(entity);
+            } else {
+                // Base void faces point out of their geometric enclosed volume.
+                // This required FALSE wrapper restores native material-outward
+                // sense (into the void), including every loop's orientation.
+                voids.push(out.entity(format_args!(
+                    "ORIENTED_CLOSED_SHELL('',*,{},.F.)",
+                    Id(entity)
+                ))?);
+            }
+        }
+        out.entity(format_args!(
+            "BREP_WITH_VOIDS({},{},{})",
+            Quoted(options.name),
+            Id(outer.expect("certified outer")),
+            Refs(&voids)
+        ))?
+    } else {
+        refs.clear();
+        refs.extend(map.faces.iter().map(|&id| id.expect("all faces used")));
+        let shell = out.entity(format_args!("CLOSED_SHELL('',{})", Refs(&refs)))?;
+        out.entity(format_args!(
+            "MANIFOLD_SOLID_BREP({},{})",
+            Quoted(options.name),
+            Id(shell)
+        ))?
+    };
     let prefix = match options.units {
         LengthUnit::Millimetre => ".MILLI.",
         LengthUnit::Metre => "$",
@@ -495,9 +534,10 @@ pub(super) fn export<F, E>(
         max_native_support_gap: prepared.gap,
         frame_roundoff_bound: prepared.allowance,
         parameter_roundoff_bound: prepared.parameter_allowance,
-        max_deviation: prepared.gap + prepared.allowance + prepared.parameter_allowance,
+        max_deviation: prepared.max_deviation,
         counts: prepared.counts,
         correspondence: map,
+        material_validation: prepared.material,
     };
     Ok(StepDocument {
         text: out.text,

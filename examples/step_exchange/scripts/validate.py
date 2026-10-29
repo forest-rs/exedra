@@ -90,7 +90,7 @@ def validate(folder, fixture):
     assert not shape.IsNull()
     assert BRepCheck_Analyzer(shape, True, False, True).IsValid(), "invalid imported boundary"
     assert count(shape, TopAbs_SOLID) == 1
-    assert count(shape, TopAbs_SHELL) == 1
+    assert count(shape, TopAbs_SHELL) == fixture.get("shells", 1)
     for key, kind in [("faces", TopAbs_FACE), ("edges", TopAbs_EDGE), ("vertices", TopAbs_VERTEX)]:
         assert count(shape, kind) == fixture[key], (key, count(shape, kind), fixture[key])
     # OCCT's STEP reader uses millimetres; metres must scale all measures.
@@ -168,7 +168,7 @@ def validate(folder, fixture):
         assert classifier.State() == expected_state, (witness, classifier.State())
         witnesses.append({"point_mm": point, "state": witness["state"]})
     assert fixture["max_deviation"] <= fixture["uncertainty"]
-    return {"file": fixture["file"], "valid": True, "solids": 1, "shells": 1,
+    return {"file": fixture["file"], "valid": True, "solids": 1, "shells": fixture.get("shells", 1),
             "faces": fixture["faces"], "edges": fixture["edges"], "vertices": fixture["vertices"],
             "volume_mm3": volume.Mass(), "area_mm2": area.Mass(), "volume_integration_error_estimate":volume_integration_error, "area_integration_error_estimate":area_integration_error,
             "volume_relative_error":abs(volume.Mass()/expected_volume-1.0),"area_relative_error":abs(area.Mass()/expected_area-1.0),

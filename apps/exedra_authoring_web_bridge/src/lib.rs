@@ -537,6 +537,15 @@ impl Session {
         "maxDeviation":file.report.max_deviation,"maxNativeSupportGap":file.report.max_native_support_gap,
         "frameRoundoffBound":file.report.frame_roundoff_bound,"parameterRoundoffBound":file.report.parameter_roundoff_bound,
         "entities":file.report.counts.entities,"faces":file.report.counts.faces,"edges":file.report.counts.edges,
+        "shells":file.report.counts.shells,"solids":file.report.counts.solids,
+        "materialValidation":file.report.material_validation.as_ref().map(|m|serde_json::json!({
+            "family":"rectilinear","outerShell":m.outer_shell,"voidShells":m.void_shells,
+            "shellFaces":m.boundary.shells.iter().map(|s|s.faces.iter().map(|f|f.0).collect::<Vec<_>>()).collect::<Vec<_>>(),
+            "planes":m.planes,"cells":m.cells,"faceTests":m.face_tests,"faceTestBound":m.face_test_bound,
+            "volume":m.volume,"volumeBounds":m.volume_bounds,"surfaceArea":m.surface_area,"surfaceAreaBounds":m.surface_area_bounds,
+            "maxNativeSupportGap":m.boundary.geometry.max_gap,"arithmeticAllowance":m.arithmetic_allowance,
+            "planeVertices":m.plane_vertices,"linkBytes":m.link_bytes,"arrangementScratchBytes":m.arrangement_scratch_bytes,
+        })),
         "correspondence":{
             "vertices":file.report.correspondence.vertices.iter().map(|id|id.map(|v|v.0)).collect::<Vec<_>>(),
             "edges":file.report.correspondence.edges.iter().map(|entry|entry.map(|edge|match edge {
@@ -545,7 +554,8 @@ impl Session {
                 exedra_step::StepEdgeEntity::CollapsedVertex(id)=>serde_json::json!({"kind":"collapsedVertex","entity":id.0})
             })).collect::<Vec<_>>(),
             "loops":file.report.correspondence.loops.iter().map(|id|id.map(|v|v.0)).collect::<Vec<_>>(),
-            "faces":file.report.correspondence.faces.iter().map(|id|id.map(|v|v.0)).collect::<Vec<_>>()
+            "faces":file.report.correspondence.faces.iter().map(|id|id.map(|v|v.0)).collect::<Vec<_>>(),
+            "reversedFaces":file.report.correspondence.reversed_faces.iter().map(|face|face.0).collect::<Vec<_>>()
         }});
         Ok(NativeStepFile {
             text: file.text,
@@ -1735,5 +1745,50 @@ mod tests {
             assert_eq!(session.documents.len(), 1);
             assert_eq!(session.documents[&1].metadata(1).unwrap(), good);
         }
+    }
+    #[test]
+    fn cavity_step_report_exposes_material_ownership_work_and_reversed_faces() {
+        let mut session = Session::new();
+        let request = decode(&json(&serde_json::json!({
+            "units":"mm","separation":1e-9,
+            "profiles":[{"kind":"rectangle","width":10,"height":10},{"kind":"rectangle","width":2,"height":2}],
+            "nodes":[{"kind":"extrude","profile":0,"height":10},{"kind":"extrude","profile":1,"height":2,"placement":{"translation":[0,0,4]}},{"kind":"subtract","base":0,"other":1}],
+            "roots":[{"name":"housing","node":2}]
+        }))).unwrap();
+        session.build(request).unwrap();
+        let file = session
+            .step(
+                1,
+                0,
+                ExchangeOptions {
+                    name: None,
+                    timestamp: "2026-10-29T00:00:00Z".into(),
+                    tolerance: Some(1e-7),
+                },
+            )
+            .unwrap();
+        assert!(file.text.contains("BREP_WITH_VOIDS("));
+        let report = value(&file.report);
+        assert_eq!(report["shells"], 2);
+        assert_eq!(report["solids"], 1);
+        let material = &report["materialValidation"];
+        assert_eq!(material["family"], "rectilinear");
+        assert_eq!(material["volume"], 992.0);
+        assert_eq!(material["voidShells"].as_array().unwrap().len(), 1);
+        assert!(
+            material["faceTests"].as_u64().unwrap() <= material["faceTestBound"].as_u64().unwrap()
+        );
+        assert!(material["linkBytes"].as_u64().unwrap() > 0);
+        assert!(
+            material["arrangementScratchBytes"].as_u64().unwrap()
+                >= material["linkBytes"].as_u64().unwrap()
+        );
+        assert_eq!(
+            report["correspondence"]["reversedFaces"]
+                .as_array()
+                .unwrap()
+                .len(),
+            6
+        );
     }
 }

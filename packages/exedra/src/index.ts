@@ -1328,6 +1328,28 @@ export type StepEdgeEntity =
   | { readonly kind: "curve"; readonly entity: number }
   | { readonly kind: "curveChain"; readonly entities: readonly number[] }
   | { readonly kind: "collapsedVertex"; readonly entity: number };
+/** Independent whole-material evidence for exact orthogonal plane/line boundaries. */
+export interface StepMaterialValidation {
+  readonly family: "rectilinear";
+  readonly outerShell: number;
+  readonly voidShells: readonly number[];
+  /** Native face IDs grouped by shell; indices name outerShell and voidShells. */
+  readonly shellFaces: readonly (readonly number[])[];
+  readonly planes: readonly [number, number, number];
+  readonly cells: number;
+  readonly faceTests: number;
+  readonly faceTestBound: number;
+  readonly volume: number;
+  readonly volumeBounds: readonly [number, number];
+  readonly surfaceArea: number;
+  readonly surfaceAreaBounds: readonly [number, number];
+  readonly maxNativeSupportGap: number;
+  readonly arithmeticAllowance: number;
+  readonly planeVertices: number;
+  readonly linkBytes: number;
+  /** Flat arrangement arrays; excludes preparation, report/output and allocator overhead. */
+  readonly arrangementScratchBytes: number;
+}
 export interface StepReport {
   schema: string;
   units: LengthUnit;
@@ -1340,12 +1362,19 @@ export interface StepReport {
   entities: number;
   faces: number;
   edges: number;
+  /** Closed boundary shells, including cavities; oriented wrappers do not add shells. */
+  shells: number;
+  solids: number;
+  /** Present for certified multiple shells; single shells retain local support evidence. */
+  materialValidation: StepMaterialValidation | null;
   /** Entries use native local IDs as indices; unused topology entries are null. */
   correspondence: {
     vertices: readonly (number | null)[];
     edges: readonly (StepEdgeEntity | null)[];
     loops: readonly (number | null)[];
     faces: readonly (number | null)[];
+    /** Base closed-shell faces reversed from native material; void wrappers restore their sense. */
+    reversedFaces: readonly number[];
   };
 }
 /** Native conic rims and axis evidence. Axis inputs are construction-space; document values include placement. */
