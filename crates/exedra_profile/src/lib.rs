@@ -37,6 +37,7 @@ extern crate alloc;
 mod arc;
 mod corner;
 mod placement;
+mod point_query;
 mod profile;
 mod region;
 mod sampling;
@@ -50,6 +51,7 @@ pub use corner::{
     CornerShape, CornerSource, CornerTreatment,
 };
 pub use placement::ProfileTranslationError;
+pub use point_query::{LoopPointQuery, PointQueryError};
 pub use profile::{
     Curve, Loop, LoopError, LoopRef, Profile, ProfileError, ProfilePolicy, SegTag, Segment,
     SegmentRef,
