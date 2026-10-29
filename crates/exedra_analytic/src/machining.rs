@@ -233,7 +233,8 @@ pub fn subtract_through_cylinder_with_roles<F: Clone, E: Clone>(
     edge_role: E,
 ) -> Result<MachiningResult<F, E>, MachiningError> {
     check_policy(policy)?;
-    subtract_owned(body.clone(), tool, policy, face_role, edge_role)
+    validate_input(body, policy)?;
+    subtract_owned_validated(body.clone(), tool, policy, face_role, edge_role)
 }
 
 /// Subtracts an ordered cylinder pattern with default generated metadata.
@@ -253,14 +254,16 @@ pub fn subtract_through_cylinders<F: Clone + Default, E: Clone + Default>(
 }
 /// Subtracts a transactional cylinder pattern with common generated roles.
 ///
-/// Uses the identical geometry, input/output validation and per-tool reports as
+/// Uses identical geometry, complete validation evidence and per-tool reports as
 /// repeated [`subtract_through_cylinder_with_roles`] calls, while cloning source
-/// geometry only once. Each pattern can carry one feature role; use individual
+/// geometry only once. Each validated intermediate output becomes the next
+/// certified input without repeating its unchanged checks. Native tables reserve
+/// the complete pattern's bounded size once. Each pattern can carry one feature role; use individual
 /// calls when generated roles differ by tool. Failed patterns leave the borrowed
 /// input untouched and discard every intermediate result.
 /// # Errors
 /// Returns the first failing tool index and [`MachiningError`], or a global
-/// policy/empty-pattern input error with no tool index.
+/// policy/empty-pattern input or aggregate table-budget error with no tool index.
 pub fn subtract_through_cylinders_with_roles<F: Clone, E: Clone>(
     body: &Body<F, E>,
     tools: &[CylinderTool],
@@ -270,23 +273,45 @@ pub fn subtract_through_cylinders_with_roles<F: Clone, E: Clone>(
 ) -> Result<MachiningBatchResult<F, E>, MachiningBatchError> {
     let global = |error| MachiningBatchError { tool: None, error };
     check_policy(policy).map_err(global)?;
-    if tools.is_empty() {
-        body.validate(&ValidationPolicy {
-            max_gap: policy.geometry_gap,
-        })
-        .map_err(|e| global(MachiningError::Boundary(e)))?;
-        if !body.is_closed() {
-            return Err(global(MachiningError::OpenBoundary));
+    validate_input(body, policy).map_err(|error| MachiningBatchError {
+        tool: if tools.is_empty() { None } else { Some(0) },
+        error,
+    })?;
+    // Every intermediate output is validated below before its owned tables
+    // transfer to the next cut. That certificate is the next input certificate;
+    // repeating the same whole-body checks provides no additional evidence.
+    let n = tools.len();
+    for (table, count, per_tool) in [
+        ("vertices", body.vertices().len(), 2_usize),
+        ("edges", body.edges().len(), 3),
+        ("loops", body.loops().len(), 3),
+        ("faces", body.faces().len(), 1),
+    ] {
+        let total = n
+            .checked_mul(per_tool)
+            .and_then(|extra| count.checked_add(extra))
+            .ok_or_else(|| global(MachiningError::NumericLimit))?;
+        if u32::try_from(total).is_err() {
+            return Err(global(MachiningError::Boundary(BodyError::TooLarge {
+                table,
+                count: total,
+            })));
         }
     }
     let mut owned = body.clone();
+    owned.parts.vertices.reserve(2 * n);
+    owned.parts.edges.reserve(3 * n);
+    owned.parts.loops.reserve(3 * n);
+    owned.parts.faces.reserve(n);
+    owned.parts.trims.reserve(3 * n);
     let mut operations = Vec::with_capacity(tools.len());
     for (index, tool) in tools.iter().enumerate() {
-        let result = subtract_owned(owned, tool, policy, face_role.clone(), edge_role.clone())
-            .map_err(|error| MachiningBatchError {
-                tool: Some(index),
-                error,
-            })?;
+        let result =
+            subtract_owned_validated(owned, tool, policy, face_role.clone(), edge_role.clone())
+                .map_err(|error| MachiningBatchError {
+                    tool: Some(index),
+                    error,
+                })?;
         operations.push(result.report);
         owned = result.body;
     }
@@ -309,7 +334,7 @@ fn check_policy(policy: &MachiningPolicy) -> Result<(), MachiningError> {
     Ok(())
 }
 struct CylinderPlan {
-    exits: Vec<(FaceId, PlaneCylinderSection)>,
+    exits: [(FaceId, PlaneCylinderSection); 2],
     clearance: f64,
     outward: [[f64; 3]; 2],
 }
@@ -318,6 +343,10 @@ fn plan_cylinder<F, E>(
     tool: &CylinderTool,
     policy: &MachiningPolicy,
 ) -> Result<CylinderPlan, MachiningError> {
+    validate_input(body, policy)?;
+    plan_cylinder_validated(body, tool, policy)
+}
+fn validate_input<F, E>(body: &Body<F, E>, policy: &MachiningPolicy) -> Result<(), MachiningError> {
     let validation = ValidationPolicy {
         max_gap: policy.geometry_gap,
     };
@@ -326,6 +355,15 @@ fn plan_cylinder<F, E>(
     if !body.is_closed() {
         return Err(MachiningError::OpenBoundary);
     }
+    Ok(())
+}
+// Caller owns an unchanged input already checked with this exact policy, or
+// transfers a preceding output whose complete validation succeeded.
+fn plan_cylinder_validated<F, E>(
+    body: &Body<F, E>,
+    tool: &CylinderTool,
+    policy: &MachiningPolicy,
+) -> Result<CylinderPlan, MachiningError> {
     let Surface::Cylinder(cylinder) = &tool.surface else {
         unreachable!()
     };
@@ -345,7 +383,8 @@ fn plan_cylinder<F, E>(
     if !roundoff.is_finite() || roundoff > policy.geometry_gap {
         return Err(MachiningError::NumericLimit);
     }
-    let mut exits: Vec<(FaceId, PlaneCylinderSection)> = Vec::new();
+    let mut exits = [None, None];
+    let mut exit_count = 0;
     let mut clearance = f64::INFINITY;
     for (index, face) in body.faces().iter().enumerate() {
         let id = FaceId(crate::usize_to_u32(index));
@@ -398,21 +437,22 @@ fn plan_cylinder<F, E>(
             });
         }
         clearance = clearance.min(bound);
-        exits.push((id, section));
+        if let Some(slot) = exits.get_mut(exit_count) {
+            *slot = Some((id, section));
+        }
+        exit_count += 1;
     }
-    if exits.len() != 2 {
-        return Err(MachiningError::ExitCount { found: exits.len() });
+    if exit_count != 2 {
+        return Err(MachiningError::ExitCount { found: exit_count });
     }
+    let mut exits = exits.map(|exit| exit.expect("exactly two source exits"));
     exits.sort_by(|a, b| a.1.axial().coefficients()[0].total_cmp(&b.1.axial().coefficients()[0]));
-    let normals = exits
-        .iter()
-        .map(|(id, _)| {
-            let Surface::Plane(p) = &body.faces()[id.index()].surface else {
-                unreachable!()
-            };
-            col(p.frame(), 2)
-        })
-        .collect::<Vec<_>>();
+    let normals = exits.each_ref().map(|(id, _)| {
+        let Surface::Plane(p) = &body.faces()[id.index()].surface else {
+            unreachable!()
+        };
+        col(p.frame(), 2)
+    });
     let lower = exits[0].1.axial().coefficients();
     let upper = exits[1].1.axial().coefficients();
     let height = upper[0] - lower[0];
@@ -433,20 +473,19 @@ fn plan_cylinder<F, E>(
         outward,
     })
 }
-fn subtract_owned<F: Clone, E: Clone>(
+fn subtract_owned_validated<F: Clone, E: Clone>(
     body: Body<F, E>,
     tool: &CylinderTool,
     policy: &MachiningPolicy,
     face_role: F,
     edge_role: E,
 ) -> Result<MachiningResult<F, E>, MachiningError> {
-    check_policy(policy)?;
     let CylinderPlan {
         exits,
         clearance,
         outward,
         ..
-    } = plan_cylinder(&body, tool, policy)?;
+    } = plan_cylinder_validated(&body, tool, policy)?;
     let validation = ValidationPolicy {
         max_gap: policy.geometry_gap,
     };
@@ -1494,6 +1533,31 @@ mod tests {
         .unwrap_err();
         assert_eq!(error.tool, None);
         assert_eq!(error.error, MachiningError::OpenBoundary);
+    }
+    #[test]
+    fn fixed_exit_storage_still_reports_all_four_source_crossings() {
+        // A connected C-shaped extrusion has two separate material intervals
+        // along this tool axis, hence four planar exits instead of two.
+        let outline = Loop::new(alloc::vec![
+            Segment::line([-30.0, -20.0]),
+            Segment::line([30.0, -20.0]),
+            Segment::line([30.0, -10.0]),
+            Segment::line([-10.0, -10.0]),
+            Segment::line([-10.0, 10.0]),
+            Segment::line([30.0, 10.0]),
+            Segment::line([30.0, 20.0]),
+            Segment::line([-30.0, 20.0]),
+        ])
+        .unwrap();
+        let together =
+            from_profile(Profile::new(outline, alloc::vec![], &ProfilePolicy::new(1e-9)).unwrap());
+        let error = subtract_through_cylinder(
+            &together,
+            &CylinderTool::new([0.0, 0.0, 5.0], [0.0, 1.0, 0.0], 2.0).unwrap(),
+            &MachiningPolicy::default(),
+        )
+        .unwrap_err();
+        assert!(matches!(error, MachiningError::ExitCount { found: 4 }));
     }
     #[test]
     fn repeated_cuts_preserve_ids_and_exact_measures() {

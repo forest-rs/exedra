@@ -1,0 +1,1891 @@
+{
+  "study": "Native manifold machining: validated ownership and exact table preparation",
+  "environment": {
+    "cpu": "Apple M3 Max",
+    "platform": "macOS-27.0.1-arm64-arm-64bit-Mach-O",
+    "rustc": "rustc 1.99.0 (b940084d7 2026-09-28)\nbinary: rustc\ncommit-hash: b940084d7eb6a299eb4bfeb8e34901bc051e7ac4\ncommit-date: 2026-09-28\nhost: aarch64-apple-darwin\nrelease: 1.99.0\nLLVM version: 23.1.1\n",
+    "workspace_lock_sha256": "f4076ae90b19ae158d1b17a6c3954c5bf6c47931e35ed2470ff835214303a4eb",
+    "allocation_lock_sha256": "34c34ee4e1651856d90d0d7050b8eef82852141a511877f7659a39e7c0e32d3e",
+    "build": "cargo build --release; workspace defaults; no special target-cpu flags",
+    "harness_sha256": "396646d4fc54208e4995f20828c0aa9dd4fbb25b99b8f95e821880fc4d6c5659"
+  },
+  "change": {
+    "before": "Validate each intermediate body as output and again as next input; validate immutable source separately for each parallel tool; growable exit/normal vectors and repeated native-table growth.",
+    "after": "Reuse exact-policy validation of unchanged input and validated owned intermediate outputs; validate every output; two fixed exit slots with a complete exit counter, fixed normal array, and one checked pattern table reservation.",
+    "source_sha256": {
+      "crates/exedra_analytic/src/machining.rs": {
+        "before": "31aee64be3209baf4bc51dd196d81ce85a5b51f08c0d224481d3ab388458a0d8",
+        "after": "336bfd3faf0aab22a4c8a4268adde64fa9fec263f4eced5a60917a7af6a2b9e3"
+      },
+      "crates/exedra_analytic/src/machining/parallel.rs": {
+        "before": "ed5a9a1b52034f8e946caf98a87bcc40e487fffedb7b3a533e562464fc991814",
+        "after": "02148f335be6c1154636ed90b57b39ba101936d34bce349467094bce1a3c8690"
+      }
+    }
+  },
+  "scope": {
+    "timing": "7 batches x100 operations per phase,3 warmups. Construction includes source+tools; other phases exclude prepared inputs. Includes output/report destruction. Native host only; no STEP/compiler/JS/Wasm/GPU.",
+    "validate": "Local Body::validate incidence/support/explicit trims, not a global solid certificate.",
+    "metadata": "Phase cases use unit roles. The preserved native_machining31 benchmark uses original FaceRole/EdgeRole, identical stock/tools/policy,5x500 alternating before/after runs.",
+    "allocation": "Existing isolated dhat0.3.3; source/tools/warmup excluded; owned output/report retained then all dropped. Allocator bookkeeping/fragmentation excluded. Same allocation lockfile and dependencies for both builds.",
+    "inputs": {
+      "nonparallel": "wedge x[-30,30],y[-20,20],z[0,12+0.1*x], through axis[0.2,0.1,1],radius2",
+      "blind": "box[-30,-20,0]..[30,20,20],radius5,depth7",
+      "stepped": "same box,radius6 to cumulative depth3 then radius3 through",
+      "overlap_pair": "same box,parallel Z axes atX[-2,2],radius3",
+      "overlap_chain": "same box,parallel Z axes atX[-5,0,5],radius4",
+      "plate_31": "box[-364,-50,0]..[364,50,20],31holes,pitch22,radius4,axis[0.1,0,1]"
+    },
+    "geometry_gap": {
+      "new_cases": 1e-09,
+      "plate_31": 3.64e-09
+    },
+    "realization_tolerance": 0.03
+  },
+  "semantic_verification": "All native measures, topology/trim counts, wall provenance/work counts, mesh triangle/vertex counts and deviation reports match exactly. Regression compares complete native bodies and every batch report with individual calls; failures remain indexed and transactional. Four-exit input regression protects fixed-slot refusal accounting.",
+  "phase_measurements": {
+    "before": {
+      "batches": 7,
+      "repetitions_per_batch": 100,
+      "results": [
+        {
+          "case": "nonparallel",
+          "geometry": {
+            "circle_pair_tests": 0,
+            "edges": 23,
+            "faces": 7,
+            "removed_volume": 157.6738542760897,
+            "trim_records": 9,
+            "vertices": 14,
+            "wall_fragments": 1
+          },
+          "max_deviation": 0.0286645870799207,
+          "mesh_triangles": 92,
+          "mesh_vertices": 46,
+          "phases": {
+            "construct": {
+              "batch_ns": [
+                8615.42,
+                9010.0,
+                9042.09,
+                9118.75,
+                9165.83,
+                9491.25,
+                9791.25
+              ],
+              "max_ns": 9791.25,
+              "median_ns": 9118.75,
+              "min_ns": 8615.42
+            },
+            "cut": {
+              "batch_ns": [
+                9722.92,
+                9725.0,
+                9725.41,
+                9738.33,
+                9754.16,
+                9852.5,
+                9872.08
+              ],
+              "max_ns": 9872.08,
+              "median_ns": 9738.33,
+              "min_ns": 9722.92
+            },
+            "realize": {
+              "batch_ns": [
+                53562.09,
+                53859.58,
+                53991.67,
+                54706.67,
+                56276.67,
+                56716.67,
+                57154.59
+              ],
+              "max_ns": 57154.59,
+              "median_ns": 54706.67,
+              "min_ns": 53562.09
+            },
+            "validate": {
+              "batch_ns": [
+                3363.75,
+                3366.66,
+                3371.66,
+                3377.5,
+                3377.5,
+                3379.59,
+                3452.09
+              ],
+              "max_ns": 3452.09,
+              "median_ns": 3377.5,
+              "min_ns": 3363.75
+            }
+          },
+          "source_faces": 6,
+          "tolerance": 0.03
+        },
+        {
+          "case": "blind",
+          "geometry": {
+            "circle_pair_tests": 0,
+            "edges": 15,
+            "faces": 8,
+            "removed_volume": 549.7787143782139,
+            "trim_records": 3,
+            "vertices": 10,
+            "wall_fragments": 1
+          },
+          "max_deviation": 0.02931035576374294,
+          "mesh_triangles": 128,
+          "mesh_vertices": 66,
+          "phases": {
+            "construct": {
+              "batch_ns": [
+                2350.0,
+                2360.0,
+                2363.33,
+                2366.25,
+                2375.41,
+                2376.67,
+                2437.5
+              ],
+              "max_ns": 2437.5,
+              "median_ns": 2366.25,
+              "min_ns": 2350.0
+            },
+            "cut": {
+              "batch_ns": [
+                5129.17,
+                5237.920000000001,
+                5258.75,
+                5280.0,
+                5324.58,
+                5395.83,
+                5430.0
+              ],
+              "max_ns": 5430.0,
+              "median_ns": 5280.0,
+              "min_ns": 5129.17
+            },
+            "realize": {
+              "batch_ns": [
+                70550.83,
+                70917.92,
+                71033.33,
+                71313.75,
+                71453.34,
+                71589.58,
+                74018.33
+              ],
+              "max_ns": 74018.33,
+              "median_ns": 71313.75,
+              "min_ns": 70550.83
+            },
+            "validate": {
+              "batch_ns": [
+                1776.67,
+                1782.91,
+                1783.33,
+                1783.75,
+                1787.5,
+                1852.92,
+                1855.41
+              ],
+              "max_ns": 1855.41,
+              "median_ns": 1783.75,
+              "min_ns": 1776.67
+            }
+          },
+          "source_faces": 6,
+          "tolerance": 0.03
+        },
+        {
+          "case": "stepped",
+          "geometry": {
+            "circle_pair_tests": 0,
+            "edges": 18,
+            "faces": 9,
+            "removed_volume": 819.9556825869361,
+            "trim_records": 6,
+            "vertices": 12,
+            "wall_fragments": 2
+          },
+          "max_deviation": 0.028891911300183648,
+          "mesh_triangles": 272,
+          "mesh_vertices": 136,
+          "phases": {
+            "construct": {
+              "batch_ns": [
+                2263.75,
+                2281.67,
+                2282.09,
+                2288.75,
+                2333.75,
+                2370.42,
+                2387.91
+              ],
+              "max_ns": 2387.91,
+              "median_ns": 2288.75,
+              "min_ns": 2263.75
+            },
+            "cut": {
+              "batch_ns": [
+                6805.42,
+                6835.0,
+                6861.67,
+                6884.58,
+                6900.0,
+                6934.17,
+                6987.08
+              ],
+              "max_ns": 6987.08,
+              "median_ns": 6884.58,
+              "min_ns": 6805.42
+            },
+            "realize": {
+              "batch_ns": [
+                99330.83,
+                99472.92,
+                99693.75,
+                99785.0,
+                99862.08,
+                100100.0,
+                100863.34
+              ],
+              "max_ns": 100863.34,
+              "median_ns": 99785.0,
+              "min_ns": 99330.83
+            },
+            "validate": {
+              "batch_ns": [
+                2919.58,
+                2921.66,
+                2922.5,
+                2967.92,
+                2989.58,
+                3042.91,
+                3043.33
+              ],
+              "max_ns": 3043.33,
+              "median_ns": 2967.92,
+              "min_ns": 2919.58
+            }
+          },
+          "source_faces": 6,
+          "tolerance": 0.03
+        },
+        {
+          "case": "overlap_pair",
+          "geometry": {
+            "circle_pair_tests": 1,
+            "edges": 18,
+            "faces": 8,
+            "removed_volume": 1007.0740720878539,
+            "trim_records": 4,
+            "vertices": 12,
+            "wall_fragments": 2
+          },
+          "max_deviation": 0.027427564957947483,
+          "mesh_triangles": 152,
+          "mesh_vertices": 76,
+          "phases": {
+            "construct": {
+              "batch_ns": [
+                2292.91,
+                2293.33,
+                2294.58,
+                2297.08,
+                2297.92,
+                2344.58,
+                2381.67
+              ],
+              "max_ns": 2381.67,
+              "median_ns": 2297.08,
+              "min_ns": 2292.91
+            },
+            "cut": {
+              "batch_ns": [
+                9307.92,
+                9348.75,
+                9467.92,
+                9480.83,
+                9561.25,
+                9602.08,
+                9659.58
+              ],
+              "max_ns": 9659.58,
+              "median_ns": 9480.83,
+              "min_ns": 9307.92
+            },
+            "realize": {
+              "batch_ns": [
+                95733.75,
+                96107.91,
+                96408.75,
+                96471.25,
+                96958.33,
+                97134.17,
+                97163.34
+              ],
+              "max_ns": 97163.34,
+              "median_ns": 96471.25,
+              "min_ns": 95733.75
+            },
+            "validate": {
+              "batch_ns": [
+                2779.17,
+                2785.0,
+                2786.25,
+                2795.42,
+                2835.84,
+                2968.33,
+                3042.08
+              ],
+              "max_ns": 3042.08,
+              "median_ns": 2795.42,
+              "min_ns": 2779.17
+            }
+          },
+          "source_faces": 6,
+          "tolerance": 0.03
+        },
+        {
+          "case": "overlap_chain",
+          "geometry": {
+            "circle_pair_tests": 3,
+            "edges": 24,
+            "faces": 10,
+            "removed_volume": 2493.977811147974,
+            "trim_records": 6,
+            "vertices": 16,
+            "wall_fragments": 4
+          },
+          "max_deviation": 0.02791331701160856,
+          "mesh_triangles": 216,
+          "mesh_vertices": 108,
+          "phases": {
+            "construct": {
+              "batch_ns": [
+                2350.42,
+                2352.5,
+                2409.16,
+                2427.92,
+                2428.75,
+                2485.83,
+                2603.3300000000004
+              ],
+              "max_ns": 2603.3300000000004,
+              "median_ns": 2427.92,
+              "min_ns": 2350.42
+            },
+            "cut": {
+              "batch_ns": [
+                13924.17,
+                13997.08,
+                14003.75,
+                14027.08,
+                14043.33,
+                14209.58,
+                14714.58
+              ],
+              "max_ns": 14714.58,
+              "median_ns": 14027.08,
+              "min_ns": 13924.17
+            },
+            "realize": {
+              "batch_ns": [
+                120995.0,
+                121383.75,
+                121411.25,
+                121930.42,
+                122145.42,
+                122204.58,
+                122785.42
+              ],
+              "max_ns": 122785.42,
+              "median_ns": 121930.42,
+              "min_ns": 120995.0
+            },
+            "validate": {
+              "batch_ns": [
+                4603.75,
+                4603.75,
+                4605.83,
+                4607.5,
+                4615.0,
+                4658.33,
+                4694.58
+              ],
+              "max_ns": 4694.58,
+              "median_ns": 4607.5,
+              "min_ns": 4603.75
+            }
+          },
+          "source_faces": 6,
+          "tolerance": 0.03
+        },
+        {
+          "case": "plate_31",
+          "geometry": {
+            "circle_pair_tests": 0,
+            "edges": 105,
+            "faces": 37,
+            "removed_volume": 31320.03449743813,
+            "trim_records": 93,
+            "vertices": 70,
+            "wall_fragments": 31
+          },
+          "max_deviation": 0.02933018173875062,
+          "mesh_triangles": 3360,
+          "mesh_vertices": 1620,
+          "phases": {
+            "construct": {
+              "batch_ns": [
+                3854.17,
+                3869.17,
+                3872.5,
+                3880.84,
+                3922.08,
+                3934.16,
+                3938.33
+              ],
+              "max_ns": 3938.33,
+              "median_ns": 3880.84,
+              "min_ns": 3854.17
+            },
+            "cut": {
+              "batch_ns": [
+                1517197.91,
+                1520013.33,
+                1521780.0,
+                1521987.09,
+                1522384.17,
+                1524456.25,
+                1525084.58
+              ],
+              "max_ns": 1525084.58,
+              "median_ns": 1521987.09,
+              "min_ns": 1517197.91
+            },
+            "realize": {
+              "batch_ns": [
+                5558294.17,
+                5573143.75,
+                5593628.33,
+                5596998.75,
+                5612224.16,
+                5637091.25,
+                5638075.0
+              ],
+              "max_ns": 5638075.0,
+              "median_ns": 5596998.75,
+              "min_ns": 5558294.17
+            },
+            "validate": {
+              "batch_ns": [
+                41725.0,
+                42525.41,
+                42581.67,
+                42663.33,
+                42998.75,
+                43475.84,
+                43752.08
+              ],
+              "max_ns": 43752.08,
+              "median_ns": 42663.33,
+              "min_ns": 41725.0
+            }
+          },
+          "source_faces": 6,
+          "tolerance": 0.03
+        }
+      ],
+      "roles": "unit metadata in all new workloads; original native_machining FaceRole/EdgeRole benchmark remains unchanged",
+      "timing": "native host release, prepared inputs excluded from cut/realize/validate, source and tool construction included in construct; output destruction included; validation means local native topology/support/explicit trims, not global solid proof; no STEP/compiler/JS/Wasm/GPU",
+      "workload": "native_manifold"
+    },
+    "after": {
+      "batches": 7,
+      "repetitions_per_batch": 100,
+      "results": [
+        {
+          "case": "nonparallel",
+          "geometry": {
+            "circle_pair_tests": 0,
+            "edges": 23,
+            "faces": 7,
+            "removed_volume": 157.6738542760897,
+            "trim_records": 9,
+            "vertices": 14,
+            "wall_fragments": 1
+          },
+          "max_deviation": 0.0286645870799207,
+          "mesh_triangles": 92,
+          "mesh_vertices": 46,
+          "phases": {
+            "construct": {
+              "batch_ns": [
+                8807.08,
+                8966.25,
+                9005.83,
+                9093.33,
+                9172.5,
+                9214.17,
+                9520.41
+              ],
+              "max_ns": 9520.41,
+              "median_ns": 9093.33,
+              "min_ns": 8807.08
+            },
+            "cut": {
+              "batch_ns": [
+                10097.92,
+                10119.17,
+                10221.25,
+                10317.499999999998,
+                10327.92,
+                10372.5,
+                10573.75
+              ],
+              "max_ns": 10573.75,
+              "median_ns": 10317.499999999998,
+              "min_ns": 10097.92
+            },
+            "realize": {
+              "batch_ns": [
+                53636.66,
+                53993.33,
+                54097.5,
+                54258.33,
+                54522.08,
+                55178.75,
+                55406.25
+              ],
+              "max_ns": 55406.25,
+              "median_ns": 54258.33,
+              "min_ns": 53636.66
+            },
+            "validate": {
+              "batch_ns": [
+                3439.59,
+                3443.75,
+                3448.34,
+                3449.16,
+                3449.58,
+                3496.66,
+                3597.92
+              ],
+              "max_ns": 3597.92,
+              "median_ns": 3449.16,
+              "min_ns": 3439.59
+            }
+          },
+          "source_faces": 6,
+          "tolerance": 0.03
+        },
+        {
+          "case": "blind",
+          "geometry": {
+            "circle_pair_tests": 0,
+            "edges": 15,
+            "faces": 8,
+            "removed_volume": 549.7787143782139,
+            "trim_records": 3,
+            "vertices": 10,
+            "wall_fragments": 1
+          },
+          "max_deviation": 0.02931035576374294,
+          "mesh_triangles": 128,
+          "mesh_vertices": 66,
+          "phases": {
+            "construct": {
+              "batch_ns": [
+                2395.0,
+                2451.66,
+                2457.92,
+                2458.34,
+                2472.9199999999996,
+                2494.17,
+                2515.83
+              ],
+              "max_ns": 2515.83,
+              "median_ns": 2458.34,
+              "min_ns": 2395.0
+            },
+            "cut": {
+              "batch_ns": [
+                5198.330000000001,
+                5201.66,
+                5201.67,
+                5221.670000000001,
+                5256.67,
+                5302.91,
+                5472.09
+              ],
+              "max_ns": 5472.09,
+              "median_ns": 5221.670000000001,
+              "min_ns": 5198.330000000001
+            },
+            "realize": {
+              "batch_ns": [
+                70262.5,
+                70307.08,
+                70600.42,
+                70630.41,
+                71049.16,
+                71152.08,
+                71310.83
+              ],
+              "max_ns": 71310.83,
+              "median_ns": 70630.41,
+              "min_ns": 70262.5
+            },
+            "validate": {
+              "batch_ns": [
+                1782.91,
+                1784.59,
+                1784.59,
+                1786.25,
+                1789.59,
+                1862.5,
+                1868.75
+              ],
+              "max_ns": 1868.75,
+              "median_ns": 1786.25,
+              "min_ns": 1782.91
+            }
+          },
+          "source_faces": 6,
+          "tolerance": 0.03
+        },
+        {
+          "case": "stepped",
+          "geometry": {
+            "circle_pair_tests": 0,
+            "edges": 18,
+            "faces": 9,
+            "removed_volume": 819.9556825869361,
+            "trim_records": 6,
+            "vertices": 12,
+            "wall_fragments": 2
+          },
+          "max_deviation": 0.028891911300183648,
+          "mesh_triangles": 272,
+          "mesh_vertices": 136,
+          "phases": {
+            "construct": {
+              "batch_ns": [
+                2357.5,
+                2396.67,
+                2411.25,
+                2432.08,
+                2593.33,
+                2638.33,
+                2665.41
+              ],
+              "max_ns": 2665.41,
+              "median_ns": 2432.08,
+              "min_ns": 2357.5
+            },
+            "cut": {
+              "batch_ns": [
+                6877.92,
+                6884.59,
+                6885.0,
+                6989.16,
+                6991.67,
+                7026.67,
+                7062.08
+              ],
+              "max_ns": 7062.08,
+              "median_ns": 6989.16,
+              "min_ns": 6877.92
+            },
+            "realize": {
+              "batch_ns": [
+                96389.16,
+                99088.75,
+                99338.75,
+                99381.66,
+                99605.41,
+                99958.75,
+                106492.5
+              ],
+              "max_ns": 106492.5,
+              "median_ns": 99381.66,
+              "min_ns": 96389.16
+            },
+            "validate": {
+              "batch_ns": [
+                2919.17,
+                2922.91,
+                2922.92,
+                2923.33,
+                2923.75,
+                2975.83,
+                3012.09
+              ],
+              "max_ns": 3012.09,
+              "median_ns": 2923.33,
+              "min_ns": 2919.17
+            }
+          },
+          "source_faces": 6,
+          "tolerance": 0.03
+        },
+        {
+          "case": "overlap_pair",
+          "geometry": {
+            "circle_pair_tests": 1,
+            "edges": 18,
+            "faces": 8,
+            "removed_volume": 1007.0740720878539,
+            "trim_records": 4,
+            "vertices": 12,
+            "wall_fragments": 2
+          },
+          "max_deviation": 0.027427564957947483,
+          "mesh_triangles": 152,
+          "mesh_vertices": 76,
+          "phases": {
+            "construct": {
+              "batch_ns": [
+                2376.67,
+                2381.25,
+                2384.58,
+                2384.59,
+                2387.5,
+                2392.92,
+                2470.84
+              ],
+              "max_ns": 2470.84,
+              "median_ns": 2384.59,
+              "min_ns": 2376.67
+            },
+            "cut": {
+              "batch_ns": [
+                8459.16,
+                8470.0,
+                8498.75,
+                8533.34,
+                8537.5,
+                8544.17,
+                8616.67
+              ],
+              "max_ns": 8616.67,
+              "median_ns": 8533.34,
+              "min_ns": 8459.16
+            },
+            "realize": {
+              "batch_ns": [
+                96756.25,
+                96822.5,
+                96867.08,
+                97128.33,
+                97299.58,
+                98067.5,
+                98484.58
+              ],
+              "max_ns": 98484.58,
+              "median_ns": 97128.33,
+              "min_ns": 96756.25
+            },
+            "validate": {
+              "batch_ns": [
+                2805.83,
+                2805.83,
+                2806.67,
+                2844.58,
+                2846.67,
+                2852.08,
+                2905.41
+              ],
+              "max_ns": 2905.41,
+              "median_ns": 2844.58,
+              "min_ns": 2805.83
+            }
+          },
+          "source_faces": 6,
+          "tolerance": 0.03
+        },
+        {
+          "case": "overlap_chain",
+          "geometry": {
+            "circle_pair_tests": 3,
+            "edges": 24,
+            "faces": 10,
+            "removed_volume": 2493.977811147974,
+            "trim_records": 6,
+            "vertices": 16,
+            "wall_fragments": 4
+          },
+          "max_deviation": 0.02791331701160856,
+          "mesh_triangles": 216,
+          "mesh_vertices": 108,
+          "phases": {
+            "construct": {
+              "batch_ns": [
+                2378.33,
+                2382.5,
+                2386.25,
+                2390.83,
+                2397.08,
+                2447.5,
+                2540.84
+              ],
+              "max_ns": 2540.84,
+              "median_ns": 2390.83,
+              "min_ns": 2378.33
+            },
+            "cut": {
+              "batch_ns": [
+                12367.5,
+                12441.66,
+                12468.33,
+                12551.25,
+                12662.5,
+                12671.25,
+                12677.5
+              ],
+              "max_ns": 12677.5,
+              "median_ns": 12551.25,
+              "min_ns": 12367.5
+            },
+            "realize": {
+              "batch_ns": [
+                119793.75,
+                120082.09,
+                120862.92,
+                121380.84,
+                121464.16,
+                121766.25,
+                124242.08
+              ],
+              "max_ns": 124242.08,
+              "median_ns": 121380.84,
+              "min_ns": 119793.75
+            },
+            "validate": {
+              "batch_ns": [
+                4395.42,
+                4422.09,
+                4523.75,
+                4534.16,
+                4534.17,
+                4556.67,
+                4878.33
+              ],
+              "max_ns": 4878.33,
+              "median_ns": 4534.16,
+              "min_ns": 4395.42
+            }
+          },
+          "source_faces": 6,
+          "tolerance": 0.03
+        },
+        {
+          "case": "plate_31",
+          "geometry": {
+            "circle_pair_tests": 0,
+            "edges": 105,
+            "faces": 37,
+            "removed_volume": 31320.03449743813,
+            "trim_records": 93,
+            "vertices": 70,
+            "wall_fragments": 31
+          },
+          "max_deviation": 0.02933018173875062,
+          "mesh_triangles": 3360,
+          "mesh_vertices": 1620,
+          "phases": {
+            "construct": {
+              "batch_ns": [
+                3804.58,
+                3883.75,
+                4024.58,
+                4030.84,
+                4097.91,
+                4103.75,
+                4155.83
+              ],
+              "max_ns": 4155.83,
+              "median_ns": 4030.84,
+              "min_ns": 3804.58
+            },
+            "cut": {
+              "batch_ns": [
+                935977.08,
+                939587.08,
+                947434.58,
+                950027.08,
+                953438.33,
+                964769.16,
+                965575.42
+              ],
+              "max_ns": 965575.42,
+              "median_ns": 950027.08,
+              "min_ns": 935977.08
+            },
+            "realize": {
+              "batch_ns": [
+                5559411.25,
+                5560767.91,
+                5569299.16,
+                5573093.75,
+                5587742.92,
+                5590773.75,
+                5621263.75
+              ],
+              "max_ns": 5621263.75,
+              "median_ns": 5573093.75,
+              "min_ns": 5559411.25
+            },
+            "validate": {
+              "batch_ns": [
+                42947.08,
+                43050.42,
+                43153.33,
+                43178.33,
+                43271.25,
+                43284.17,
+                43383.75
+              ],
+              "max_ns": 43383.75,
+              "median_ns": 43178.33,
+              "min_ns": 42947.08
+            }
+          },
+          "source_faces": 6,
+          "tolerance": 0.03
+        }
+      ],
+      "roles": "unit metadata in all new workloads; original native_machining FaceRole/EdgeRole benchmark remains unchanged",
+      "timing": "native host release, prepared inputs excluded from cut/realize/validate, source and tool construction included in construct; output destruction included; validation means local native topology/support/explicit trims, not global solid proof; no STEP/compiler/JS/Wasm/GPU",
+      "workload": "native_manifold"
+    }
+  },
+  "allocation_measurements": {
+    "before": [
+      {
+        "checkpoints": [
+          {
+            "current_blocks": 32,
+            "current_bytes": 14412,
+            "peak_blocks": 32,
+            "peak_bytes": 15332,
+            "phase": "retained",
+            "total_blocks": 49,
+            "total_bytes": 21674
+          },
+          {
+            "current_blocks": 0,
+            "current_bytes": 0,
+            "peak_blocks": 32,
+            "peak_bytes": 15332,
+            "phase": "released",
+            "total_blocks": 49,
+            "total_bytes": 21674
+          }
+        ],
+        "scope": "one prepared native machining cut/realization/local support validation selected by EXEDRA_MANIFOLD_CASE and EXEDRA_MANIFOLD_PHASE; source/tools/warmup excluded; owned result plus report retained then destroyed; no STEP/compiler/JS/Wasm/GPU",
+        "case": "nonparallel",
+        "phase": "cut"
+      },
+      {
+        "checkpoints": [
+          {
+            "current_blocks": 13,
+            "current_bytes": 17756,
+            "peak_blocks": 26,
+            "peak_bytes": 28065,
+            "phase": "retained",
+            "total_blocks": 280,
+            "total_bytes": 75677
+          },
+          {
+            "current_blocks": 0,
+            "current_bytes": 0,
+            "peak_blocks": 26,
+            "peak_bytes": 28065,
+            "phase": "released",
+            "total_blocks": 280,
+            "total_bytes": 75677
+          }
+        ],
+        "scope": "one prepared native machining cut/realization/local support validation selected by EXEDRA_MANIFOLD_CASE and EXEDRA_MANIFOLD_PHASE; source/tools/warmup excluded; owned result plus report retained then destroyed; no STEP/compiler/JS/Wasm/GPU",
+        "case": "nonparallel",
+        "phase": "realize"
+      },
+      {
+        "checkpoints": [
+          {
+            "current_blocks": 0,
+            "current_bytes": 0,
+            "peak_blocks": 3,
+            "peak_bytes": 90,
+            "phase": "retained",
+            "total_blocks": 3,
+            "total_bytes": 90
+          },
+          {
+            "current_blocks": 0,
+            "current_bytes": 0,
+            "peak_blocks": 3,
+            "peak_bytes": 90,
+            "phase": "released",
+            "total_blocks": 3,
+            "total_bytes": 90
+          }
+        ],
+        "scope": "one prepared native machining cut/realization/local support validation selected by EXEDRA_MANIFOLD_CASE and EXEDRA_MANIFOLD_PHASE; source/tools/warmup excluded; owned result plus report retained then destroyed; no STEP/compiler/JS/Wasm/GPU",
+        "case": "nonparallel",
+        "phase": "validate"
+      },
+      {
+        "checkpoints": [
+          {
+            "current_blocks": 29,
+            "current_bytes": 9520,
+            "peak_blocks": 30,
+            "peak_bytes": 10392,
+            "phase": "retained",
+            "total_blocks": 42,
+            "total_bytes": 15026
+          },
+          {
+            "current_blocks": 0,
+            "current_bytes": 0,
+            "peak_blocks": 30,
+            "peak_bytes": 10392,
+            "phase": "released",
+            "total_blocks": 42,
+            "total_bytes": 15026
+          }
+        ],
+        "scope": "one prepared native machining cut/realization/local support validation selected by EXEDRA_MANIFOLD_CASE and EXEDRA_MANIFOLD_PHASE; source/tools/warmup excluded; owned result plus report retained then destroyed; no STEP/compiler/JS/Wasm/GPU",
+        "case": "blind",
+        "phase": "cut"
+      },
+      {
+        "checkpoints": [
+          {
+            "current_blocks": 13,
+            "current_bytes": 25100,
+            "peak_blocks": 26,
+            "peak_bytes": 38557,
+            "phase": "retained",
+            "total_blocks": 296,
+            "total_bytes": 100913
+          },
+          {
+            "current_blocks": 0,
+            "current_bytes": 0,
+            "peak_blocks": 26,
+            "peak_bytes": 38557,
+            "phase": "released",
+            "total_blocks": 296,
+            "total_bytes": 100913
+          }
+        ],
+        "scope": "one prepared native machining cut/realization/local support validation selected by EXEDRA_MANIFOLD_CASE and EXEDRA_MANIFOLD_PHASE; source/tools/warmup excluded; owned result plus report retained then destroyed; no STEP/compiler/JS/Wasm/GPU",
+        "case": "blind",
+        "phase": "realize"
+      },
+      {
+        "checkpoints": [
+          {
+            "current_blocks": 0,
+            "current_bytes": 0,
+            "peak_blocks": 3,
+            "peak_bytes": 90,
+            "phase": "retained",
+            "total_blocks": 3,
+            "total_bytes": 90
+          },
+          {
+            "current_blocks": 0,
+            "current_bytes": 0,
+            "peak_blocks": 3,
+            "peak_bytes": 90,
+            "phase": "released",
+            "total_blocks": 3,
+            "total_bytes": 90
+          }
+        ],
+        "scope": "one prepared native machining cut/realization/local support validation selected by EXEDRA_MANIFOLD_CASE and EXEDRA_MANIFOLD_PHASE; source/tools/warmup excluded; owned result plus report retained then destroyed; no STEP/compiler/JS/Wasm/GPU",
+        "case": "blind",
+        "phase": "validate"
+      },
+      {
+        "checkpoints": [
+          {
+            "current_blocks": 37,
+            "current_bytes": 10196,
+            "peak_blocks": 38,
+            "peak_bytes": 11116,
+            "phase": "retained",
+            "total_blocks": 51,
+            "total_bytes": 15788
+          },
+          {
+            "current_blocks": 0,
+            "current_bytes": 0,
+            "peak_blocks": 38,
+            "peak_bytes": 11116,
+            "phase": "released",
+            "total_blocks": 51,
+            "total_bytes": 15788
+          }
+        ],
+        "scope": "one prepared native machining cut/realization/local support validation selected by EXEDRA_MANIFOLD_CASE and EXEDRA_MANIFOLD_PHASE; source/tools/warmup excluded; owned result plus report retained then destroyed; no STEP/compiler/JS/Wasm/GPU",
+        "case": "stepped",
+        "phase": "cut"
+      },
+      {
+        "checkpoints": [
+          {
+            "current_blocks": 13,
+            "current_bytes": 51808,
+            "peak_blocks": 26,
+            "peak_bytes": 78814,
+            "phase": "retained",
+            "total_blocks": 301,
+            "total_bytes": 168606
+          },
+          {
+            "current_blocks": 0,
+            "current_bytes": 0,
+            "peak_blocks": 26,
+            "peak_bytes": 78814,
+            "phase": "released",
+            "total_blocks": 301,
+            "total_bytes": 168606
+          }
+        ],
+        "scope": "one prepared native machining cut/realization/local support validation selected by EXEDRA_MANIFOLD_CASE and EXEDRA_MANIFOLD_PHASE; source/tools/warmup excluded; owned result plus report retained then destroyed; no STEP/compiler/JS/Wasm/GPU",
+        "case": "stepped",
+        "phase": "realize"
+      },
+      {
+        "checkpoints": [
+          {
+            "current_blocks": 0,
+            "current_bytes": 0,
+            "peak_blocks": 3,
+            "peak_bytes": 120,
+            "phase": "retained",
+            "total_blocks": 3,
+            "total_bytes": 120
+          },
+          {
+            "current_blocks": 0,
+            "current_bytes": 0,
+            "peak_blocks": 3,
+            "peak_bytes": 120,
+            "phase": "released",
+            "total_blocks": 3,
+            "total_bytes": 120
+          }
+        ],
+        "scope": "one prepared native machining cut/realization/local support validation selected by EXEDRA_MANIFOLD_CASE and EXEDRA_MANIFOLD_PHASE; source/tools/warmup excluded; owned result plus report retained then destroyed; no STEP/compiler/JS/Wasm/GPU",
+        "case": "stepped",
+        "phase": "validate"
+      },
+      {
+        "checkpoints": [
+          {
+            "current_blocks": 31,
+            "current_bytes": 10120,
+            "peak_blocks": 37,
+            "peak_bytes": 11408,
+            "phase": "retained",
+            "total_blocks": 61,
+            "total_bytes": 17350
+          },
+          {
+            "current_blocks": 0,
+            "current_bytes": 0,
+            "peak_blocks": 37,
+            "peak_bytes": 11408,
+            "phase": "released",
+            "total_blocks": 61,
+            "total_bytes": 17350
+          }
+        ],
+        "scope": "one prepared native machining cut/realization/local support validation selected by EXEDRA_MANIFOLD_CASE and EXEDRA_MANIFOLD_PHASE; source/tools/warmup excluded; owned result plus report retained then destroyed; no STEP/compiler/JS/Wasm/GPU",
+        "case": "overlap_pair",
+        "phase": "cut"
+      },
+      {
+        "checkpoints": [
+          {
+            "current_blocks": 13,
+            "current_bytes": 29088,
+            "peak_blocks": 26,
+            "peak_bytes": 44774,
+            "phase": "retained",
+            "total_blocks": 301,
+            "total_bytes": 121862
+          },
+          {
+            "current_blocks": 0,
+            "current_bytes": 0,
+            "peak_blocks": 26,
+            "peak_bytes": 44774,
+            "phase": "released",
+            "total_blocks": 301,
+            "total_bytes": 121862
+          }
+        ],
+        "scope": "one prepared native machining cut/realization/local support validation selected by EXEDRA_MANIFOLD_CASE and EXEDRA_MANIFOLD_PHASE; source/tools/warmup excluded; owned result plus report retained then destroyed; no STEP/compiler/JS/Wasm/GPU",
+        "case": "overlap_pair",
+        "phase": "realize"
+      },
+      {
+        "checkpoints": [
+          {
+            "current_blocks": 0,
+            "current_bytes": 0,
+            "peak_blocks": 3,
+            "peak_bytes": 100,
+            "phase": "retained",
+            "total_blocks": 3,
+            "total_bytes": 100
+          },
+          {
+            "current_blocks": 0,
+            "current_bytes": 0,
+            "peak_blocks": 3,
+            "peak_bytes": 100,
+            "phase": "released",
+            "total_blocks": 3,
+            "total_bytes": 100
+          }
+        ],
+        "scope": "one prepared native machining cut/realization/local support validation selected by EXEDRA_MANIFOLD_CASE and EXEDRA_MANIFOLD_PHASE; source/tools/warmup excluded; owned result plus report retained then destroyed; no STEP/compiler/JS/Wasm/GPU",
+        "case": "overlap_pair",
+        "phase": "validate"
+      },
+      {
+        "checkpoints": [
+          {
+            "current_blocks": 37,
+            "current_bytes": 11368,
+            "peak_blocks": 43,
+            "peak_bytes": 12792,
+            "phase": "retained",
+            "total_blocks": 71,
+            "total_bytes": 19852
+          },
+          {
+            "current_blocks": 0,
+            "current_bytes": 0,
+            "peak_blocks": 43,
+            "peak_bytes": 12792,
+            "phase": "released",
+            "total_blocks": 71,
+            "total_bytes": 19852
+          }
+        ],
+        "scope": "one prepared native machining cut/realization/local support validation selected by EXEDRA_MANIFOLD_CASE and EXEDRA_MANIFOLD_PHASE; source/tools/warmup excluded; owned result plus report retained then destroyed; no STEP/compiler/JS/Wasm/GPU",
+        "case": "overlap_chain",
+        "phase": "cut"
+      },
+      {
+        "checkpoints": [
+          {
+            "current_blocks": 13,
+            "current_bytes": 39976,
+            "peak_blocks": 26,
+            "peak_bytes": 62536,
+            "phase": "retained",
+            "total_blocks": 314,
+            "total_bytes": 160292
+          },
+          {
+            "current_blocks": 0,
+            "current_bytes": 0,
+            "peak_blocks": 26,
+            "peak_bytes": 62536,
+            "phase": "released",
+            "total_blocks": 314,
+            "total_bytes": 160292
+          }
+        ],
+        "scope": "one prepared native machining cut/realization/local support validation selected by EXEDRA_MANIFOLD_CASE and EXEDRA_MANIFOLD_PHASE; source/tools/warmup excluded; owned result plus report retained then destroyed; no STEP/compiler/JS/Wasm/GPU",
+        "case": "overlap_chain",
+        "phase": "realize"
+      },
+      {
+        "checkpoints": [
+          {
+            "current_blocks": 0,
+            "current_bytes": 0,
+            "peak_blocks": 3,
+            "peak_bytes": 120,
+            "phase": "retained",
+            "total_blocks": 3,
+            "total_bytes": 120
+          },
+          {
+            "current_blocks": 0,
+            "current_bytes": 0,
+            "peak_blocks": 3,
+            "peak_bytes": 120,
+            "phase": "released",
+            "total_blocks": 3,
+            "total_bytes": 120
+          }
+        ],
+        "scope": "one prepared native machining cut/realization/local support validation selected by EXEDRA_MANIFOLD_CASE and EXEDRA_MANIFOLD_PHASE; source/tools/warmup excluded; owned result plus report retained then destroyed; no STEP/compiler/JS/Wasm/GPU",
+        "case": "overlap_chain",
+        "phase": "validate"
+      },
+      {
+        "checkpoints": [
+          {
+            "current_blocks": 297,
+            "current_bytes": 93252,
+            "peak_blocks": 297,
+            "peak_bytes": 94796,
+            "phase": "retained",
+            "total_blocks": 633,
+            "total_bytes": 259670
+          },
+          {
+            "current_blocks": 0,
+            "current_bytes": 0,
+            "peak_blocks": 297,
+            "peak_bytes": 94796,
+            "phase": "released",
+            "total_blocks": 633,
+            "total_bytes": 259670
+          }
+        ],
+        "scope": "one prepared native machining cut/realization/local support validation selected by EXEDRA_MANIFOLD_CASE and EXEDRA_MANIFOLD_PHASE; source/tools/warmup excluded; owned result plus report retained then destroyed; no STEP/compiler/JS/Wasm/GPU",
+        "case": "plate_31",
+        "phase": "cut"
+      },
+      {
+        "checkpoints": [
+          {
+            "current_blocks": 13,
+            "current_bytes": 605044,
+            "peak_blocks": 26,
+            "peak_bytes": 929843,
+            "phase": "retained",
+            "total_blocks": 1278,
+            "total_bytes": 2345393
+          },
+          {
+            "current_blocks": 0,
+            "current_bytes": 0,
+            "peak_blocks": 26,
+            "peak_bytes": 929843,
+            "phase": "released",
+            "total_blocks": 1278,
+            "total_bytes": 2345393
+          }
+        ],
+        "scope": "one prepared native machining cut/realization/local support validation selected by EXEDRA_MANIFOLD_CASE and EXEDRA_MANIFOLD_PHASE; source/tools/warmup excluded; owned result plus report retained then destroyed; no STEP/compiler/JS/Wasm/GPU",
+        "case": "plate_31",
+        "phase": "realize"
+      },
+      {
+        "checkpoints": [
+          {
+            "current_blocks": 0,
+            "current_bytes": 0,
+            "peak_blocks": 3,
+            "peak_bytes": 990,
+            "phase": "retained",
+            "total_blocks": 3,
+            "total_bytes": 990
+          },
+          {
+            "current_blocks": 0,
+            "current_bytes": 0,
+            "peak_blocks": 3,
+            "peak_bytes": 990,
+            "phase": "released",
+            "total_blocks": 3,
+            "total_bytes": 990
+          }
+        ],
+        "scope": "one prepared native machining cut/realization/local support validation selected by EXEDRA_MANIFOLD_CASE and EXEDRA_MANIFOLD_PHASE; source/tools/warmup excluded; owned result plus report retained then destroyed; no STEP/compiler/JS/Wasm/GPU",
+        "case": "plate_31",
+        "phase": "validate"
+      }
+    ],
+    "after": [
+      {
+        "checkpoints": [
+          {
+            "current_blocks": 32,
+            "current_bytes": 14412,
+            "peak_blocks": 31,
+            "peak_bytes": 14628,
+            "phase": "retained",
+            "total_blocks": 47,
+            "total_bytes": 20922
+          },
+          {
+            "current_blocks": 0,
+            "current_bytes": 0,
+            "peak_blocks": 31,
+            "peak_bytes": 14628,
+            "phase": "released",
+            "total_blocks": 47,
+            "total_bytes": 20922
+          }
+        ],
+        "scope": "one prepared native machining cut/realization/local support validation selected by EXEDRA_MANIFOLD_CASE and EXEDRA_MANIFOLD_PHASE; source/tools/warmup excluded; owned result plus report retained then destroyed; no STEP/compiler/JS/Wasm/GPU",
+        "case": "nonparallel",
+        "phase": "cut"
+      },
+      {
+        "checkpoints": [
+          {
+            "current_blocks": 13,
+            "current_bytes": 17756,
+            "peak_blocks": 26,
+            "peak_bytes": 28065,
+            "phase": "retained",
+            "total_blocks": 280,
+            "total_bytes": 75677
+          },
+          {
+            "current_blocks": 0,
+            "current_bytes": 0,
+            "peak_blocks": 26,
+            "peak_bytes": 28065,
+            "phase": "released",
+            "total_blocks": 280,
+            "total_bytes": 75677
+          }
+        ],
+        "scope": "one prepared native machining cut/realization/local support validation selected by EXEDRA_MANIFOLD_CASE and EXEDRA_MANIFOLD_PHASE; source/tools/warmup excluded; owned result plus report retained then destroyed; no STEP/compiler/JS/Wasm/GPU",
+        "case": "nonparallel",
+        "phase": "realize"
+      },
+      {
+        "checkpoints": [
+          {
+            "current_blocks": 0,
+            "current_bytes": 0,
+            "peak_blocks": 3,
+            "peak_bytes": 90,
+            "phase": "retained",
+            "total_blocks": 3,
+            "total_bytes": 90
+          },
+          {
+            "current_blocks": 0,
+            "current_bytes": 0,
+            "peak_blocks": 3,
+            "peak_bytes": 90,
+            "phase": "released",
+            "total_blocks": 3,
+            "total_bytes": 90
+          }
+        ],
+        "scope": "one prepared native machining cut/realization/local support validation selected by EXEDRA_MANIFOLD_CASE and EXEDRA_MANIFOLD_PHASE; source/tools/warmup excluded; owned result plus report retained then destroyed; no STEP/compiler/JS/Wasm/GPU",
+        "case": "nonparallel",
+        "phase": "validate"
+      },
+      {
+        "checkpoints": [
+          {
+            "current_blocks": 29,
+            "current_bytes": 9520,
+            "peak_blocks": 29,
+            "peak_bytes": 9688,
+            "phase": "retained",
+            "total_blocks": 40,
+            "total_bytes": 14274
+          },
+          {
+            "current_blocks": 0,
+            "current_bytes": 0,
+            "peak_blocks": 29,
+            "peak_bytes": 9688,
+            "phase": "released",
+            "total_blocks": 40,
+            "total_bytes": 14274
+          }
+        ],
+        "scope": "one prepared native machining cut/realization/local support validation selected by EXEDRA_MANIFOLD_CASE and EXEDRA_MANIFOLD_PHASE; source/tools/warmup excluded; owned result plus report retained then destroyed; no STEP/compiler/JS/Wasm/GPU",
+        "case": "blind",
+        "phase": "cut"
+      },
+      {
+        "checkpoints": [
+          {
+            "current_blocks": 13,
+            "current_bytes": 25100,
+            "peak_blocks": 26,
+            "peak_bytes": 38557,
+            "phase": "retained",
+            "total_blocks": 296,
+            "total_bytes": 100913
+          },
+          {
+            "current_blocks": 0,
+            "current_bytes": 0,
+            "peak_blocks": 26,
+            "peak_bytes": 38557,
+            "phase": "released",
+            "total_blocks": 296,
+            "total_bytes": 100913
+          }
+        ],
+        "scope": "one prepared native machining cut/realization/local support validation selected by EXEDRA_MANIFOLD_CASE and EXEDRA_MANIFOLD_PHASE; source/tools/warmup excluded; owned result plus report retained then destroyed; no STEP/compiler/JS/Wasm/GPU",
+        "case": "blind",
+        "phase": "realize"
+      },
+      {
+        "checkpoints": [
+          {
+            "current_blocks": 0,
+            "current_bytes": 0,
+            "peak_blocks": 3,
+            "peak_bytes": 90,
+            "phase": "retained",
+            "total_blocks": 3,
+            "total_bytes": 90
+          },
+          {
+            "current_blocks": 0,
+            "current_bytes": 0,
+            "peak_blocks": 3,
+            "peak_bytes": 90,
+            "phase": "released",
+            "total_blocks": 3,
+            "total_bytes": 90
+          }
+        ],
+        "scope": "one prepared native machining cut/realization/local support validation selected by EXEDRA_MANIFOLD_CASE and EXEDRA_MANIFOLD_PHASE; source/tools/warmup excluded; owned result plus report retained then destroyed; no STEP/compiler/JS/Wasm/GPU",
+        "case": "blind",
+        "phase": "validate"
+      },
+      {
+        "checkpoints": [
+          {
+            "current_blocks": 37,
+            "current_bytes": 10196,
+            "peak_blocks": 37,
+            "peak_bytes": 10412,
+            "phase": "retained",
+            "total_blocks": 49,
+            "total_bytes": 15036
+          },
+          {
+            "current_blocks": 0,
+            "current_bytes": 0,
+            "peak_blocks": 37,
+            "peak_bytes": 10412,
+            "phase": "released",
+            "total_blocks": 49,
+            "total_bytes": 15036
+          }
+        ],
+        "scope": "one prepared native machining cut/realization/local support validation selected by EXEDRA_MANIFOLD_CASE and EXEDRA_MANIFOLD_PHASE; source/tools/warmup excluded; owned result plus report retained then destroyed; no STEP/compiler/JS/Wasm/GPU",
+        "case": "stepped",
+        "phase": "cut"
+      },
+      {
+        "checkpoints": [
+          {
+            "current_blocks": 13,
+            "current_bytes": 51808,
+            "peak_blocks": 26,
+            "peak_bytes": 78814,
+            "phase": "retained",
+            "total_blocks": 301,
+            "total_bytes": 168606
+          },
+          {
+            "current_blocks": 0,
+            "current_bytes": 0,
+            "peak_blocks": 26,
+            "peak_bytes": 78814,
+            "phase": "released",
+            "total_blocks": 301,
+            "total_bytes": 168606
+          }
+        ],
+        "scope": "one prepared native machining cut/realization/local support validation selected by EXEDRA_MANIFOLD_CASE and EXEDRA_MANIFOLD_PHASE; source/tools/warmup excluded; owned result plus report retained then destroyed; no STEP/compiler/JS/Wasm/GPU",
+        "case": "stepped",
+        "phase": "realize"
+      },
+      {
+        "checkpoints": [
+          {
+            "current_blocks": 0,
+            "current_bytes": 0,
+            "peak_blocks": 3,
+            "peak_bytes": 120,
+            "phase": "retained",
+            "total_blocks": 3,
+            "total_bytes": 120
+          },
+          {
+            "current_blocks": 0,
+            "current_bytes": 0,
+            "peak_blocks": 3,
+            "peak_bytes": 120,
+            "phase": "released",
+            "total_blocks": 3,
+            "total_bytes": 120
+          }
+        ],
+        "scope": "one prepared native machining cut/realization/local support validation selected by EXEDRA_MANIFOLD_CASE and EXEDRA_MANIFOLD_PHASE; source/tools/warmup excluded; owned result plus report retained then destroyed; no STEP/compiler/JS/Wasm/GPU",
+        "case": "stepped",
+        "phase": "validate"
+      },
+      {
+        "checkpoints": [
+          {
+            "current_blocks": 31,
+            "current_bytes": 10120,
+            "peak_blocks": 36,
+            "peak_bytes": 10704,
+            "phase": "retained",
+            "total_blocks": 56,
+            "total_bytes": 15654
+          },
+          {
+            "current_blocks": 0,
+            "current_bytes": 0,
+            "peak_blocks": 36,
+            "peak_bytes": 10704,
+            "phase": "released",
+            "total_blocks": 56,
+            "total_bytes": 15654
+          }
+        ],
+        "scope": "one prepared native machining cut/realization/local support validation selected by EXEDRA_MANIFOLD_CASE and EXEDRA_MANIFOLD_PHASE; source/tools/warmup excluded; owned result plus report retained then destroyed; no STEP/compiler/JS/Wasm/GPU",
+        "case": "overlap_pair",
+        "phase": "cut"
+      },
+      {
+        "checkpoints": [
+          {
+            "current_blocks": 13,
+            "current_bytes": 29088,
+            "peak_blocks": 26,
+            "peak_bytes": 44774,
+            "phase": "retained",
+            "total_blocks": 301,
+            "total_bytes": 121862
+          },
+          {
+            "current_blocks": 0,
+            "current_bytes": 0,
+            "peak_blocks": 26,
+            "peak_bytes": 44774,
+            "phase": "released",
+            "total_blocks": 301,
+            "total_bytes": 121862
+          }
+        ],
+        "scope": "one prepared native machining cut/realization/local support validation selected by EXEDRA_MANIFOLD_CASE and EXEDRA_MANIFOLD_PHASE; source/tools/warmup excluded; owned result plus report retained then destroyed; no STEP/compiler/JS/Wasm/GPU",
+        "case": "overlap_pair",
+        "phase": "realize"
+      },
+      {
+        "checkpoints": [
+          {
+            "current_blocks": 0,
+            "current_bytes": 0,
+            "peak_blocks": 3,
+            "peak_bytes": 100,
+            "phase": "retained",
+            "total_blocks": 3,
+            "total_bytes": 100
+          },
+          {
+            "current_blocks": 0,
+            "current_bytes": 0,
+            "peak_blocks": 3,
+            "peak_bytes": 100,
+            "phase": "released",
+            "total_blocks": 3,
+            "total_bytes": 100
+          }
+        ],
+        "scope": "one prepared native machining cut/realization/local support validation selected by EXEDRA_MANIFOLD_CASE and EXEDRA_MANIFOLD_PHASE; source/tools/warmup excluded; owned result plus report retained then destroyed; no STEP/compiler/JS/Wasm/GPU",
+        "case": "overlap_pair",
+        "phase": "validate"
+      },
+      {
+        "checkpoints": [
+          {
+            "current_blocks": 37,
+            "current_bytes": 11368,
+            "peak_blocks": 42,
+            "peak_bytes": 12088,
+            "phase": "retained",
+            "total_blocks": 63,
+            "total_bytes": 17212
+          },
+          {
+            "current_blocks": 0,
+            "current_bytes": 0,
+            "peak_blocks": 42,
+            "peak_bytes": 12088,
+            "phase": "released",
+            "total_blocks": 63,
+            "total_bytes": 17212
+          }
+        ],
+        "scope": "one prepared native machining cut/realization/local support validation selected by EXEDRA_MANIFOLD_CASE and EXEDRA_MANIFOLD_PHASE; source/tools/warmup excluded; owned result plus report retained then destroyed; no STEP/compiler/JS/Wasm/GPU",
+        "case": "overlap_chain",
+        "phase": "cut"
+      },
+      {
+        "checkpoints": [
+          {
+            "current_blocks": 13,
+            "current_bytes": 39976,
+            "peak_blocks": 26,
+            "peak_bytes": 62536,
+            "phase": "retained",
+            "total_blocks": 314,
+            "total_bytes": 160292
+          },
+          {
+            "current_blocks": 0,
+            "current_bytes": 0,
+            "peak_blocks": 26,
+            "peak_bytes": 62536,
+            "phase": "released",
+            "total_blocks": 314,
+            "total_bytes": 160292
+          }
+        ],
+        "scope": "one prepared native machining cut/realization/local support validation selected by EXEDRA_MANIFOLD_CASE and EXEDRA_MANIFOLD_PHASE; source/tools/warmup excluded; owned result plus report retained then destroyed; no STEP/compiler/JS/Wasm/GPU",
+        "case": "overlap_chain",
+        "phase": "realize"
+      },
+      {
+        "checkpoints": [
+          {
+            "current_blocks": 0,
+            "current_bytes": 0,
+            "peak_blocks": 3,
+            "peak_bytes": 120,
+            "phase": "retained",
+            "total_blocks": 3,
+            "total_bytes": 120
+          },
+          {
+            "current_blocks": 0,
+            "current_bytes": 0,
+            "peak_blocks": 3,
+            "peak_bytes": 120,
+            "phase": "released",
+            "total_blocks": 3,
+            "total_bytes": 120
+          }
+        ],
+        "scope": "one prepared native machining cut/realization/local support validation selected by EXEDRA_MANIFOLD_CASE and EXEDRA_MANIFOLD_PHASE; source/tools/warmup excluded; owned result plus report retained then destroyed; no STEP/compiler/JS/Wasm/GPU",
+        "case": "overlap_chain",
+        "phase": "validate"
+      },
+      {
+        "checkpoints": [
+          {
+            "current_blocks": 297,
+            "current_bytes": 72020,
+            "peak_blocks": 296,
+            "peak_bytes": 72860,
+            "phase": "retained",
+            "total_blocks": 434,
+            "total_bytes": 123168
+          },
+          {
+            "current_blocks": 0,
+            "current_bytes": 0,
+            "peak_blocks": 296,
+            "peak_bytes": 72860,
+            "phase": "released",
+            "total_blocks": 434,
+            "total_bytes": 123168
+          }
+        ],
+        "scope": "one prepared native machining cut/realization/local support validation selected by EXEDRA_MANIFOLD_CASE and EXEDRA_MANIFOLD_PHASE; source/tools/warmup excluded; owned result plus report retained then destroyed; no STEP/compiler/JS/Wasm/GPU",
+        "case": "plate_31",
+        "phase": "cut"
+      },
+      {
+        "checkpoints": [
+          {
+            "current_blocks": 13,
+            "current_bytes": 605044,
+            "peak_blocks": 26,
+            "peak_bytes": 929843,
+            "phase": "retained",
+            "total_blocks": 1278,
+            "total_bytes": 2345393
+          },
+          {
+            "current_blocks": 0,
+            "current_bytes": 0,
+            "peak_blocks": 26,
+            "peak_bytes": 929843,
+            "phase": "released",
+            "total_blocks": 1278,
+            "total_bytes": 2345393
+          }
+        ],
+        "scope": "one prepared native machining cut/realization/local support validation selected by EXEDRA_MANIFOLD_CASE and EXEDRA_MANIFOLD_PHASE; source/tools/warmup excluded; owned result plus report retained then destroyed; no STEP/compiler/JS/Wasm/GPU",
+        "case": "plate_31",
+        "phase": "realize"
+      },
+      {
+        "checkpoints": [
+          {
+            "current_blocks": 0,
+            "current_bytes": 0,
+            "peak_blocks": 3,
+            "peak_bytes": 990,
+            "phase": "retained",
+            "total_blocks": 3,
+            "total_bytes": 990
+          },
+          {
+            "current_blocks": 0,
+            "current_bytes": 0,
+            "peak_blocks": 3,
+            "peak_bytes": 990,
+            "phase": "released",
+            "total_blocks": 3,
+            "total_bytes": 990
+          }
+        ],
+        "scope": "one prepared native machining cut/realization/local support validation selected by EXEDRA_MANIFOLD_CASE and EXEDRA_MANIFOLD_PHASE; source/tools/warmup excluded; owned result plus report retained then destroyed; no STEP/compiler/JS/Wasm/GPU",
+        "case": "plate_31",
+        "phase": "validate"
+      }
+    ]
+  },
+  "original_role_plate31": {
+    "baseline": {
+      "raw": "workload=native_oblique_bores holes=31 repetitions=500 operations=15500 elapsed_ms=751.056 ns_per_operation=48455.2 final_faces=37 batch=true retained_history=true removed_volume_checksum=15660017.248719012\nworkload=native_oblique_bores holes=31 repetitions=500 operations=15500 elapsed_ms=749.893 ns_per_operation=48380.2 final_faces=37 batch=true retained_history=true removed_volume_checksum=15660017.248719012\nworkload=native_oblique_bores holes=31 repetitions=500 operations=15500 elapsed_ms=748.825 ns_per_operation=48311.3 final_faces=37 batch=true retained_history=true removed_volume_checksum=15660017.248719012\nworkload=native_oblique_bores holes=31 repetitions=500 operations=15500 elapsed_ms=749.915 ns_per_operation=48381.6 final_faces=37 batch=true retained_history=true removed_volume_checksum=15660017.248719012\nworkload=native_oblique_bores holes=31 repetitions=500 operations=15500 elapsed_ms=754.677 ns_per_operation=48688.8 final_faces=37 batch=true retained_history=true removed_volume_checksum=15660017.248719012\n",
+      "median_ns_per_hole": 48381.6,
+      "median_ms_per_pattern": 1.4998295999999998
+    },
+    "optimized": {
+      "raw": "workload=native_oblique_bores holes=31 repetitions=500 operations=15500 elapsed_ms=418.241 ns_per_operation=26983.3 final_faces=37 batch=true retained_history=true removed_volume_checksum=15660017.248719012\nworkload=native_oblique_bores holes=31 repetitions=500 operations=15500 elapsed_ms=418.068 ns_per_operation=26972.1 final_faces=37 batch=true retained_history=true removed_volume_checksum=15660017.248719012\nworkload=native_oblique_bores holes=31 repetitions=500 operations=15500 elapsed_ms=415.783 ns_per_operation=26824.7 final_faces=37 batch=true retained_history=true removed_volume_checksum=15660017.248719012\nworkload=native_oblique_bores holes=31 repetitions=500 operations=15500 elapsed_ms=418.498 ns_per_operation=26999.9 final_faces=37 batch=true retained_history=true removed_volume_checksum=15660017.248719012\nworkload=native_oblique_bores holes=31 repetitions=500 operations=15500 elapsed_ms=418.048 ns_per_operation=26970.8 final_faces=37 batch=true retained_history=true removed_volume_checksum=15660017.248719012\n",
+      "median_ns_per_hole": 26972.1,
+      "median_ms_per_pattern": 0.8361351
+    }
+  },
+  "interpretation": [
+    "Original-role31-hole median1.4998\u21920.8361ms(-44.2%); unit-role phase harness1.522\u21920.950ms(-37.6%).",
+    "Overlapping pair/chain cuts improve about10%; source construction, rendering and standalone validation are essentially unchanged.",
+    "Single nonparallel cut9.738\u219210.317microseconds(+5.9%,+0.58microseconds); blind/stepped cut changes about1\u20132%. This is a measured tradeoff, not a universal speedup.",
+    "31-hole allocated traffic259670\u2192123168bytes(-52.6%),retained93252\u219272020bytes(-22.8%),peak94796\u219272860bytes(-23.1%). All scoped workloads return to0live bytes after output destruction.",
+    "A macOS sample trace identifies repeated topology/support/trim validation; retained DHAT stacks identify table growth and input is_closed/trim scratch. The change addresses those causes, with no SIMD claim."
+  ]
+}

@@ -575,3 +575,44 @@ isolated output now retains 925,696 bytes (262,144 added normal-capacity bytes),
 peaks at 1,363,800 bytes, and produces 4,199 allocation events with 4,199,416 traffic
 bytes. All tracked bytes are released on output drop. These are allocation traffic/live-heap
 measurements, not RSS or whole-process residency.
+
+### Native manifold machining phases
+
+The `native_manifold` binary measures source/tool construction, a retained cut,
+mesh realization, and local native support/trim validation separately. Cases
+include nonparallel exits, a blind floor, a stepped through bore, overlapping
+parallel passage pairs/chains, and a 31-hole plate. Every prepared output must
+realize as a closed mesh within tolerance before timing. Validation here means
+`Body::validate`, not a global regular-solid certificate. Phase cases carry unit
+metadata; the original `native_machining` binary retains its FaceRole/EdgeRole
+workload for comparisons with earlier measurements.
+
+```sh
+cargo run --release -p constructive_wind_tunnel --bin native_manifold -- 100 7 all
+cargo run --release -p constructive_wind_tunnel --bin native_machining -- 500 31
+# Prints a PID, then repeatedly executes only the selected native phase.
+cargo run --release -p constructive_wind_tunnel --bin native_manifold -- --sample overlap_chain cut 30
+```
+
+The existing isolated allocation harness supports the same workload without
+adding a production dependency:
+
+```sh
+EXEDRA_MANIFOLD_CASE=plate_31 EXEDRA_MANIFOLD_PHASE=cut \
+  python3 benchmarks/constructive_wind_tunnel/profile_authoring.py \
+  --workload native_manifold --output /tmp/exedra-manifold-allocation
+```
+
+`EXEDRA_MANIFOLD_PHASE` accepts `cut`, `realize` or `validate`. Prepared inputs,
+profiler setup and warmup are outside the allocation window. `retained` includes
+the complete result and operation report; `released` follows their destruction.
+Allocator bookkeeping and fragmentation are not included. Raw allocation
+traces remain available for stack inspection alongside the summary.
+
+`native-manifold-study.json` records matched source hashes, environment, repeated
+phase timings, the original-role plate benchmark, and all scoped allocation
+counts. Reusing each validated owned intermediate output as the next input,
+sharing immutable source validation across parallel tools, fixed exit/normal
+storage and one pattern reservation reduce the 31-hole cut's allocated traffic
+by 52.6%. Its original-role median falls from 1.500 to 0.836 ms. Rendering remains
+unchanged; the measured single nonparallel cut costs an additional 0.58 µs.

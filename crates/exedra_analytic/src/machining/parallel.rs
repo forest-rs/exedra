@@ -140,8 +140,14 @@ pub fn subtract_parallel_passages_with_roles<F: Clone, E: Clone>(
         if other_axis != axis && other_axis != scale(axis, -1.0) {
             return Err(PassageError::Axis { tool: i });
         }
-        let plan = plan_cylinder(body, tool, policy)
-            .map_err(|error| PassageError::Tool { tool: i, error })?;
+        // All plans borrow one unchanged source: later tools reuse its complete
+        // input validation and still run their own geometry/clearance checks.
+        let planned = if i == 0 {
+            plan_cylinder(body, tool, policy)
+        } else {
+            plan_cylinder_validated(body, tool, policy)
+        };
+        let plan = planned.map_err(|error| PassageError::Tool { tool: i, error })?;
         let ordered = if dot(other_axis, axis) > 0.0 {
             [plan.exits[0].0, plan.exits[1].0]
         } else {
