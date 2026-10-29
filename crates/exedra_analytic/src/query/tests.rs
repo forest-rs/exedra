@@ -2,6 +2,7 @@
 // SPDX-License-Identifier: Apache-2.0 OR MIT
 
 use super::*;
+use crate::geometry::Curve;
 use crate::{
     body::{EdgeGeometry, Sense},
     extrusion::Extrusion,
@@ -437,4 +438,38 @@ fn eccentric_partial_ellipse_near_tangent_endpoint_refuses_uncertain_crossing() 
         arc.crossing([-200.0, libm::sin(start) + 5e-13], [1.0, 0.0], 1e-12),
         None
     );
+}
+
+#[test]
+fn prepared_inverse_preserves_native_inverse_arithmetic() {
+    for frame in [
+        Placement3::IDENTITY,
+        Placement3::rotate_y_then_translate(0.731, 90.0, -73.0, 41.0),
+        Placement3::from_axes(
+            [1.0, 2e-14, 0.0],
+            [-1e-14, 1.0, 0.0],
+            [0.0, 0.0, 1.0],
+            [1e6, -2e6, 3e6],
+        ),
+    ] {
+        let inverse = LocalFrame::new(frame).unwrap();
+        for point in [[0.0, -0.0, 0.0], [1.3, -5.7, 9.1], [1e6, 2e6, -1e6]] {
+            let native = crate::geometry::frame_coordinates(frame, point).unwrap();
+            assert_eq!(
+                inverse.point(point).unwrap().map(f64::to_bits),
+                native.map(f64::to_bits)
+            );
+            let zero = Placement3::from_axes(
+                frame.rows.map(|r| r[0]),
+                frame.rows.map(|r| r[1]),
+                frame.rows.map(|r| r[2]),
+                [0.0; 3],
+            );
+            let native = crate::geometry::frame_coordinates(zero, point).unwrap();
+            assert_eq!(
+                inverse.vector(point).unwrap().map(f64::to_bits),
+                native.map(f64::to_bits)
+            );
+        }
+    }
 }

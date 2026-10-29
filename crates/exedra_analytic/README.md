@@ -365,10 +365,12 @@ joined passage arcs, while preserving the native circles and shared vertices.
 ## Native solid point queries
 
 `query::SolidQuery::prepare(&body, &policy)` prepares immutable line/conic trims
-and cylinder patches once. `query_point([x, y, z])` then returns material, void or
-boundary, a native face/edge witness for boundary results, and actual work counts.
-Queries allocate no scratch buffers; preparation reports its retained vector
-capacity and retains the local boundary-validation report for inspection.
+and cylinder patches once, together with inverse-frame coefficients and bounded
+edge metrics. This moves immutable arithmetic out of repeated traversals;
+`query_point([x, y, z])` then returns material, void or boundary, a native face/edge
+witness for boundary results, and actual work counts. Queries allocate no scratch
+buffers; preparation reports its complete retained vector capacity and retains
+the local boundary-validation report for inspection.
 
 The supported subset is planar line/circle/ellipse trims and cylindrical faces
 with explicit polygon charts or complete harmonic graph bands. This includes

@@ -16,13 +16,13 @@ mod tests;
 mod trim;
 
 use crate::body::{Body, CylindricalBand, EdgeId, FaceId, LoopId, ValidationPolicy};
-use crate::geometry::{Curve, Surface, frame_coordinates};
+use crate::geometry::Surface;
 use crate::validation::{
     BoundaryShell, BoundaryValidationError, BoundaryValidationPolicy, BoundaryValidationReport,
     TrimValidation,
 };
 use alloc::vec::Vec;
-use exedra_math::{Placement3, add, dot, scale, sub};
+use exedra_math::{Placement3, add, cross, dot, scale, sub};
 use trim::{Curve2, Region};
 
 /// Accuracy and resource bounds for preparation and repeated point queries.
@@ -203,6 +203,105 @@ enum Patch {
 struct PreparedFace {
     id: FaceId,
     patch: Patch,
+    inverse: LocalFrame,
+}
+
+// Immutable inverse coefficients retain the same subtraction/dot/division
+// order as geometry::frame_coordinates, but do not rebuild cofactors per probe.
+#[derive(Debug)]
+struct LocalFrame {
+    origin: [f64; 3],
+    cofactors: [[f64; 3]; 3],
+    determinant: f64,
+}
+impl LocalFrame {
+    fn new(frame: Placement3) -> Option<Self> {
+        let axis = |i| frame.rows.map(|r| r[i]);
+        let cofactors = [
+            cross(axis(1), axis(2)),
+            cross(axis(2), axis(0)),
+            cross(axis(0), axis(1)),
+        ];
+        let determinant = dot(axis(0), cofactors[0]);
+        (determinant.is_finite()
+            && determinant != 0.0
+            && cofactors.iter().flatten().all(|v| v.is_finite()))
+        .then_some(Self {
+            origin: axis(3),
+            cofactors,
+            determinant,
+        })
+    }
+    fn point(&self, point: [f64; 3]) -> Option<[f64; 3]> {
+        self.vector(sub(point, self.origin))
+    }
+    fn vector(&self, vector: [f64; 3]) -> Option<[f64; 3]> {
+        let result = self.cofactors.map(|v| dot(vector, v) / self.determinant);
+        result.iter().all(|v| v.is_finite()).then_some(result)
+    }
+}
+#[derive(Debug)]
+enum EdgeQuery {
+    Line {
+        origin: [f64; 3],
+        axis: [f64; 3],
+        length: f64,
+    },
+    Conic {
+        inverse: LocalFrame,
+        axes: [f64; 2],
+        singular: f64,
+        speed: f64,
+    },
+}
+#[derive(Debug)]
+struct PreparedEdge {
+    id: EdgeId,
+    geometry: EdgeQuery,
+}
+impl PreparedEdge {
+    fn new<F, E>(body: &Body<F, E>, id: EdgeId) -> Option<Self> {
+        let edge = &body.edges()[id.index()];
+        let (curve, _) = edge.regular()?;
+        let geometry = if let Some((frame, axes)) = curve.harmonic() {
+            let cols = [0, 1, 2].map(|i| frame.rows.map(|r| r[i]));
+            let singular = libm::sqrt(
+                (0..3)
+                    .map(|i| {
+                        dot(cols[i], cols[i])
+                            - (0..3)
+                                .filter(|j| *j != i)
+                                .map(|j| dot(cols[i], cols[j]).abs())
+                                .sum::<f64>()
+                    })
+                    .fold(f64::INFINITY, f64::min)
+                    .max(0.0),
+            );
+            let speed = norm(scale(cols[0], axes[0])) + norm(scale(cols[1], axes[1]));
+            if !singular.is_finite() || !speed.is_finite() {
+                return None;
+            }
+            EdgeQuery::Conic {
+                inverse: LocalFrame::new(frame)?,
+                axes,
+                singular,
+                speed,
+            }
+        } else {
+            let origin = body.vertices()[edge.start.index()];
+            let d = sub(body.vertices()[edge.end.index()], origin);
+            let length = norm(d);
+            if length == 0.0 || !length.is_finite() {
+                return None;
+            }
+            EdgeQuery::Line {
+                origin,
+                axis: scale(d, 1.0 / length),
+                length,
+            }
+        };
+        Some(Self { id, geometry })
+    }
 }
 /// Immutable query preparation borrowing native geometry, independently of roles.
 ///
@@ -214,7 +313,7 @@ pub struct SolidQuery<'a, F = (), E = ()> {
     body: &'a Body<F, E>,
     policy: SolidQueryPolicy,
     faces: Vec<PreparedFace>,
-    edges: Vec<EdgeId>,
+    edges: Vec<PreparedEdge>,
     magnitude: f64,
     report: PreparationReport,
     validation: BoundaryValidationReport,
@@ -275,18 +374,6 @@ impl Meter {
 fn norm(p: [f64; 3]) -> f64 {
     libm::hypot(libm::hypot(p[0], p[1]), p[2])
 }
-fn vector_local(frame: Placement3, p: [f64; 3]) -> Option<[f64; 3]> {
-    frame_coordinates(
-        Placement3::from_axes(
-            frame.rows.map(|r| r[0]),
-            frame.rows.map(|r| r[1]),
-            frame.rows.map(|r| r[2]),
-            [0.0; 3],
-        ),
-        p,
-    )
-}
-
 impl<'a, F, E> SolidQuery<'a, F, E> {
     /// Checks local boundary invariants and prepares continuous face predicates.
     ///
@@ -396,14 +483,25 @@ impl<'a, F, E> SolidQuery<'a, F, E> {
                 .flatten()
                 .map(|v| v.abs())
                 .fold(magnitude, f64::max);
-            faces.push(PreparedFace { id, patch });
+            let inverse =
+                LocalFrame::new(face.surface.frame()).ok_or(QueryError::NumericLimit {
+                    face: Some(id),
+                    allowance: f64::INFINITY,
+                    work: QueryWork::default(),
+                })?;
+            faces.push(PreparedFace { id, patch, inverse });
         }
-        let edges = used
-            .iter()
-            .enumerate()
-            .filter(|(_, yes)| **yes)
-            .map(|(i, _)| EdgeId(crate::usize_to_u32(i)))
-            .collect::<Vec<_>>();
+        let mut edges = Vec::with_capacity(used.iter().filter(|yes| **yes).count());
+        for (index, used) in used.into_iter().enumerate() {
+            if used {
+                let id = EdgeId(crate::usize_to_u32(index));
+                edges.push(PreparedEdge::new(body, id).ok_or(QueryError::NumericLimit {
+                    face: None,
+                    allowance: f64::INFINITY,
+                    work: QueryWork::default(),
+                })?);
+            }
+        }
         fn curves(face: &PreparedFace) -> Option<&Vec<Curve2>> {
             match &face.patch {
                 Patch::Planar(c) | Patch::Polygon(c) => Some(c),
@@ -422,7 +520,7 @@ impl<'a, F, E> SolidQuery<'a, F, E> {
                     .sum::<usize>()
                 + validation.face_trims.capacity() * size_of::<TrimValidation>()
                 + faces.capacity() * size_of::<PreparedFace>()
-                + edges.capacity() * size_of::<EdgeId>()
+                + edges.capacity() * size_of::<PreparedEdge>()
                 + faces
                     .iter()
                     .filter_map(curves)
@@ -487,13 +585,13 @@ impl<'a, F, E> SolidQuery<'a, F, E> {
             return Err(meter.numeric(None, allowance));
         }
         let mut ambiguous = false;
-        for &id in &self.edges {
+        for edge in &self.edges {
             meter.edge()?;
-            match self.edge_near(id, point, tolerance, allowance, &mut meter)? {
+            match self.edge_near(edge, point, tolerance, allowance, &mut meter)? {
                 Near::Yes => {
                     return Ok(PointQuery {
                         location: PointLocation::Boundary,
-                        boundary: Some(BoundaryWitness::Edge(id)),
+                        boundary: Some(BoundaryWitness::Edge(edge.id)),
                         work: meter.work,
                     });
                 }
@@ -504,7 +602,9 @@ impl<'a, F, E> SolidQuery<'a, F, E> {
         for prepared in &self.faces {
             meter.support()?;
             let face = &self.body.faces()[prepared.id.index()];
-            let local = frame_coordinates(face.surface.frame(), point)
+            let local = prepared
+                .inverse
+                .point(point)
                 .ok_or_else(|| meter.numeric(Some(prepared.id), allowance))?;
             let uv = match &face.surface {
                 Surface::Plane(_) => [local[0], local[1]],
@@ -559,10 +659,13 @@ impl<'a, F, E> SolidQuery<'a, F, E> {
             for prepared in &self.faces {
                 meter.intersection()?;
                 let face = &self.body.faces()[prepared.id.index()];
-                let frame = face.surface.frame();
-                let origin = frame_coordinates(frame, point)
+                let origin = prepared
+                    .inverse
+                    .point(point)
                     .ok_or_else(|| meter.numeric(Some(prepared.id), allowance))?;
-                let vector = vector_local(frame, direction)
+                let vector = prepared
+                    .inverse
+                    .vector(direction)
                     .ok_or_else(|| meter.numeric(Some(prepared.id), allowance))?;
                 let roots = match &face.surface {
                     Surface::Plane(_) => {
@@ -616,7 +719,9 @@ impl<'a, F, E> SolidQuery<'a, F, E> {
                         continue;
                     }
                     let hit = add(point, scale(direction, t));
-                    let local = frame_coordinates(frame, hit)
+                    let local = prepared
+                        .inverse
+                        .point(hit)
                         .ok_or_else(|| meter.numeric(Some(prepared.id), allowance))?;
                     let uv = if matches!(face.surface, Surface::Plane(_)) {
                         [local[0], local[1]]
@@ -723,30 +828,22 @@ enum Near {
 impl<F, E> SolidQuery<'_, F, E> {
     fn edge_near(
         &self,
-        id: EdgeId,
+        prepared: &PreparedEdge,
         point: [f64; 3],
         tolerance: f64,
         allowance: f64,
         meter: &mut Meter,
     ) -> Result<Near, QueryError> {
-        let edge = &self.body.edges()[id.index()];
-        let Some((curve, range)) = edge.regular() else {
-            return Err(QueryError::UnsupportedTrim {
-                face: self.faces[0].id,
-                loop_id: None,
-            });
-        };
-        if let Curve::Line(_) = curve {
-            let a = self.body.vertices()[edge.start.index()];
-            let b = self.body.vertices()[edge.end.index()];
-            let d = sub(b, a);
-            let length = norm(d);
-            if length == 0.0 || !length.is_finite() {
-                return Err(meter.numeric(None, allowance));
-            }
-            let axis = scale(d, 1.0 / length);
-            let t = dot(sub(point, a), axis).clamp(0.0, length);
-            let distance = norm(sub(point, add(a, scale(axis, t))));
+        let edge = &self.body.edges()[prepared.id.index()];
+        let (curve, range) = edge.regular().expect("prepared regular edge");
+        if let EdgeQuery::Line {
+            origin,
+            axis,
+            length,
+        } = prepared.geometry
+        {
+            let t = dot(sub(point, origin), axis).clamp(0.0, length);
+            let distance = norm(sub(point, add(origin, scale(axis, t))));
             return Ok(if distance + allowance <= tolerance {
                 Near::Yes
             } else if distance > tolerance + allowance {
@@ -755,24 +852,19 @@ impl<F, E> SolidQuery<'_, F, E> {
                 Near::Unknown
             });
         }
-        let (frame, axes) = curve.harmonic().expect("regular conic");
-        let local =
-            frame_coordinates(frame, point).ok_or_else(|| meter.numeric(None, allowance))?;
+        let EdgeQuery::Conic {
+            inverse,
+            axes,
+            singular,
+            speed,
+        } = &prepared.geometry
+        else {
+            unreachable!("prepared conic")
+        };
+        let local = inverse
+            .point(point)
+            .ok_or_else(|| meter.numeric(None, allowance))?;
         let radius = libm::hypot(local[0] / axes[0], local[1] / axes[1]);
-        // Gershgorin lower bound on the rigid frame's smallest singular value.
-        let cols = [0, 1, 2].map(|i| frame.rows.map(|r| r[i]));
-        let singular = libm::sqrt(
-            (0..3)
-                .map(|i| {
-                    dot(cols[i], cols[i])
-                        - (0..3)
-                            .filter(|j| *j != i)
-                            .map(|j| dot(cols[i], cols[j]).abs())
-                            .sum::<f64>()
-                })
-                .fold(f64::INFINITY, f64::min)
-                .max(0.0),
-        );
         let lower = singular * libm::hypot(axes[0].min(axes[1]) * (radius - 1.0).abs(), local[2]);
         if !lower.is_finite() {
             return Err(meter.numeric(None, allowance));
@@ -795,7 +887,6 @@ impl<F, E> SolidQuery<'_, F, E> {
         }
         // A continuous derivative enclosure gives a distance lower bound on each
         // interval. This resolves ellipse thresholds without a sampled mesh.
-        let speed = norm(scale(cols[0], axes[0])) + norm(scale(cols[1], axes[1]));
         let mut stack = [(0.0, 0.0, 0_u8); 64];
         stack[0] = (lo, hi, 0);
         let mut count = 1;
