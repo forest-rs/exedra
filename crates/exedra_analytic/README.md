@@ -313,3 +313,15 @@ principal axes. A whole-period harmonic width bound keeps the two rims apart.
 Realization pairs the rims by complete radial coefficients and retains efficient
 straight cylinder rulings instead of refining the entire chart. Native removed
 volume and surface-area change integrate the two distinct planar sections.
+
+`machining::BoreTool` describes a complete blind, stepped or counterbored passage
+from one entry datum. Its direction points into material; `BoreStep::end` is a
+cumulative `BoreDepth::ToDepth` or a final `BoreDepth::Through`. Radii decrease and
+finite depths increase. `subtract_bore_with_roles` performs one native boundary
+transaction, sharing circular shoulder rings between successive cylinder walls.
+Blind bores end in a retained planar disk. The report exposes every wall,
+annular shoulder, floor and opening alongside preserved source IDs and analytic
+removed volume/area change. Failed entry, clearance or numeric checks preserve
+the source body. The current conservative planner requires the outer cylinder's
+complete corridor to fit between two planar source exits, even for finite cuts;
+intersecting existing passages remain outside this operation.
