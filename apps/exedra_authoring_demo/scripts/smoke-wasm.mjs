@@ -3,9 +3,9 @@
 
 import assert from "node:assert/strict";
 import { readFile } from "node:fs/promises";
-import { AuthoringSession, ExedraError, extrude, revolve, placement, profiles, charts, uvTransform } from "@exedra/authoring";
+import { AuthoringSession, ExedraError, nativeBody, extrude, revolve, placement, profiles, charts, uvTransform } from "@exedra/authoring";
 import { AuthoringKernel, default as initialize } from "../../../packages/exedra/dist/wasm_pkg/exedra_authoring_web_bridge.js";
-import { authorPanel, authorFlangedSleeve, authorSphere, authorDome, authorPointedCone } from "../src/sample.ts";
+import { authorPanel, authorFlangedSleeve, authorSphere, authorDome, authorPointedCone, authorHousing } from "../src/sample.ts";
 import { galleryCases } from "./gallery-cases.mjs";
 
 await initialize({module_or_path:await readFile(new URL("../../../packages/exedra/dist/wasm_pkg/exedra_authoring_web_bridge_bg.wasm",import.meta.url))});
@@ -227,5 +227,76 @@ try {
  assert.equal(centerSession.stats().documents,0);assert.equal(centerSession.stats().cacheEntries,0);
  results.push({sample:"center-defined-profile",outcome:"success",nativeFamilies:2,refusedMismatch:"2 vs 4 at datum 1e16"});
 }finally{centerSession.dispose();}
+
+// A generic imported boundary follows the same authoring, selection and export path.
+const importedSession=new AuthoringSession(new AuthoringKernel(),{units:"mm"});
+try {
+ const tau=2*Math.PI,radius=8,height=10;
+ const frame=z=>[[1,0,0,0],[0,1,0,0],[0,0,1,z]];
+ const line=(start,end)=>({kind:"line",start,end});
+ const description={
+  vertices:[[radius,0,0],[radius,0,height]],
+  edges:[{kind:"curve",curve:{kind:"circle",frame:frame(0),radius},range:[0,tau],start:0,end:0},{kind:"curve",curve:{kind:"circle",frame:frame(height),radius},range:[0,tau],start:1,end:1},{kind:"curve",curve:{kind:"line",origin:[radius,0,0],direction:[0,0,1]},range:[0,height],start:0,end:1}],
+  loops:[[{edge:0},{edge:2},{edge:1,reversed:true},{edge:2,reversed:true}],[{edge:0,reversed:true}],[{edge:1}]],
+  faces:[{surface:{kind:"cylinder",frame:frame(0),radius},u:[0,tau],v:[0,height],sense:"forward",loops:[0],features:["imported shell","stock"]},{surface:{kind:"plane",frame:frame(0)},u:[-radius,radius],v:[-radius,radius],sense:"reverse",loops:[1]},{surface:{kind:"plane",frame:frame(height)},u:[-radius,radius],v:[-radius,radius],sense:"forward",loops:[2]}],
+  trims:[{loop:0,curves:[line([0,0],[tau,0]),line([tau,0],[tau,height]),line([0,height],[tau,height]),line([0,0],[0,height])]}],
+ };
+ const intent=nativeBody(description),document=importedSession.build({stock:intent});
+ try {
+  const part=document.parts.stock,selection=part.faces("imported shell")[0];
+  assert.equal(part.family,"body");assert.equal(selection.role,"boundary");assert.equal(part.measurements.volume.status,"unavailable");
+  for(const tolerance of [.45,.035]){const display=part.realize({tolerance});within(display);closedDisplay(display);part.requireSelection(selection);}
+  assert.ok(part.exportStep({timestamp}).text.includes("MANIFOLD_SOLID_BREP("));
+  const drilled=importedSession.build({stock:intent.subtractThroughCylinder({point:[3,0,5],direction:[0,0,1],radius:1,separation:.5,feature:"imported cut"})});
+  try {assert.equal(drilled.parts.stock.machining.operations.length,1);assert.equal(drilled.parts.stock.measurements.volume.status,"unavailable");assert.equal(drilled.parts.stock.faces("imported shell").length,1);closedDisplay(drilled.parts.stock.realize(policy));drilled.parts.stock.exportStep({timestamp});}finally{drilled.dispose();}
+  const malformed=structuredClone(description);malformed.edges[2].end=999;
+  assert.throws(()=>importedSession.build({stock:nativeBody(malformed)}),error=>error instanceof ExedraError&&error.diagnostic.code==="body.invalid");
+  part.requireSelection(selection);within(part.realize(policy));
+ }finally{document.dispose();}
+ assert.equal(importedSession.stats().documents,0);assert.equal(importedSession.stats().cacheEntries,0);
+ results.push({sample:"generic-native-boundary-import",outcome:"success",explicitTrims:true,machining:true,step:true,invalidImportRetainedPrevious:true});
+}finally{importedSession.dispose();}
+
+// Generic face refinement exposes actual kernel work, including retained cache evidence.
+const trimSession=new AuthoringSession(new AuthoringKernel(),{units:"mm"});
+try {
+ const radius=2,u=[.2,1],v=[-.3,.4],corners=[[u[0],v[0]],[u[1],v[0]],[u[1],v[1]],[u[0],v[1]]];
+ const frame=z=>[[1,0,0,0],[0,1,0,0],[0,0,1,z]],point=([u,v])=>[radius*Math.cos(v)*Math.cos(u),radius*Math.cos(v)*Math.sin(u),radius*Math.sin(v)];
+ const latitude=angle=>({kind:"circle",frame:frame(radius*Math.sin(angle)),radius:radius*Math.cos(angle)});
+ const meridian=angle=>({kind:"circle",frame:[[Math.cos(angle),0,Math.sin(angle),0],[Math.sin(angle),0,-Math.cos(angle),0],[0,1,0,0]],radius});
+ const edge=(curve,range,start,end)=>({kind:"curve",curve,range,start,end}),line=(start,end)=>({kind:"line",start,end});
+ const document=trimSession.build({patch:nativeBody({vertices:corners.map(point),edges:[edge(latitude(v[0]),u,0,1),edge(meridian(u[1]),v,1,2),edge(latitude(v[1]),u,3,2),edge(meridian(u[0]),v,0,3)],loops:[[{edge:0},{edge:1},{edge:2,reversed:true},{edge:3,reversed:true}]],faces:[{surface:{kind:"sphere",frame:frame(0),radius},u,v,sense:"forward",loops:[0],features:["patch"]}],trims:[{loop:0,curves:[line(corners[0],corners[1]),line(corners[1],corners[2]),line(corners[3],corners[2]),line(corners[0],corners[3])]}]})});
+ try {
+  const first=document.parts.patch.realize({tolerance:.025}),cached=document.parts.patch.realize({tolerance:.025});within(first);equalDisplay(first,cached);
+  assert.ok(first.report.work.trimRefinementBatches>0);assert.ok(first.report.work.trimTriangleTests>0);assert.ok(first.report.work.trimGeneratedVertices>0);assert.ok(first.report.work.trimNormalCorners>=3*first.report.triangles);assert.ok(first.report.work.trimNormalScratchBytes>0);
+  for(let i=0;i<first.positions.length;i+=3){const position=Array.from(first.positions.slice(i,i+3)),length=Math.hypot(...position);assert.ok(Math.hypot(...position.map((value,axis)=>first.normals[i+axis]-value/length))<2e-6,"trimmed sphere normals must follow its analytic support");}
+  assert.deepEqual(cached.report.work,first.report.work);assert.equal(cached.report.cacheHits,1);
+  results.push({sample:"generic-trim-refinement-work",outcome:"success",work:first.report.work});
+ }finally{document.dispose();}
+}finally{trimSession.dispose();}
+
+// Independent housing dimensions, scoped features and failed drafts on release Wasm.
+const housingSession=new AuthoringSession(new AuthoringKernel(),{units:"mm"});
+try {
+ const base={width:104,bodyWidth:64,height:90,flangeDepth:24,thickness:18,passageRadius:12,passageY:15,passageAngle:20,mountSpacing:76,mountRadius:5,portY:-10,portRadius:5,clearance:1};
+ const document=housingSession.build(authorHousing(base));
+ try {
+  const part=document.parts.housing,first=part.realize(policy),held=part.faces("main passage")[0];
+  assert.equal(part.family,"body");assert.equal(part.machining.operations.length,4);assert.equal(part.measurements.volume.basis,"constructorAndAnalyticMachining");
+  assert.equal(new Set(part.machining.operations.map(operation=>operation.wallFace)).size,4);
+  for(const feature of ["left mount","right mount","main passage","service port"]){const selected=part.faces(feature);assert.equal(selected.length,1);assert.equal(selected[0].surface,"cylinder");assert.ok(first.nativeFaces.includes(selected[0].nativeId));}
+  within(first);closedDisplay(first);const fine=part.realize({tolerance:.035});within(fine);closedDisplay(fine);part.requireSelection(held);
+  const edits={width:108,bodyWidth:68,height:94,flangeDepth:26,thickness:20,passageRadius:13,passageY:17,passageAngle:25,mountSpacing:80,mountRadius:5.5,portY:-12,portRadius:6,clearance:1.5};
+  for(const [key,value] of Object.entries(edits)) {
+   const changed=housingSession.build(authorHousing({...base,[key]:value}));
+   try {if(key!=="clearance")assert.notEqual(changed.parts.housing.fingerprint,part.fingerprint,`${key} did not change native geometry`);within(changed.parts.housing.realize(policy));assert.throws(()=>changed.parts.housing.requireSelection(held),error=>error instanceof ExedraError&&error.diagnostic.code==="selection.stale");}finally{changed.dispose();}
+  }
+  assert.throws(()=>housingSession.build(authorHousing({...base,portY:base.passageY})),error=>error instanceof ExedraError&&error.diagnostic.code==="machining.clearance"&&error.diagnostic.feature==="service port"&&error.timing.outcome==="refused");
+  equalDisplay(first,part.realize(policy));part.requireSelection(held);assert.equal(housingSession.stats().documents,1);
+  const file=part.exportStep({timestamp});assert.equal(file.report.faces,14);assert.ok(file.text.includes("MANIFOLD_SOLID_BREP("));assert.ok(file.text.includes("ELLIPSE("));
+  results.push({sample:"independent-housing-machining",outcome:"success",independentEdits:Object.keys(edits).length,nativeCuts:4,failedDraftRetainedPrevious:true,triangles:fine.report.triangles,buildKernelMs:document.buildTiming.kernelMs,realizeKernelMs:fine.timing.kernelMs,stepKernelMs:file.timing.kernelMs});
+ }finally{document.dispose();}
+ for(let i=0;i<12;i++){const rebuilt=housingSession.build(authorHousing({...base,width:base.width+i/10}));within(rebuilt.parts.housing.realize(policy));rebuilt.dispose();assert.equal(housingSession.stats().documents,0);assert.equal(housingSession.stats().cacheEntries,0);}
+}finally{housingSession.dispose();}
 
 console.log(JSON.stringify({samples:results},null,2));

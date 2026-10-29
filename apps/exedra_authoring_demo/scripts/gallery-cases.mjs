@@ -1,7 +1,7 @@
 // Copyright 2026 the Exedra Authors
 // SPDX-License-Identifier: Apache-2.0 OR MIT
 
-import { authorPanel, authorCollar, authorRoundedTurn, authorFlangedSleeve, authorSphere, authorDome, authorPointedCone, authorTurnedFitting, authorRail, authorVariableLoft, authorFinishedPlate, authorAngledBore } from "../src/sample.ts";
+import { authorPanel, authorCollar, authorRoundedTurn, authorFlangedSleeve, authorSphere, authorDome, authorPointedCone, authorTurnedFitting, authorRail, authorVariableLoft, authorFinishedPlate, authorAngledBore, authorHousing } from "../src/sample.ts";
 
 // Independent must-succeed inventory. Unsupported exports are specific expected
 // outcomes, not an allowance for arbitrary failures or all-export-refused runs.
@@ -22,4 +22,5 @@ export const galleryCases = [
   { id: "fillet", step: "supported", make: (delta=0) => authorFinishedPlate({size:5+delta,height:30,treatment:"fillet",inner:false}) },
   { id: "chamfer", step: "supported", make: (delta=0) => authorFinishedPlate({size:3+delta,height:30,treatment:"chamfer",inner:true}) },
   { id:"bore", step:"supported", make:(delta=0)=>authorAngledBore({width:100,height:70,thickness:20,radius:8+delta,angle:60,separation:2}) },
+  {id:"housing",step:"supported",make:(delta=0)=>authorHousing({width:104+delta,bodyWidth:64,height:90,flangeDepth:24,thickness:18,passageRadius:12,passageY:15,passageAngle:20,mountSpacing:76,mountRadius:5,portY:-10,portRadius:5,clearance:1})},
 ];

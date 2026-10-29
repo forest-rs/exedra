@@ -296,3 +296,22 @@ conservative bounds, display realization and supported STEP export remain
 available. Constructor charts, cap selectors and exact integrals are explicitly
 unavailable. Boundary validation does not certify global self-intersection or
 nested-shell containment.
+
+`solid.subtractThroughCylinder(options)` applies the generic retained-body
+machining operation. It supports two parallel planar exits, polygonal and full
+conic exit trims, and separated planar/cylindrical boundaries. Repeated cuts
+preserve existing native IDs and feature tags; conservative checks explicitly
+refuse tangency, intersecting cuts and unsupported boundaries. Tool points and
+directions use the stock's body-local coordinates; its occurrence placement is
+applied once to display, queries and STEP. `throughBore` retains the earlier
+rectangular-plate constructor convenience.
+
+`part.machining.operations` exposes each tool's local axis/radius, generated
+wall/rim/seam IDs, source-to-result face correspondence, certified clearance,
+native support gap, removed volume and surface-area delta. All nested SDK
+metadata is immutable. When authoring started from a constructor with known
+exact integrals, `part.measurements` carries
+`basis: "constructorAndAnalyticMachining"`: its value is the constructor integral
+plus the validated analytic operation deltas. A generic `NativeSource` by itself
+has no construction-history evidence and continues to report those integrals as
+unavailable; importing arbitrary `nativeBody` tables does not fabricate them.

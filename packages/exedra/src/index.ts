@@ -358,7 +358,7 @@ type FaceSelector = { kind: "floor"; feature: string } | { kind: "cap"; end: End
 type SolidNode =
   | {kind:"body";body:NativeBodyDescription;placement:Placement}
   | {kind:"sphericalCap";radius:number;height:number;placement:Placement}
-  | {kind:"throughBore";base:Solid;point:XYZ;direction:XYZ;radius:number;separation:number;feature?:string}
+  | {kind:"throughBore"|"subtractThroughCylinder";base:Solid;point:XYZ;direction:XYZ;radius:number;separation:number;feature?:string}
   | { kind:"sweep"; profile:Profile; path:CurvePath; placement:Placement }
   | { kind:"loft"; sections:readonly LoftSection[]; placement:Placement }
   | { kind:"axialFinish"; base:Solid; feature:string; treatment:"fillet"|"chamfer"; size:number; transition:string }
@@ -368,12 +368,12 @@ type SolidNode =
   | { kind: "onFace"; host: Solid; face: FaceSelector; profile: Profile; height: number; offset: number; at: XY };
 const solidNodes = new WeakMap<Solid, SolidNode>();
 
-/** An unoriented cylinder axis in the base extrusion's construction space, before placement. */
+/** An unoriented cylinder axis in the body's local construction space, before placement. */
 export interface ThroughBoreOptions {
   readonly point:XYZ;
   readonly direction:XYZ;
   readonly radius:number;
-  /** Minimum remaining material from each complete rim to plate sidewalls, in document units. Distinct from numeric separation/display tolerance. */
+  /** Minimum remaining material from the tool to untouched boundaries, in document units. Distinct from numeric separation/display tolerance. */
   readonly separation:number;
   readonly feature?:string;
 }
@@ -421,9 +421,17 @@ export class Solid {
   static axialFinish(base:Solid,feature:string,treatment:"fillet"|"chamfer",size:number,transition:string):Solid {
     return new Solid({kind:"axialFinish",base,feature:name(feature),treatment,size:finite(size,"finish size"),transition:name(transition)});
   }
-  /** Exact through bore on a plain rectangular extrusion. Point/direction are in the base's construction space, before placement. */
+  /** Retained rectangular-plate bore constructor, with exact conic rim evidence. */
   throughBore(options:ThroughBoreOptions):Solid {
     return new Solid({kind:"throughBore",base:this,point:point3(options.point),direction:point3(options.direction),radius:finite(options.radius,"bore radius"),separation:finite(options.separation,"bore clearance"),feature:options.feature===undefined?undefined:name(options.feature)});
+  }
+  /** Exact cylinder subtraction through two parallel planar exits.
+   * Repeated disjoint cuts preserve existing native IDs. Polygonal and full conic
+   * exit trims are supported; conservative separation checks can refuse valid cuts.
+   * Point/direction are in body-local construction space, before placement.
+   */
+  subtractThroughCylinder(options:ThroughBoreOptions):Solid {
+    return new Solid({kind:"subtractThroughCylinder",base:this,point:point3(options.point),direction:point3(options.direction),radius:finite(options.radius,"bore radius"),separation:finite(options.separation,"bore clearance"),feature:options.feature===undefined?undefined:name(options.feature)});
   }
   pocket(profile: Profile, options: { end: End; depth: number; at?: XY }): Solid {
     return new Solid({ kind: "pocket", base: this, profile, end: options.end, depth: finite(options.depth, "depth"), at: point(options.at ?? [0, 0]) });
@@ -501,7 +509,7 @@ export interface NativeMeasurements {
 }
 /** A native integral is never replaced with a tessellated estimate or a fabricated zero. */
 export type NativeMeasurement =
-  | { readonly status: "available"; readonly value: number }
+  | { readonly status: "available"; readonly value: number; readonly basis?:"constructorAndAnalyticMachining" }
   | { readonly status: "unavailable" | "numericLimit"; readonly diagnostic: Readonly<Diagnostic> };
 export interface NativeFace {
   id: number;
@@ -583,7 +591,25 @@ export interface NativeBore {
   readonly rims:readonly {readonly edge:number;readonly semiMajor:number;readonly semiMinor:number;readonly documentCenter:XYZ}[];
   readonly wallFace:number;readonly minimumClearance:number;readonly maxNativeGap:number;readonly axisDot:number;
 }
-interface PartMetadata { bore:NativeBore|null; chartKind:ConstructionChart["kind"]|null; family: NativeFamily; name: string; index: number; fingerprint: string; stepSupport: StepSupport; measurements: NativeMeasurements; faces: NativeFace[] }
+/** Exact topology correspondence and analytic deltas for one retained-body cut. */
+export interface NativeMachiningOperation {
+  readonly point:XYZ;
+  readonly direction:XYZ;
+  readonly radius:number;
+  readonly feature:string|null;
+  readonly trimmedFaces:readonly [number,number];
+  readonly rims:readonly [number,number];
+  readonly wallFace:number;
+  readonly seamEdge:number;
+  readonly minimumClearance:number;
+  readonly maxNativeGap:number;
+  readonly removedVolume:number;
+  readonly surfaceAreaDelta:number;
+  readonly faces:readonly {readonly source:number;readonly result:number;readonly change:"retained"|"trimmed"}[];
+}
+/** Native edit history in source-local coordinates; no display approximation. */
+export interface NativeMachining {readonly coordinateSpace:"construction";readonly operations:readonly NativeMachiningOperation[];}
+interface PartMetadata { machining?:NativeMachining; bore:NativeBore|null; chartKind:ConstructionChart["kind"]|null; family: NativeFamily; name: string; index: number; fingerprint: string; stepSupport: StepSupport; measurements: NativeMeasurements; faces: NativeFace[] }
 interface DocumentMetadata { id: number; units: LengthUnit; parts: PartMetadata[] }
 
 /** Buffer-transfer surface implemented by the Wasm bridge. Each buffer is taken once. */
@@ -644,7 +670,7 @@ function graph(parts: Record<string, Solid>, units: LengthUnit, separation: numb
     switch(source.kind){
       case "body":case "sphericalCap":wire=source;break;
       case "loft":wire={...source,sections:source.sections.map(s=>({...s,profile:visitProfile(s.profile)}))};break;
-      case "throughBore":wire={...source,base:visit(source.base)};break;
+      case "throughBore":case "subtractThroughCylinder":wire={...source,base:visit(source.base)};break;
       case "axialFinish":wire={...source,base:visit(source.base)};break;
       case "sweep": {
         let path=pathIds.get(source.path);
@@ -759,6 +785,7 @@ export class NativePart {
   /** Structural chart operation, or null when native chart realization is unavailable. */
   readonly chartKind:ConstructionChart["kind"]|null;
   readonly bore:NativeBore|null;
+  readonly machining:NativeMachining|null;
   readonly name: string;
   readonly id: string;
   readonly fingerprint: string;
@@ -769,6 +796,7 @@ export class NativePart {
   private readonly faceTable: readonly NativeFace[];
   constructor(document: NativeDocument, metadata: PartMetadata) {
     this.chartKind=metadata.chartKind;
+    this.machining=metadata.machining?Object.freeze({...metadata.machining,operations:Object.freeze(metadata.machining.operations.map(operation=>Object.freeze({...operation,point:point3(operation.point),direction:point3(operation.direction),trimmedFaces:Object.freeze([...operation.trimmedFaces]) as readonly [number,number],rims:Object.freeze([...operation.rims]) as readonly [number,number],faces:Object.freeze(operation.faces.map(face=>Object.freeze({...face})))})))}):null;
     this.bore=metadata.bore?Object.freeze({...metadata.bore,point:point3(metadata.bore.point),direction:point3(metadata.bore.direction),documentPoint:point3(metadata.bore.documentPoint),documentDirection:point3(metadata.bore.documentDirection),rims:Object.freeze(metadata.bore.rims.map(r=>Object.freeze({...r,documentCenter:point3(r.documentCenter)})))}):null;
     this.family = metadata.family; this.document = document; this.index = metadata.index; this.name = metadata.name;
     this.id = `${document.id}/part-${metadata.index}`; this.fingerprint = metadata.fingerprint;

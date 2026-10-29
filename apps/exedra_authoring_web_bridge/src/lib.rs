@@ -47,6 +47,18 @@ struct CornerLocation {
 #[derive(Debug, Default, Serialize)]
 struct ErrorContext {
     #[serde(skip_serializing_if = "Option::is_none")]
+    operand: Option<&'static str>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    vertex: Option<u32>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    axis: Option<usize>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    cell: Option<[usize; 3]>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    required: Option<usize>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    maximum: Option<usize>,
+    #[serde(skip_serializing_if = "Option::is_none")]
     node: Option<usize>,
     #[serde(rename = "cornerPoint", skip_serializing_if = "Option::is_none")]
     corner_point: Option<[f64; 2]>,
@@ -192,6 +204,7 @@ fn decode<T: serde::de::DeserializeOwned>(value: &str) -> Result<T, Error> {
 struct InstalledPart {
     name: String,
     source: PreparedSource,
+    machining: Option<authoring::MachiningEvidence>,
 }
 impl InstalledPart {
     fn native(&self) -> &NativeSource {
@@ -237,12 +250,13 @@ impl Session {
                 "The native document ID space is exhausted",
             )
         })?;
-        let built = request.build()?;
+        let mut built = request.build()?;
         let document = Document {
             parts: built
                 .roots
                 .into_iter()
                 .map(|(name, source)| InstalledPart {
+                    machining: built.machining.remove(&name),
                     name,
                     source: PreparedSource::new(PartSource::Native(source)),
                 })
@@ -420,7 +434,7 @@ impl Session {
             "cacheHits":u32::try_from(after.cache_hits-before.cache_hits).expect("one input"),
             "nativeRealizations":u32::try_from(after.native_realizations-before.native_realizations).expect("one input"),
             "hasUvs":applied_chart.is_some(),"chart":applied_chart,
-            "work":{"attempts":report.work.attempts,"completedBoundarySamples":report.work.completed_boundary_samples,"completedTriangles":report.work.completed_triangles},
+            "work":{"attempts":report.work.attempts,"completedBoundarySamples":report.work.completed_boundary_samples,"completedTriangles":report.work.completed_triangles,"trimRefinementBatches":report.work.trim_refinement_batches,"trimTriangleTests":report.work.trim_triangle_tests,"trimGeneratedVertices":report.work.trim_generated_vertices,"trimNormalCorners":report.work.trim_normal_corners,"trimNormalScratchBytes":report.work.trim_normal_scratch_bytes},
             "curveRefinement":curve_refinement});
         Ok(NativeBuffers {
             positions: tri.positions.iter().flatten().copied().collect(),
@@ -557,6 +571,21 @@ impl Document {
         let mut parts = Vec::with_capacity(self.parts.len());
         for (index, part) in self.parts.iter().enumerate() {
             let mut value = inspect::metadata(part.native(), &self.names)?;
+            if let Some(evidence) = &part.machining {
+                let operations:Vec<_>=evidence.reports.iter().map(|operation| {
+                    let report=&operation.report;
+                    let faces:Vec<_>=report.faces.iter().map(|face|serde_json::json!({"source":face.source.0,"result":face.result.0,"change":match face.kind {exedra_analytic::machining::FaceChangeKind::Retained=>"retained",exedra_analytic::machining::FaceChangeKind::Trimmed=>"trimmed"}})).collect();
+                    serde_json::json!({"point":operation.point,"direction":operation.direction,"radius":operation.radius,"feature":operation.feature,
+                        "trimmedFaces":report.trimmed_faces.map(|id|id.0),"rims":report.rims.map(|id|id.0),"wallFace":report.wall.0,"seamEdge":report.seam.0,
+                        "minimumClearance":report.min_clearance,"maxNativeGap":report.max_gap,"removedVolume":report.removed_volume,"surfaceAreaDelta":report.surface_area_delta,"faces":faces})
+                }).collect();
+                value["machining"] =
+                    serde_json::json!({"coordinateSpace":"construction","operations":operations});
+                if let Some([volume, area]) = evidence.integrals {
+                    value["measurements"]["volume"] = serde_json::json!({"status":"available","value":volume,"basis":"constructorAndAnalyticMachining"});
+                    value["measurements"]["surfaceArea"] = serde_json::json!({"status":"available","value":area,"basis":"constructorAndAnalyticMachining"});
+                }
+            }
             value["name"] = serde_json::json!(part.name);
             value["index"] = serde_json::json!(index);
             value["fingerprint"] =
@@ -1249,5 +1278,95 @@ mod tests {
         assert!(parallel.context.as_ref().unwrap().axis_dot.unwrap() < 0.05);
         assert_eq!(session.documents[&1].metadata(1).unwrap(), good);
         assert_eq!(session.documents.len(), 1);
+    }
+    fn housing_request(port_y: f64) -> Request {
+        let bores = [
+            ([-38.0, -33.0, 9.0], [0.0, 0.0, 1.0], 5.0, "left mount"),
+            ([38.0, -33.0, 9.0], [0.0, 0.0, 1.0], 5.0, "right mount"),
+            ([0.0, 15.0, 9.0], [0.364, 0.0, 1.0], 12.0, "main passage"),
+            ([0.0, port_y, 9.0], [0.0, 0.0, 1.0], 5.0, "service port"),
+        ];
+        let mut nodes = alloc::vec![serde_json::json!({"kind":"extrude","profile":1,"height":18})];
+        for (base, (point, direction, radius, feature)) in bores.into_iter().enumerate() {
+            nodes.push(serde_json::json!({"kind":"subtractThroughCylinder","base":base,"point":point,"direction":direction,"radius":radius,"separation":1,"feature":feature}));
+        }
+        decode(&json(&serde_json::json!({"units":"mm","separation":1e-6,"profiles":[{"kind":"polygon","points":[[-52,-45],[52,-45],[52,-21],[32,-21],[32,45],[-32,45],[-32,-21],[-52,-21]]},{"kind":"tagged","profile":0,"name":"stock"}],"nodes":nodes,"roots":[{"name":"housing","node":4}]}))).unwrap()
+    }
+    #[test]
+    fn retained_housing_edits_have_exact_evidence_selections_and_atomic_refusals() {
+        let mut session = Session::new();
+        let metadata = session.build(housing_request(-10.0)).unwrap();
+        let data = value(&metadata);
+        let part = &data["parts"][0];
+        assert_eq!(part["family"], "body");
+        assert_eq!(part["machining"]["operations"].as_array().unwrap().len(), 4);
+        assert_eq!(
+            part["measurements"]["volume"]["basis"],
+            "constructorAndAnalyticMachining"
+        );
+        assert_eq!(part["stepSupport"]["status"], "supported");
+        let native = session.documents[&1].parts[0].native();
+        assert!(matches!(native.geometry(),NativeGeometryRef::Body{body,..} if body.is_closed()));
+        assert!(native.to_body().is_closed());
+        assert!(
+            matches!(
+                native.volume(),
+                Err(exedra_compile::NativeMeasureError::Unavailable { .. })
+            ),
+            "generic body query must not claim a constructor integral"
+        );
+        for feature in ["left mount", "right mount", "main passage", "service port"] {
+            assert_eq!(
+                part["faces"]
+                    .as_array()
+                    .unwrap()
+                    .iter()
+                    .filter(|face| face["features"]
+                        .as_array()
+                        .unwrap()
+                        .iter()
+                        .any(|value| value == feature))
+                    .count(),
+                1
+            );
+        }
+        for tolerance in [0.45, 0.12, 0.035] {
+            let display = session
+                .realize(
+                    1,
+                    0,
+                    DisplayOptions {
+                        tolerance,
+                        max_vertices: 250000,
+                        chart: None,
+                    },
+                )
+                .unwrap();
+            assert_eq!(value(&display.report)["withinTolerance"], true);
+            assert_eq!(display.native_faces.len() * 3, display.indices.len());
+        }
+        let file = session
+            .step(
+                1,
+                0,
+                ExchangeOptions {
+                    name: None,
+                    timestamp: "2026-10-29T00:00:00Z".to_string(),
+                    tolerance: None,
+                },
+            )
+            .unwrap();
+        assert!(file.text.contains("MANIFOLD_SOLID_BREP("));
+        assert_eq!(value(&file.report)["faces"], 14);
+        let error = session.build(housing_request(15.0)).unwrap_err();
+        assert_eq!(error.code, "machining.clearance");
+        assert_eq!(
+            error.context.unwrap().feature.as_deref(),
+            Some("service port")
+        );
+        assert_eq!(session.documents[&1].metadata(1).unwrap(), metadata);
+        assert_eq!(session.documents.len(), 1);
+        session.release(1);
+        assert_eq!(session.compiler.native_storage().sources, 0);
     }
 }
