@@ -67,10 +67,15 @@ Construction and extraction crates:
   UV spheres, and icospheres.
 - **[exedra_analytic](crates/exedra_analytic/)** - Planar analytic topology
   slice that tessellates rectangular frames/openings into Exedra meshes.
-- **[exedra_isosurface](crates/exedra_isosurface/)** - Scalar-field seams,
-  reference analytic fields, transforms, profile lifts, Hermite intersection
-  data, a deterministic flat octree, a bounded QEF solver, and dual-contouring
-  extraction.
+- **[exedra_implicit](crates/exedra_implicit/)** - Implicit fields written
+  once as formulas: values, exact gradients, interval bounds, creases and
+  regions from one definition, with shapes, profiles, combinations and
+  placement.
+- **[exedra_isosurface](crates/exedra_isosurface/)** - Surface meshes from
+  implicit fields by restricted Delaunay refinement, with sharp creases and
+  corners and manifold output.
+- **[exedra_tetrahedralize](crates/exedra_tetrahedralize/)** - Incremental,
+  exact 3D Delaunay and regular tetrahedralization.
 - **[exedra_gltf](crates/exedra_gltf/)** - Deterministic glTF export of
   compiled geometry with caller-owned hierarchy, materials, instance metadata,
   and face-region provenance.
@@ -87,8 +92,8 @@ Workspace-only construction, test, benchmark, and app crates:
 - **[exedra_testkit](crates/exedra_testkit/)** - Deterministic fixtures,
   mesh and edit golden snapshots, and debug dumps.
 - **[benchmarks/](benchmarks/)** - Executable wind-tunnel crates for Exedra
-  kernel scenarios, QEF solves, render extraction, and Fidget-backed
-  field/extraction paths.
+  kernel scenarios, render extraction, and Fidget-backed field/extraction
+  paths.
 - **[packages/exedra](packages/exedra/)** - Typed TypeScript native authoring SDK.
 - **[apps/exedra_authoring_demo](apps/exedra_authoring_demo/)** - Interactive browser
   authoring, native queries, source-aware picking and per-part STEP downloads.
@@ -179,7 +184,8 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
 - **Operator** - An Exedra Edit mesh command with compile, preview, and
   apply steps.
 - **Attribute domain** - Where data lives: vertex, face, edge, or corner.
-- **Field seam** - The trait boundary used by implicit-surface extractors.
+- **Field seam** - `ScalarField`, the boundary implicit-surface extractors
+  ask fields through.
 - **Wind tunnel** - A small executable benchmark crate outside the core crates.
 
 ## Design

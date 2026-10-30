@@ -18,8 +18,9 @@ representations:
 
 - `exedra_constructive`: immutable fingerprinted recipes and deterministic
   tessellation;
-- `exedra_isosurface`: scalar fields, Hermite evidence, QEF fitting, and field
-  extraction;
+- `exedra_implicit`: implicit fields written once as formulas, with exact
+  gradients, interval bounds, creases and regions; `exedra_isosurface` meshes
+  them;
 - `exedra_analytic`: a narrow planar analytic head;
 - `exedra_assembly`: parts, stable instance paths, material-slot binding,
   compilation, and flattening.
@@ -54,9 +55,10 @@ The workspace currently provides:
 6. Assembly parts and named instances with stable paths, material binding,
    cached part compilation, deterministic flattening, interchange, inspection
    payloads, and glTF export.
-7. Scalar-field composition, analytic reference fields, QEF fitting,
-   interval-culled adaptive dual contouring, mixed-depth balancing, provenance,
-   corner normals, and bounded semi-analytic box and cylinder projection.
+7. Implicit fields written once as formulas, combined sharply or blended,
+   with claims about distance and support, meshed by restricted Delaunay
+   refinement with protected creases and corners, manifold disks, and face
+   regions from tagged parts.
 
 These capabilities are useful but not universal. Unsupported or ambiguous
 configurations must remain typed failures or explicitly counted fallbacks.
@@ -119,10 +121,10 @@ feature, and bounded diagnostic without reading internal state.
 
 ### 4. Field-extraction stabilization
 
-Preserve the measured phase-1 adaptive dual-contouring envelope: QEF fitting,
-conservative intervals, mixed-depth transitions, provenance and seams, normals,
-and supported semi-analytic features. Keep the general manifold problem
-explicit (`ei-vnhj`) rather than silently broadening current claims.
+Hold restricted Delaunay meshing to its report: complete meshes are closed
+manifolds with sharp creases and corners, and anything left unmet is counted.
+Make features near a cell wide as dependable as larger ones before claiming
+them, and keep the oracle's seam checks exact.
 
 Exit: supported field classes, approximations, fallbacks, and rejections are
 documented and covered by deterministic topology and quality oracles.
@@ -153,14 +155,13 @@ identical to a clean rebuild.
 The following remain valid future work but are not in the active dependency
 chain:
 
-- general manifold dual contouring beyond the bounded phase-1 extractor;
 - constrained-Delaunay legalization, Steiner cap refinement, and guaranteed
   minimum-angle meshing after the incircle predicate;
 - subdivision operators;
 - curved planar sweeps and recipe-level profile fillets;
 - broad edit-lineage, feature-diff, and derived-normal patching facilities;
 - automatic glTF basis conversion;
-- additional semi-analytic primitives and exact feature intersections.
+- protecting creases of features thinner than the minimum crease step.
 
 Deferral means the capability has a plausible owner and motivation, but no
 active promise or dedicated ticket until a consumer pulls it into scope.

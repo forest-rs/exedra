@@ -69,7 +69,7 @@ It explicitly does not own:
 - polygon topology or attributes (`exedra_mesh`);
 - constructive recipes or their evaluation (`exedra_constructive`);
 - analytic shell state or tessellation (`exedra_analytic`);
-- scalar fields or isosurface extraction (`exedra_isosurface`);
+- implicit fields (`exedra_implicit`) or their meshing (`exedra_isosurface`);
 - parts, instances, or render flattening (`exedra_assembly`);
 - a universal mutable geometry type;
 - a heterogeneous graph, scheduler, or plugin ABI.
@@ -112,7 +112,7 @@ Each representation keeps the lifecycle that gives it value:
 | `exedra_mesh` | `Mesh` | mutable polygon topology and authored attributes | render extraction or input from another head |
 | `exedra_constructive` | `Recipe` | immutable, fingerprinted construction intent | policy-controlled evaluation to one or more meshes |
 | `exedra_analytic` | `AnalyticShell` | bounded editable planar topology | deterministic tessellation to a mesh |
-| `exedra_isosurface` | `ScalarField` implementations | continuous inside/outside evaluation | policy-controlled isosurface extraction to a mesh |
+| `exedra_implicit` | `Formula` and `ScalarField` implementations | continuous inside/outside evaluation | policy-controlled meshing by `exedra_isosurface` |
 | `exedra_assembly` | `Assembly` | named part definitions and retained instances | deterministic flattening to a render list |
 
 Crossing a boundary is an operation, not an implicit cast. Each crossing must

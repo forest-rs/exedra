@@ -1,56 +1,33 @@
 // Copyright 2026 the Exedra Authors
 // SPDX-License-Identifier: Apache-2.0 OR MIT
 
-//! Implicit-field seams and extraction-facing data types for Exedra.
+//! Surface meshes extracted from implicit fields.
 //!
-//! Current scope:
-//! - [`ScalarField`] as the base field-evaluation contract,
-//! - [`ScalarField2d`] for profile-space field construction,
-//! - [`SpecializableField`] for region-local simplification,
-//! - [`ProvenanceField`] for extraction-time semantic tagging,
-//! - Hermite bridge types in [`hermite`],
-//! - analytic reference fields and CSG combinators in [`analytic`],
-//! - analytic 2D reference profiles in [`analytic2d`],
-//! - capsules, round cones and an N-ary smooth union in [`skeletal`],
-//! - lifting operators in [`lift`],
-//! - reusable transform wrappers in [`transform`],
-//! - opt-in semi-analytic primitive projection in [`semi_analytic`],
-//! - a first dual-contouring extraction path in [`mod@dual_contour`],
-//! - surface meshing of [`exedra_implicit`] fields by restricted Delaunay
-//!   refinement in [`delaunay`]: near-isotropic triangles, sharp creases
-//!   and corners, and a manifold around every vertex.
-//!
-//! This crate intentionally starts at the evaluation boundary. It does not yet
-//! define a full implicit scene/domain model.
+//! Fields are defined in [`exedra_implicit`]; this crate turns their zero
+//! sets into meshes. [`delaunay_mesh`] meshes a field by restricted Delaunay
+//! refinement: near-isotropic triangles close to the surface, sharp along
+//! its creases and corners, and closed into a manifold around every vertex,
+//! optionally labelled with the regions of the parts they lie on.
 //!
 //! # Example
 //!
-//! Extract the zero surface of an analytic sphere into an Exedra mesh:
+//! Mesh a box drilled through, with sharp edges where the bore leaves it:
 //!
 //! ```
-//! use exedra_isosurface::{
-//!     Aabb, DualContourParams, EdgeSearchParams, QefParams,
-//!     analytic::SphereField, dual_contour,
-//! };
+//! use exedra_implicit::{Aabb, Cuboid, Cylinder, Difference};
+//! use exedra_isosurface::{DelaunayParams, delaunay_mesh};
 //!
-//! let field = SphereField {
-//!     center: [0.0, 0.0, 0.0],
-//!     radius: 1.0,
-//! };
-//! let params = DualContourParams {
-//!     root_bounds: Aabb::new([-1.5; 3], [1.5; 3]).expect("ordered bounds"),
-//!     max_depth: 4,
-//!     cell_budget: None,
-//!     limits: Default::default(),
-//!     witness_limit: 16,
-//!     vertex_merge_tolerance: 0.0,
-//!     edge_search: EdgeSearchParams::default(),
-//!     qef: QefParams::default(),
-//! };
-//! let result = dual_contour(&field, &params).expect("sphere extraction");
+//! let drilled = Difference::new(
+//!     Cuboid::new([0.0; 3], [0.6; 3]).unwrap(),
+//!     Cylinder::new([0.0; 3], [0.0, 0.0, 1.0], 0.3, 1.0).unwrap(),
+//! );
+//! let bounds = Aabb::new([-1.0; 3], [1.0; 3]).unwrap();
+//! let result = delaunay_mesh(&drilled, &DelaunayParams::new(bounds, 0.125)).unwrap();
 //!
-//! assert!(result.stats.faces > 0);
-//! assert!(result.mesh.validate_deep().is_empty());
+//! assert!(result.report.is_complete());
+//! assert_eq!(result.report.corners, 8);
+//! let mesh = result.mesh().expect("a closed manifold");
+//! assert!(mesh.validate_deep().is_empty());
 //! ```
 
 #![no_std]
@@ -60,256 +37,9 @@ extern crate std;
 #[cfg(not(any(feature = "std", feature = "libm")))]
 compile_error!("exedra_isosurface requires either the `std` or `libm` feature");
 
-mod adaptive_transition;
-pub mod analytic;
-pub mod analytic2d;
-pub mod bounds2;
-mod cell_topology;
 pub mod delaunay;
-pub mod dual_contour;
-pub mod hermite;
-pub mod lift;
-pub mod qef;
-pub mod semi_analytic;
-pub mod skeletal;
-pub mod spatial;
-pub mod transform;
 
-pub use qef::QefParams;
-pub use spatial::Aabb;
-
-pub use bounds2::Aabb2;
-pub use delaunay::{DelaunayError, DelaunayParams, DelaunayReport, DelaunayResult, delaunay_mesh};
-pub use dual_contour::{
-    DualContourError, DualContourErrorKind, DualContourParameter, DualContourParams,
-    DualContourResult, DualContourStats, ExtractionCandidate, ExtractionCell, ExtractionCellIssue,
-    ExtractionCellWitness, ExtractionCompletion, ExtractionFailureContext, ExtractionLimits,
-    ExtractionReport, ExtractionResource, ExtractionStage, ExtractionWitness, ExtractionWork,
-    SemiAnalyticContourResult, SemiAnalyticContourStats, TransitionWitness, dual_contour,
-    dual_contour_semi_analytic, dual_contour_with_regions,
+pub use delaunay::{
+    CreaseParams, DelaunayError, DelaunayParams, DelaunayReport, DelaunayResult, FieldWork,
+    Refinements, delaunay_mesh,
 };
-pub use hermite::{
-    CellHermiteData, CellHermiteIntersection, EdgeIntersectionError, EdgeSearchParams,
-    HermiteIntersection, locate_edge_intersection,
-};
-pub use lift::{Extrude, Revolve};
-pub use semi_analytic::{
-    AnalyticBox, AnalyticCylinder, AnalyticPrimitive, SemiAnalyticFeature, SemiAnalyticField,
-    SemiAnalyticProjection, SemiAnalyticProjectionOutcome,
-};
-pub use skeletal::{
-    BoundedField, CapsuleField, DistanceBound, RoundConeField, SmoothUnionN, SmoothUnionStats,
-};
-pub use transform::{RigidTransform3, Transform3, Translate, UniformScale};
-
-/// A scalar field that can be evaluated for isosurface extraction.
-///
-/// Implementors provide distance-like values whose zero level set defines the
-/// extracted surface. Negative values are inside, positive values are outside.
-pub trait ScalarField {
-    /// Evaluates conservative interval bounds for one spatial region.
-    ///
-    /// Returning `None` means the field cannot provide bounds for this query
-    /// and the caller should fall back to uncullable subdivision.
-    ///
-    /// The returned interval must conservatively contain every field value in
-    /// `bounds`.
-    fn eval_interval(&self, bounds: &Aabb) -> Option<[f32; 2]>;
-
-    /// Evaluates field values at `points`, writing one output per point.
-    ///
-    /// `out.len()` must equal `points.len()`.
-    fn eval_points(&self, points: &[[f32; 3]], out: &mut [f32]);
-
-    /// Evaluates field values and gradients at `points`.
-    ///
-    /// Each output row is `[value, dx, dy, dz]`.
-    ///
-    /// `out.len()` must equal `points.len()`.
-    ///
-    /// NaN gradients are permitted at non-differentiable points.
-    fn eval_gradients(&self, points: &[[f32; 3]], out: &mut [[f32; 4]]);
-}
-
-/// A two-dimensional scalar field used for profile-based construction.
-///
-/// This mirrors [`ScalarField`] closely enough that lifting operators such as
-/// extrusion and revolution can stay generic over profile fields without
-/// introducing a distinct scene-graph layer.
-pub trait ScalarField2d {
-    /// Evaluates conservative interval bounds for one 2D region.
-    ///
-    /// The interval must contain every field value in `bounds`. Return `None`
-    /// when no bound is known; lifting preserves that uncertainty. Fields need
-    /// not be unit-distance functions, so spatial distances alone do not bound
-    /// their changes in value.
-    fn eval_interval(&self, bounds: &Aabb2) -> Option<[f32; 2]>;
-
-    /// Evaluates field values at `points`, writing one output per point.
-    fn eval_points(&self, points: &[[f32; 2]], out: &mut [f32]);
-
-    /// Evaluates field values and gradients at `points`.
-    ///
-    /// Each output row is `[value, dx, dy]`.
-    fn eval_gradients(&self, points: &[[f32; 2]], out: &mut [[f32; 3]]);
-}
-
-impl<F: ScalarField + ?Sized> ScalarField for &F {
-    fn eval_interval(&self, bounds: &Aabb) -> Option<[f32; 2]> {
-        (**self).eval_interval(bounds)
-    }
-
-    fn eval_points(&self, points: &[[f32; 3]], out: &mut [f32]) {
-        (**self).eval_points(points, out);
-    }
-
-    fn eval_gradients(&self, points: &[[f32; 3]], out: &mut [[f32; 4]]) {
-        (**self).eval_gradients(points, out);
-    }
-}
-
-impl<F: ScalarField + ?Sized> ScalarField for alloc::boxed::Box<F> {
-    fn eval_interval(&self, bounds: &Aabb) -> Option<[f32; 2]> {
-        (**self).eval_interval(bounds)
-    }
-
-    fn eval_points(&self, points: &[[f32; 3]], out: &mut [f32]) {
-        (**self).eval_points(points, out);
-    }
-
-    fn eval_gradients(&self, points: &[[f32; 3]], out: &mut [[f32; 4]]) {
-        (**self).eval_gradients(points, out);
-    }
-}
-
-/// Optional extension for fields that can simplify themselves for a region.
-pub trait SpecializableField: ScalarField {
-    /// Specialized field type produced for one region.
-    type Specialized: ScalarField;
-
-    /// Returns a cheaper field specialized for `bounds`, when worthwhile.
-    fn specialize(&self, bounds: &Aabb) -> Option<Self::Specialized>;
-}
-
-/// Optional extension for fields that expose extraction-time provenance.
-pub trait ProvenanceField: ScalarField {
-    /// Provenance value carried by the field.
-    type Provenance;
-
-    /// Evaluates conservative bounds plus provenance for one region.
-    fn eval_interval_with_provenance(&self, bounds: &Aabb) -> Option<([f32; 2], Self::Provenance)>;
-
-    /// Returns provenance at one point.
-    fn point_provenance(&self, point: [f32; 3]) -> Self::Provenance;
-}
-
-#[cfg(test)]
-mod tests {
-    use super::{
-        Aabb2, ScalarField, ScalarField2d, analytic::SphereField, analytic2d::CircleField2d,
-    };
-    use crate::spatial::Aabb;
-
-    #[test]
-    fn boxed_dyn_fields_compose_through_combinators() {
-        use crate::analytic::Union;
-        use alloc::boxed::Box;
-
-        let left = SphereField {
-            center: [-0.4, 0.0, 0.0],
-            radius: 0.75,
-        };
-        let right = SphereField {
-            center: [0.4, 0.0, 0.0],
-            radius: 0.75,
-        };
-        let boxed: Union<Box<dyn ScalarField>, Box<dyn ScalarField>> =
-            Union::new(Box::new(left), Box::new(right));
-        let concrete = Union::new(left, right);
-
-        let points = [[-0.8, 0.1, 0.0], [0.0, 0.0, 0.0], [1.5, 0.2, -0.3]];
-        let mut boxed_values = [0.0_f32; 3];
-        let mut concrete_values = [0.0_f32; 3];
-        boxed.eval_points(&points, &mut boxed_values);
-        concrete.eval_points(&points, &mut concrete_values);
-        assert_eq!(boxed_values, concrete_values);
-
-        let bounds = Aabb::new([-1.0, -1.0, -1.0], [1.0, 1.0, 1.0]).expect("valid bounds");
-        assert_eq!(
-            boxed.eval_interval(&bounds),
-            concrete.eval_interval(&bounds)
-        );
-    }
-
-    #[test]
-    fn scalar_field_is_object_safe() {
-        let sphere = SphereField {
-            center: [0.0, 0.0, 0.0],
-            radius: 1.0,
-        };
-        let field: &dyn ScalarField = &sphere;
-        let bounds = Aabb::new([-0.5, -0.5, -0.5], [0.5, 0.5, 0.5]).expect("valid bounds");
-
-        assert!(field.eval_interval(&bounds).is_some());
-    }
-
-    #[test]
-    fn sphere_field_interval_is_conservative_for_sample_points() {
-        let sphere = SphereField {
-            center: [0.0, 0.0, 0.0],
-            radius: 1.0,
-        };
-        let bounds = Aabb::new([-0.5, -0.5, -0.5], [0.75, 0.25, 0.5]).expect("valid bounds");
-        let interval = sphere
-            .eval_interval(&bounds)
-            .expect("reference sphere should provide intervals");
-
-        let samples = [
-            bounds.min,
-            [bounds.max[0], bounds.min[1], bounds.min[2]],
-            [bounds.min[0], bounds.max[1], bounds.min[2]],
-            [bounds.min[0], bounds.min[1], bounds.max[2]],
-            bounds.max,
-            bounds.center(),
-        ];
-        let mut values = [0.0; 6];
-        sphere.eval_points(&samples, &mut values);
-
-        for value in values {
-            assert!(value >= interval[0] - 1.0e-5);
-            assert!(value <= interval[1] + 1.0e-5);
-        }
-    }
-
-    #[test]
-    fn sphere_field_gradients_match_surface_direction() {
-        let sphere = SphereField {
-            center: [1.0, 2.0, 3.0],
-            radius: 2.0,
-        };
-        let points = [[3.0, 2.0, 3.0], [1.0, 2.0, 3.0]];
-        let mut out = [[0.0; 4]; 2];
-        sphere.eval_gradients(&points, &mut out);
-
-        assert_eq!(out[0][0], 0.0);
-        assert!((out[0][1] - 1.0).abs() <= 1.0e-5);
-        assert!(out[0][2].abs() <= 1.0e-5);
-        assert!(out[0][3].abs() <= 1.0e-5);
-
-        assert!(out[1][1].is_nan());
-        assert!(out[1][2].is_nan());
-        assert!(out[1][3].is_nan());
-    }
-
-    #[test]
-    fn scalar_field_2d_is_object_safe() {
-        let circle = CircleField2d {
-            center: [0.0, 0.0],
-            radius: 1.0,
-        };
-        let field: &dyn ScalarField2d = &circle;
-        let bounds = Aabb2::new([-0.5, -0.5], [0.5, 0.5]).expect("valid bounds");
-
-        assert!(field.eval_interval(&bounds).is_some());
-    }
-}

@@ -454,7 +454,6 @@ dependencies = [
  "exedra_mesh",
  "exedra_tetrahedralize",
  "hashbrown",
- "libm",
 ]
 
 [[package]]
@@ -515,13 +514,6 @@ name = "exedra_profile"
 version = "0.1.0"
 dependencies = [
  "libm",
-]
-
-[[package]]
-name = "exedra_qef_bench"
-version = "0.0.0"
-dependencies = [
- "exedra_isosurface",
 ]
 
 [[package]]
@@ -916,15 +908,6 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "bdd7ba69f0c9d4266c7723837ea73402350536c21b6708892a4517a60210ef2d"
 dependencies = [
  "hashbrown",
-]
-
-[[package]]
-name = "isosurface_wind_tunnel"
-version = "0.0.0"
-dependencies = [
- "exedra_isosurface",
- "exedra_math",
- "exedra_mesh",
 ]
 
 [[package]]
