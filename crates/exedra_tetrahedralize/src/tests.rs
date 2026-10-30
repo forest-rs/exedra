@@ -225,3 +225,29 @@ fn heavy_points_hide_light_ones() {
     assert_eq!(tets.validate(), Ok(()));
     assert!((volume6(&tets) - 6.0 * 8.0).abs() < 1e-9);
 }
+
+#[test]
+fn near_walks_and_new_tetrahedra_follow_each_insertion() {
+    let axis = [0.0, 1.0];
+    let mut tets = Tetrahedralization::grid(&axis, &axis, &axis).expect("valid grid");
+    let mut previous = tets.insert([0.5, 0.5, 0.5]).expect("inside");
+    for point in random_points(200, 41, 1.0) {
+        assert!(matches!(
+            tets.locate_near(point, previous),
+            Location::Tetrahedron(_)
+        ));
+        let vertex = tets.insert_near(point, 0.0, previous).expect("inside");
+        // Exactly the new vertex's star was created, and nothing else.
+        let created = tets.new_tetrahedra();
+        assert!(!created.is_empty());
+        assert!(created.iter().all(|&t| tets.is_live(t)));
+        assert!(created.iter().all(|&t| tets.vertices(t).contains(&vertex)));
+        let star = tets
+            .tetrahedra()
+            .filter(|&t| tets.vertices(t).contains(&vertex))
+            .count();
+        assert_eq!(created.len(), star);
+        previous = vertex;
+    }
+    assert_eq!(tets.validate(), Ok(()));
+}

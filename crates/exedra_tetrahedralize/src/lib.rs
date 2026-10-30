@@ -24,11 +24,14 @@
 //! the grid's box.
 //!
 //! [`Tetrahedralization::insert`] adds one point by Bowyer–Watson: locate the
-//! tetrahedron holding it with a deterministic stochastic walk, grow the cavity
+//! tetrahedron holding it with a deterministic stochastic walk (from a nearby
+//! grid vertex or recent insertion, or from a vertex the caller names with
+//! [`insert_near`](Tetrahedralization::insert_near)), grow the cavity
 //! of tetrahedra whose circumspheres strictly contain it, and connect the
-//! cavity's boundary to the new vertex. A point on the hull splits the hull
-//! face it lies on. Points outside the hull are refused, and a point equal to
-//! an existing vertex returns that vertex.
+//! cavity's boundary to the new vertex, reported by
+//! [`new_tetrahedra`](Tetrahedralization::new_tetrahedra). A point on the
+//! hull splits the hull face it lies on. Points outside the hull are refused,
+//! and a point equal to an existing vertex returns that vertex.
 //!
 //! [`Tetrahedralization::insert_weighted`] gives a point a weight, a squared
 //! radius, and keeps the tetrahedralization regular (weighted Delaunay)
@@ -185,6 +188,9 @@ pub struct TetStats {
 
 const NONE: u32 = u32::MAX;
 
+/// Cells per axis of the walk-start grid.
+const BUCKETS: usize = 32;
+
 /// The face opposite vertex `i`, wound so that `orient3d(face, v[i])` is
 /// `Below`: its counter-clockwise normal points away from `v[i]`.
 const FACES: [[usize; 3]; 4] = [[1, 3, 2], [0, 2, 3], [0, 3, 1], [0, 1, 2]];
@@ -216,6 +222,9 @@ pub struct Tetrahedralization {
     weighted: bool,
     /// A live tetrahedron at each vertex, where walks start.
     vertex_tets: Vec<u32>,
+    /// The latest vertex inserted in each cell of a coarse grid over the
+    /// hull, so walks can start near points the grid vertices are far from.
+    buckets: Vec<u32>,
     tets: Vec<Tet>,
     free: Vec<u32>,
     live: usize,
@@ -226,6 +235,7 @@ pub struct Tetrahedralization {
     marks: Vec<u32>,
     epoch: u32,
     cavity: Vec<u32>,
+    created: Vec<TetId>,
     boundary: Vec<(u32, usize)>,
     links: Vec<([u32; 2], u32, usize)>,
 }
@@ -310,6 +320,7 @@ impl Tetrahedralization {
         let live = tets.len();
         Ok(Self {
             axes: [x.to_vec(), y.to_vec(), z.to_vec()],
+            buckets: alloc::vec![NONE; BUCKETS * BUCKETS * BUCKETS],
             weights: alloc::vec![0.0; points.len()],
             weighted: false,
             points,
@@ -323,6 +334,7 @@ impl Tetrahedralization {
             stats: TetStats::default(),
             epoch: 0,
             cavity: Vec::new(),
+            created: Vec::new(),
             boundary: Vec::new(),
             links: Vec::new(),
         })
@@ -362,6 +374,14 @@ impl Tetrahedralization {
             .map(|(index, _)| TetId(index_u32(index)))
     }
 
+    /// Whether `tet` names a live tetrahedron. An index kept across
+    /// insertions may have been removed, or reused for a new tetrahedron;
+    /// compare [`vertices`](Self::vertices) to tell those apart.
+    #[must_use]
+    pub fn is_live(&self, tet: TetId) -> bool {
+        self.tets.get(tet.index()).is_some_and(Tet::alive)
+    }
+
     /// The vertices of `tet`, positively oriented.
     #[must_use]
     pub fn vertices(&self, tet: TetId) -> [VertexId; 4] {
@@ -391,15 +411,34 @@ impl Tetrahedralization {
         self.stats
     }
 
-    /// Finds where `point` lies, walking from the nearest grid vertex.
+    /// Finds where `point` lies, walking from a nearby grid vertex or recent
+    /// insertion.
     #[must_use]
     pub fn locate(&self, point: [f64; 3]) -> Location {
+        self.locate_from(point, None)
+    }
+
+    /// Finds where `point` lies, walking from `near`: cheaper than
+    /// [`locate`](Self::locate) when the caller knows a vertex close to it.
+    #[must_use]
+    pub fn locate_near(&self, point: [f64; 3], near: VertexId) -> Location {
+        self.locate_from(point, Some(near))
+    }
+
+    fn locate_from(&self, point: [f64; 3], near: Option<VertexId>) -> Location {
         if point.iter().any(|v| !v.is_finite()) {
             return Location::Outside;
         }
         let mut rng = self.rng;
-        let (location, _) = self.walk(point, &mut rng);
+        let (location, _) = self.walk(point, near, &mut rng);
         location
+    }
+
+    /// The tetrahedra the latest successful insertion created, valid until
+    /// the next one. Incremental algorithms on top re-examine only these.
+    #[must_use]
+    pub fn new_tetrahedra(&self) -> &[TetId] {
+        &self.created
     }
 
     /// The weight of `vertex`, zero unless it was inserted with one.
@@ -434,11 +473,32 @@ impl Tetrahedralization {
     /// [`is_hidden`](Self::is_hidden). A point equal to an existing vertex
     /// returns that vertex, keeping its weight.
     pub fn insert_weighted(&mut self, point: [f64; 3], weight: f64) -> Result<VertexId, TetError> {
+        self.insert_from(point, weight, None)
+    }
+
+    /// Inserts `point` with `weight` (zero for an unweighted point), walking
+    /// from `near`, a vertex the caller knows is close to it. Otherwise the
+    /// same as [`insert_weighted`](Self::insert_weighted).
+    pub fn insert_near(
+        &mut self,
+        point: [f64; 3],
+        weight: f64,
+        near: VertexId,
+    ) -> Result<VertexId, TetError> {
+        self.insert_from(point, weight, Some(near))
+    }
+
+    fn insert_from(
+        &mut self,
+        point: [f64; 3],
+        weight: f64,
+        near: Option<VertexId>,
+    ) -> Result<VertexId, TetError> {
         if point.iter().any(|v| !v.is_finite()) || !weight.is_finite() {
             return Err(TetError::NonFinite);
         }
         let mut rng = self.rng;
-        let (location, steps) = self.walk(point, &mut rng);
+        let (location, steps) = self.walk(point, near, &mut rng);
         self.rng = rng;
         self.stats.walk_steps += steps;
         let start = match location {
@@ -463,6 +523,8 @@ impl Tetrahedralization {
         self.vertex_tets.push(NONE);
         self.carve(start, point, weight);
         self.fill(id, point)?;
+        let bucket = self.bucket(point);
+        self.buckets[bucket] = id;
         self.stats.insertions += 1;
         Ok(VertexId(id))
     }
@@ -538,8 +600,26 @@ impl Tetrahedralization {
     /// terminates in a Delaunay tetrahedralization. It starts at the grid
     /// vertex nearest `point`, so its length depends on the local density
     /// rather than on the order of insertions.
-    fn walk(&self, point: [f64; 3], rng: &mut u64) -> (Location, usize) {
-        let mut tet = self.vertex_tets[self.nearest_grid_vertex(point)];
+    fn walk(&self, point: [f64; 3], near: Option<VertexId>, rng: &mut u64) -> (Location, usize) {
+        let grid = self.nearest_grid_vertex(point);
+        let recent = self.buckets[self.bucket(point)];
+        let distance = |v: usize| {
+            let p = self.points[v];
+            (0..3)
+                .map(|k| (p[k] - point[k]) * (p[k] - point[k]))
+                .sum::<f64>()
+        };
+        let start = if let Some(near) = near.filter(|v| self.vertex_tets[v.index()] != NONE) {
+            near.index()
+        } else if recent != NONE
+            && self.vertex_tets[recent as usize] != NONE
+            && distance(recent as usize) < distance(grid)
+        {
+            recent as usize
+        } else {
+            grid
+        };
+        let mut tet = self.vertex_tets[start];
         if tet == NONE || !self.tets[tet as usize].alive() {
             tet = self.hint;
         }
@@ -569,6 +649,23 @@ impl Tetrahedralization {
             }
             return (Location::Tetrahedron(TetId(tet)), steps);
         }
+    }
+
+    /// The walk-start cell holding `point`, clamped to the hull.
+    fn bucket(&self, point: [f64; 3]) -> usize {
+        let [i, j, k] = [0, 1, 2].map(|axis| {
+            let values = &self.axes[axis];
+            let (lo, hi) = (values[0], values[values.len() - 1]);
+            let t = (point[axis] - lo) / (hi - lo) * BUCKETS as f64;
+            #[expect(
+                clippy::cast_possible_truncation,
+                clippy::cast_sign_loss,
+                reason = "clamped to the bucket range first, where truncation is floor"
+            )]
+            let cell = t.clamp(0.0, (BUCKETS - 1) as f64) as usize;
+            cell
+        });
+        (i * BUCKETS + j) * BUCKETS + k
     }
 
     /// The grid vertex nearest `point`, clamped to the grid.
@@ -649,6 +746,7 @@ impl Tetrahedralization {
     /// `id`. Hull faces that `point` lies on are split rather than coned.
     fn fill(&mut self, id: u32, point: [f64; 3]) -> Result<(), TetError> {
         self.links.clear();
+        self.created.clear();
         let mut first = NONE;
         for b in 0..self.boundary.len() {
             let (old, i) = self.boundary[b];
@@ -698,6 +796,7 @@ impl Tetrahedralization {
                 edge.sort_unstable();
                 self.links.push((edge, tet, j));
             }
+            self.created.push(TetId(tet));
             if first == NONE {
                 first = tet;
             }
