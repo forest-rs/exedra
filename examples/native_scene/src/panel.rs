@@ -74,7 +74,7 @@ impl ProceduralEvaluator for PanelGenerator {
             })
     }
 }
-pub(super) fn register(builder: &mut SchemaRegistryBuilder, tokens: &mut TokenInterner) {
+pub(super) fn register(builder: &mut SchemaRegistryBuilder, tokens: &TokenInterner) {
     let system = tokens.intern(SYSTEM);
     builder.register(
         SchemaDefinition::typed(tokens.intern(SCHEMA))

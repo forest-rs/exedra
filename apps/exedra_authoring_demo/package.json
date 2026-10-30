@@ -7,25 +7,26 @@
     "check:lockfile": "node scripts/check-lockfile.mjs && node --test scripts/check-lockfile.test.mjs",
     "build:sdk": "tsc -p ../../packages/exedra/tsconfig.json",
     "build:wasm": "wasm-pack build ../exedra_authoring_web_bridge --release --target web --out-dir ../../packages/exedra/dist/wasm_pkg --no-typescript",
-    "build:scene-wasm": "wasm-pack build ../exedra_scene_web_bridge --release --target web --out-dir ../../packages/exedra/dist/scene_wasm",
+    "build:scene-wasm": "node scripts/build-scene-wasm.mjs",
     "check:partner": "node scripts/check-layerstack-partner.mjs",
-    "prepare:sdk": "npm run check:partner && npm run build:sdk && npm run build:wasm && npm run build:scene-wasm",
+    "prepare:sdk": "npm run check:partner && npm run build:sdk && npm run build:wasm && npm run build:scene-wasm && npm run build:layerstack",
     "dev": "vite --host 127.0.0.1 --port 5174 --strictPort",
     "predev": "npm run prepare:sdk",
-    "build": "npm run format:check && npm run test:highlight && npm run prepare:sdk && tsc --noEmit && vite build",
+    "build": "npm run format:check && npm run test:highlight && npm run prepare:sdk && tsc --noEmit && vite build && node scripts/check-wasm-assets.mjs",
     "preview": "vite preview --host 127.0.0.1 --port 5174 --strictPort",
     "test:sdk": "node --experimental-strip-types --test ../../packages/exedra/test/*.test.ts",
     "test:wasm": "node --experimental-strip-types scripts/smoke-wasm.mjs && node --experimental-strip-types scripts/smoke-solid-operations.mjs && node --experimental-strip-types scripts/smoke-machining.mjs",
     "test:scene-wasm": "node --experimental-strip-types scripts/smoke-scene-wasm.mjs",
     "bench:wasm": "node --experimental-strip-types scripts/bench-wasm.mjs",
     "test:views": "node --experimental-strip-types --test scripts/views.test.ts",
-    "format": "prettier --write \"src/**/*.{ts,css}\" \"scripts/*.ts\" scripts/highlight-typescript.mjs scripts/highlight-typescript.test.mjs scripts/sample-source-plugin.mjs scripts/smoke-machining.mjs vite.config.ts package.json package-lock.json tsconfig.json \"../../packages/exedra/{src,test}/**/*.ts\" ../../packages/exedra/package.json ../../packages/exedra/tsconfig.json .prettierrc.json",
-    "format:check": "prettier --check \"src/**/*.{ts,css}\" \"scripts/*.ts\" scripts/highlight-typescript.mjs scripts/highlight-typescript.test.mjs scripts/sample-source-plugin.mjs scripts/smoke-machining.mjs vite.config.ts package.json package-lock.json tsconfig.json \"../../packages/exedra/{src,test}/**/*.ts\" ../../packages/exedra/package.json ../../packages/exedra/tsconfig.json .prettierrc.json",
-    "test:highlight": "node --test scripts/highlight-typescript.test.mjs"
+    "format": "prettier --write \"src/**/*.{ts,css}\" \"scripts/*.ts\" scripts/highlight-typescript.mjs scripts/highlight-typescript.test.mjs scripts/sample-source-plugin.mjs scripts/smoke-machining.mjs scripts/smoke-scene-wasm.mjs scripts/check-wasm-assets.mjs scripts/build-layerstack.mjs scripts/build-scene-wasm.mjs scripts/check-layerstack-partner.mjs scripts/check-lockfile{,.test}.mjs vite.config.ts package.json package-lock.json tsconfig.json \"../../packages/exedra/{src,test}/**/*.ts\" ../../packages/exedra/package.json ../../packages/exedra/tsconfig.json .prettierrc.json",
+    "format:check": "prettier --check \"src/**/*.{ts,css}\" \"scripts/*.ts\" scripts/highlight-typescript.mjs scripts/highlight-typescript.test.mjs scripts/sample-source-plugin.mjs scripts/smoke-machining.mjs scripts/smoke-scene-wasm.mjs scripts/check-wasm-assets.mjs scripts/build-layerstack.mjs scripts/build-scene-wasm.mjs scripts/check-layerstack-partner.mjs scripts/check-lockfile{,.test}.mjs vite.config.ts package.json package-lock.json tsconfig.json \"../../packages/exedra/{src,test}/**/*.ts\" ../../packages/exedra/package.json ../../packages/exedra/tsconfig.json .prettierrc.json",
+    "test:highlight": "node --test scripts/highlight-typescript.test.mjs",
+    "build:layerstack": "node scripts/build-layerstack.mjs"
   },
   "dependencies": {
     "@exedra/authoring": "file:../../packages/exedra",
-    "@layerstack/client": "file:../../.local/partners/layerstack/packages/client",
+    "@forest-rs/layerstack": "file:../../.local/partners/layerstack/packages/layerstack",
     "three": "^0.179.1"
   },
   "devDependencies": {

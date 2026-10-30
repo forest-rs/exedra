@@ -543,7 +543,7 @@ version = "0.0.0"
 dependencies = [
  "exedra_compile",
  "exedra_scene",
- "layerstack_usda",
+ "layerstack_wasm",
  "native_scene",
  "serde_json",
  "wasm-bindgen",
@@ -959,9 +959,9 @@ dependencies = [
 
 [[package]]
 name = "js-sys"
-version = "0.3.104"
+version = "0.3.106"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "0e0c1080212aad755ea003d18543e8768dd432c48819efd73a7bf1e39b7a5a3a"
+checksum = "7883d941dae510fb2d978fc3fe018c71c9e2892fd38854de3e8b92c2e5ad9cc5"
 dependencies = [
  "cfg-if",
  "futures-util",
@@ -984,7 +984,7 @@ dependencies = [
 [[package]]
 name = "layerstack"
 version = "0.1.0"
-source = "git+https://github.com/forest-rs/layerstack?rev=416e6ef4ffe484dc0b8b6404fdced70a0017be19#416e6ef4ffe484dc0b8b6404fdced70a0017be19"
+source = "git+https://github.com/forest-rs/layerstack?rev=f3b5232c81e4fb45aaba0ddf0959d7d961de48fc#f3b5232c81e4fb45aaba0ddf0959d7d961de48fc"
 dependencies = [
  "hashbrown",
  "invalidation 0.3.0",
@@ -995,9 +995,21 @@ dependencies = [
 ]
 
 [[package]]
+name = "layerstack_io"
+version = "0.1.0"
+source = "git+https://github.com/forest-rs/layerstack?rev=f3b5232c81e4fb45aaba0ddf0959d7d961de48fc#f3b5232c81e4fb45aaba0ddf0959d7d961de48fc"
+dependencies = [
+ "hashbrown",
+ "layerstack",
+ "layerstack_usda",
+ "layerstack_usdc",
+ "layerstack_usdz",
+]
+
+[[package]]
 name = "layerstack_schemas"
 version = "0.1.0"
-source = "git+https://github.com/forest-rs/layerstack?rev=416e6ef4ffe484dc0b8b6404fdced70a0017be19#416e6ef4ffe484dc0b8b6404fdced70a0017be19"
+source = "git+https://github.com/forest-rs/layerstack?rev=f3b5232c81e4fb45aaba0ddf0959d7d961de48fc#f3b5232c81e4fb45aaba0ddf0959d7d961de48fc"
 dependencies = [
  "fearless_simd",
  "hashbrown",
@@ -1008,11 +1020,44 @@ dependencies = [
 [[package]]
 name = "layerstack_usda"
 version = "0.1.0"
-source = "git+https://github.com/forest-rs/layerstack?rev=416e6ef4ffe484dc0b8b6404fdced70a0017be19#416e6ef4ffe484dc0b8b6404fdced70a0017be19"
+source = "git+https://github.com/forest-rs/layerstack?rev=f3b5232c81e4fb45aaba0ddf0959d7d961de48fc#f3b5232c81e4fb45aaba0ddf0959d7d961de48fc"
 dependencies = [
  "hashbrown",
  "layerstack",
  "smallvec 1.16.0",
+]
+
+[[package]]
+name = "layerstack_usdc"
+version = "0.1.0"
+source = "git+https://github.com/forest-rs/layerstack?rev=f3b5232c81e4fb45aaba0ddf0959d7d961de48fc#f3b5232c81e4fb45aaba0ddf0959d7d961de48fc"
+dependencies = [
+ "hashbrown",
+ "layerstack",
+ "layerstack_usda",
+ "lz4_flex",
+ "smallvec 1.16.0",
+]
+
+[[package]]
+name = "layerstack_usdz"
+version = "0.1.0"
+source = "git+https://github.com/forest-rs/layerstack?rev=f3b5232c81e4fb45aaba0ddf0959d7d961de48fc#f3b5232c81e4fb45aaba0ddf0959d7d961de48fc"
+dependencies = [
+ "layerstack",
+ "layerstack_usda",
+ "layerstack_usdc",
+]
+
+[[package]]
+name = "layerstack_wasm"
+version = "0.1.0"
+source = "git+https://github.com/forest-rs/layerstack?rev=f3b5232c81e4fb45aaba0ddf0959d7d961de48fc#f3b5232c81e4fb45aaba0ddf0959d7d961de48fc"
+dependencies = [
+ "layerstack",
+ "layerstack_io",
+ "layerstack_schemas",
+ "wasm-bindgen",
 ]
 
 [[package]]
@@ -1038,6 +1083,12 @@ name = "litrs"
 version = "1.0.0"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "11d3d7f243d5c5a8b9bb5d6dd2b1602c0cb0b9db1621bafc7ed66e35ff9fe092"
+
+[[package]]
+name = "lz4_flex"
+version = "0.11.6"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "373f5eceeeab7925e0c1098212f2fbc4d416adec9d35051a6ab251e824c1854a"
 
 [[package]]
 name = "material_gallery"
@@ -1186,8 +1237,8 @@ checksum = "9f7c3e4beb33f85d45ae3e3a1792185706c8e16d043238c593331cc7cd313b50"
 
 [[package]]
 name = "opinionated"
-version = "0.1.0"
-source = "git+https://github.com/forest-rs/layerstack?rev=416e6ef4ffe484dc0b8b6404fdced70a0017be19#416e6ef4ffe484dc0b8b6404fdced70a0017be19"
+version = "0.2.0"
+source = "git+https://github.com/forest-rs/layerstack?rev=f3b5232c81e4fb45aaba0ddf0959d7d961de48fc#f3b5232c81e4fb45aaba0ddf0959d7d961de48fc"
 dependencies = [
  "hashbrown",
 ]
@@ -1601,9 +1652,9 @@ dependencies = [
 
 [[package]]
 name = "wasm-bindgen"
-version = "0.2.127"
+version = "0.2.129"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "1b70935747edd64d89de3efa29d73789b806c15798f8e7dca4d8ac356b50ce70"
+checksum = "9bb54f33acc68fd454578d9820b0bde1a1a3d17aa17bb7b6595806d02886d409"
 dependencies = [
  "cfg-if",
  "once_cell",
@@ -1614,9 +1665,9 @@ dependencies = [
 
 [[package]]
 name = "wasm-bindgen-macro"
-version = "0.2.127"
+version = "0.2.129"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "77775f8f3f7217702089053b94958f8f54061a3f663417df76e19cbdcca29bc1"
+checksum = "2e29d0c35b16e224a7eeb5cd2d25e3e1968fbd65604117b44d3b789d00ee8535"
 dependencies = [
  "quote",
  "wasm-bindgen-macro-support",
@@ -1624,22 +1675,22 @@ dependencies = [
 
 [[package]]
 name = "wasm-bindgen-macro-support"
-version = "0.2.127"
+version = "0.2.129"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "e11d33f857dc2fb11b8bc75aee111aa9cbeb12cd9f25efd3d4c2a3dd4e235284"
+checksum = "6f501a8bc3719dba86ef8ae4728879c08001bea749eb1333ac5b91e040e2a6b7"
 dependencies = [
  "bumpalo",
  "proc-macro2",
  "quote",
- "syn 2.0.119",
+ "syn 3.0.4",
  "wasm-bindgen-shared",
 ]
 
 [[package]]
 name = "wasm-bindgen-shared"
-version = "0.2.127"
+version = "0.2.129"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "7ef64dbcc55df09c7e5a46182d181c2cfa3e925f3da937ea764728b4bbb9dcbf"
+checksum = "23f0c9c52aa7cd7d77769a4cfe2a9adb1b331f489a41d912ce14513d5ab995c6"
 dependencies = [
  "unicode-ident",
 ]

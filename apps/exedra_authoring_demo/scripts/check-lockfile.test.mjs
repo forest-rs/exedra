@@ -7,9 +7,18 @@ import { checkLockfile } from "./check-lockfile.mjs";
 
 test("public packages and the explicit authored SDK/native stage links remain portable", () => {
   const packages = {
-    "node_modules/three": { resolved: "https://registry.npmjs.org/three/-/three-0.179.1.tgz", integrity: "sha512-fixture" },
-    "node_modules/@exedra/authoring": { resolved: "../../packages/exedra", link: true },
-    "node_modules/@layerstack/client": { resolved: "../../.local/partners/layerstack/packages/client", link: true },
+    "node_modules/three": {
+      resolved: "https://registry.npmjs.org/three/-/three-0.179.1.tgz",
+      integrity: "sha512-fixture",
+    },
+    "node_modules/@exedra/authoring": {
+      resolved: "../../packages/exedra",
+      link: true,
+    },
+    "node_modules/@forest-rs/layerstack": {
+      resolved: "../../.local/partners/layerstack/packages/layerstack",
+      link: true,
+    },
   };
   assert.deepEqual(checkLockfile({ packages }), []);
 });
@@ -20,7 +29,21 @@ test("a developer registry, credentials, unexpected local dependency or absent i
     "https://user:password@registry.npmjs.org/three/-/three-0.179.1.tgz",
     "file:../../unexpected-package",
   ]) {
-    assert.ok(checkLockfile({ packages: { "node_modules/three": { resolved, integrity: "sha512-fixture" } } }).length);
+    assert.ok(
+      checkLockfile({
+        packages: {
+          "node_modules/three": { resolved, integrity: "sha512-fixture" },
+        },
+      }).length,
+    );
   }
-  assert.ok(checkLockfile({ packages: { "node_modules/three": { resolved: "https://registry.npmjs.org/three/-/three-0.179.1.tgz" } } }).length);
+  assert.ok(
+    checkLockfile({
+      packages: {
+        "node_modules/three": {
+          resolved: "https://registry.npmjs.org/three/-/three-0.179.1.tgz",
+        },
+      },
+    }).length,
+  );
 });

@@ -29,7 +29,7 @@ fn attribute(
         spec = spec.uniform();
     }
     transaction.create_property(
-        target.property(PropertyPath::new(prim, store.tokens.intern(name))),
+        target.property(PropertyPath::new(prim, store.tokens().intern(name))),
         spec,
     );
 }
@@ -155,11 +155,11 @@ fn run(output: &std::path::Path, instances: u32) -> Result<(), Box<dyn Error>> {
             schemas::Domain::UsdProc,
             schemas::Domain::UsdShade,
         ],
-        &store.tokens,
+        store.tokens(),
     )?;
-    register_schemas(&mut registry, &mut store.tokens);
-    panel::register(&mut registry, &mut store.tokens);
-    let registry = Arc::new(registry.build(&store.tokens));
+    register_schemas(&mut registry, store.tokens());
+    panel::register(&mut registry, store.tokens());
+    let registry = Arc::new(registry.build(store.tokens()));
     let world = store.path("/World");
     let asset = store.path("/World/PanelAsset");
     let placements = store.path("/World/Placements");
@@ -168,22 +168,22 @@ fn run(output: &std::path::Path, instances: u32) -> Result<(), Box<dyn Error>> {
         SublayerEntry::with_asset(AUTHORED, "authored.usda", LayerOffset::IDENTITY),
         SublayerEntry::with_asset(GENERATED, "generated.usda", LayerOffset::IDENTITY),
     ];
-    root.set_default_prim(Some(store.tokens.intern("World")));
+    root.set_default_prim(Some(store.tokens().intern("World")));
     root.metadata_fields_mut().push(FieldEntry {
-        name: store.tokens.intern("metersPerUnit"),
+        name: store.tokens().intern("metersPerUnit"),
         value: FieldValue::Value(Value::Double(0.001)),
     });
     root.metadata_fields_mut().push(FieldEntry {
-        name: store.tokens.intern("upAxis"),
-        value: FieldValue::Value(Value::Token(store.tokens.intern("Z"))),
+        name: store.tokens().intern("upAxis"),
+        value: FieldValue::Value(Value::Token(store.tokens().intern("Z"))),
     });
     root.metadata_fields_mut().push(FieldEntry {
-        name: store.tokens.intern("fallbackPrimTypes"),
+        name: store.tokens().intern("fallbackPrimTypes"),
         value: FieldValue::Value(Value::Dictionary(vec![(
             panel::SCHEMA.into(),
-            Value::TypedArray(TypedArray::Token(
-                vec![store.tokens.intern("GenerativeProcedural")].into(),
-            )),
+            FieldValue::Value(Value::TypedArray(TypedArray::Token(
+                vec![store.tokens().intern("GenerativeProcedural")].into(),
+            ))),
         )])),
     });
     store.insert_layer(root);
@@ -203,19 +203,19 @@ fn run(output: &std::path::Path, instances: u32) -> Result<(), Box<dyn Error>> {
     author.create_prim(
         target.prim(world),
         Specifier::Def,
-        Some(store.tokens.intern("Xform")),
+        Some(store.tokens().intern("Xform")),
     );
     author.create_prim(
         target.prim(placements),
         Specifier::Def,
-        Some(store.tokens.intern("Xform")),
+        Some(store.tokens().intern("Xform")),
     );
     author.create_prim(
         author_target.prim(asset),
         Specifier::Def,
-        Some(store.tokens.intern(panel::SCHEMA)),
+        Some(store.tokens().intern(panel::SCHEMA)),
     );
-    let system = store.tokens.intern(panel::SYSTEM);
+    let system = store.tokens().intern(panel::SYSTEM);
     attribute(
         &mut store,
         &mut author,
@@ -259,14 +259,14 @@ fn run(output: &std::path::Path, instances: u32) -> Result<(), Box<dyn Error>> {
         author.create_prim(
             target.prim(material),
             Specifier::Def,
-            Some(store.tokens.intern("Material")),
+            Some(store.tokens().intern("Material")),
         );
         author.create_prim(
             target.prim(shader),
             Specifier::Def,
-            Some(store.tokens.intern("Shader")),
+            Some(store.tokens().intern("Shader")),
         );
-        let preview = store.tokens.intern("UsdPreviewSurface");
+        let preview = store.tokens().intern("UsdPreviewSurface");
         attribute(
             &mut store,
             &mut author,
@@ -294,7 +294,7 @@ fn run(output: &std::path::Path, instances: u32) -> Result<(), Box<dyn Error>> {
             "float",
             Value::Float(0.4),
         );
-        let surface = store.tokens.intern("outputs:surface");
+        let surface = store.tokens().intern("outputs:surface");
         let output = PropertyPath::new(shader, surface);
         let material_output = PropertyPath::new(material, surface);
         author.create_property(
@@ -311,17 +311,17 @@ fn run(output: &std::path::Path, instances: u32) -> Result<(), Box<dyn Error>> {
         );
         materials.push(material);
     }
-    let binding = PropertyPath::new(asset, store.tokens.intern("material:binding"));
+    let binding = PropertyPath::new(asset, store.tokens().intern("material:binding"));
     author.add_applied_schema(
         target.prim(asset),
-        store.tokens.intern("MaterialBindingAPI"),
+        store.tokens().intern("MaterialBindingAPI"),
     );
     author.create_property(
         target.property(binding),
         PropertySpec::relationship()
             .with_targets(ListOp::explicit(vec![TargetPath::Prim(materials[0])])),
     );
-    let translate = store.tokens.intern("xformOp:translate");
+    let translate = store.tokens().intern("xformOp:translate");
     let mut first = None;
     for index in 0..instances {
         let path = store.path(&format!("/World/Placements/P{index:04}"));
@@ -411,7 +411,7 @@ fn run(output: &std::path::Path, instances: u32) -> Result<(), Box<dyn Error>> {
     appearance.set_default(
         target.property(PropertyPath::new(
             asset,
-            store.tokens.intern("primvars:displayColor"),
+            store.tokens().intern("primvars:displayColor"),
         )),
         Value::TypedArray(TypedArray::Vec3f(Arc::new(vec![[0.3, 0.6, 0.4]]))),
     );
@@ -484,7 +484,7 @@ fn run(output: &std::path::Path, instances: u32) -> Result<(), Box<dyn Error>> {
         Some(materials[1]),
         "native inherited material binding changes independently of geometry"
     );
-    let depth = PropertyPath::new(asset, store.tokens.intern(panel::DEPTH));
+    let depth = PropertyPath::new(asset, store.tokens().intern(panel::DEPTH));
     let mut edit = Transaction::new();
     edit.set_default(author_target.property(depth), Value::Double(6.0));
     let edited = apply_edit(
@@ -628,16 +628,13 @@ fn run(output: &std::path::Path, instances: u32) -> Result<(), Box<dyn Error>> {
     ] {
         let text = layerstack_usda::save::save_usda(
             store.layer(layer).unwrap(),
-            &store.tokens,
-            &store.paths,
+            store.tokens(),
+            store.paths(),
         )?;
-        assert!(
-            layerstack_usda::parser::parse(&text).diagnostics.is_empty(),
-            "saved USDA must parse"
-        );
+        assert!(parses_usda(&text), "saved USDA must parse");
         std::fs::write(output.join(name), text)?;
     }
-    let summary = serde_json::json!({"units":"mm","metersPerUnit":0.001,"upAxis":"Z","instances":instances,"layerstackRevision":"416e6ef4ffe484dc0b8b6404fdced70a0017be19","generatorRevision":fine.sources[0].generator.revision,"operations":evidence,"stageEdits":stage_edits,
+    let summary = serde_json::json!({"units":"mm","metersPerUnit":0.001,"upAxis":"Z","instances":instances,"layerstackRevision":"f3b5232c81e4fb45aaba0ddf0959d7d961de48fc","generatorRevision":fine.sources[0].generator.revision,"operations":evidence,"stageEdits":stage_edits,
         "nativeVolume":fine.sources[0].native().unwrap().volume()?,"nativeArea":fine.sources[0].native().unwrap().surface_area()?,"nativeBounds":fine.sources[0].native().unwrap().conservative_bounds()?,"publishedSource":fine.sources[0].source,
         "pickingScope":"retained generated asset polygons, not composed partner overrides","nativeFaceProperty":exedra_scene::NATIVE_FACE,"encodingPayloadBytesBeforeClear":encoding_payload_bytes,"heldSnapshotAfterEviction":true});
     std::fs::write(
@@ -649,6 +646,13 @@ fn run(output: &std::path::Path, instances: u32) -> Result<(), Box<dyn Error>> {
         output.display()
     );
     Ok(())
+}
+
+fn parses_usda(text: &str) -> bool {
+    let store = InMemoryStore::default();
+    layerstack_usda::read_usda(text, ROOT, store.tokens(), store.paths(), &mut NoAssets)
+        .parse_diagnostics
+        .is_empty()
 }
 
 #[cfg(test)]

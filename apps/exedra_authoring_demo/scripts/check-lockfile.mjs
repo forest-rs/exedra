@@ -9,24 +9,52 @@ export function checkLockfile(lock) {
   const errors = [];
   for (const [name, entry] of Object.entries(lock.packages ?? {})) {
     if (!entry.resolved) continue;
-    if (name === "node_modules/@exedra/authoring" && entry.link === true && entry.resolved === "../../packages/exedra") continue;
-    if (name === "node_modules/@layerstack/client" && entry.link === true && entry.resolved === "../../.local/partners/layerstack/packages/client") continue;
+    if (
+      name === "node_modules/@exedra/authoring" &&
+      entry.link === true &&
+      entry.resolved === "../../packages/exedra"
+    )
+      continue;
+    if (
+      name === "node_modules/@forest-rs/layerstack" &&
+      entry.link === true &&
+      entry.resolved === "../../.local/partners/layerstack/packages/layerstack"
+    )
+      continue;
     let url;
-    try { url = new URL(entry.resolved); } catch { errors.push(`${name}: unexpected local dependency`); continue; }
-    if (url.protocol !== "https:" || url.hostname !== "registry.npmjs.org" || url.username || url.password || url.port)
-      errors.push(`${name}: dependency must resolve from the public npm registry`);
-    if (!entry.integrity) errors.push(`${name}: dependency integrity is missing`);
+    try {
+      url = new URL(entry.resolved);
+    } catch {
+      errors.push(`${name}: unexpected local dependency`);
+      continue;
+    }
+    if (
+      url.protocol !== "https:" ||
+      url.hostname !== "registry.npmjs.org" ||
+      url.username ||
+      url.password ||
+      url.port
+    )
+      errors.push(
+        `${name}: dependency must resolve from the public npm registry`,
+      );
+    if (!entry.integrity)
+      errors.push(`${name}: dependency integrity is missing`);
   }
   return errors;
 }
 
 if (process.argv[1] === fileURLToPath(import.meta.url)) {
-  const lock = JSON.parse(await readFile(new URL("../package-lock.json", import.meta.url), "utf8"));
+  const lock = JSON.parse(
+    await readFile(new URL("../package-lock.json", import.meta.url), "utf8"),
+  );
   const errors = checkLockfile(lock);
   if (errors.length) {
     console.error(errors.join("\n"));
     process.exitCode = 1;
   } else {
-    console.log("Browser dependency lockfile uses integrity-checked public npm packages and the local SDK.");
+    console.log(
+      "Browser dependency lockfile uses integrity-checked public npm packages and the local SDK.",
+    );
   }
 }

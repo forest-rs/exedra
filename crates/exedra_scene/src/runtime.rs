@@ -4,6 +4,7 @@
 use alloc::{
     boxed::Box,
     collections::{BTreeMap, BTreeSet},
+    format,
     rc::Rc,
     string::String,
     sync::Arc,
@@ -19,8 +20,8 @@ use exedra_constructive::{
 };
 use layerstack::{Address, PropertyKind, PropertySpec, PropertyType};
 use layerstack::{
-    ChangeCursor, ChangeHistoryError, EditTarget, LayerStore, LiveStage, Path, PathId, PrimSpec,
-    PropertyPath, StoreIdentity, Transaction, TypedArray, Value,
+    ChangeCursor, EditTarget, LayerStore, LiveStage, Path, PathId, PrimSpec, PropertyPath,
+    StoreIdentity, Transaction, TypedArray, Value,
 };
 use layerstack_schemas::{
     Scene, Time,
@@ -428,7 +429,7 @@ impl SceneEvaluator {
                         }
                     }
                 }
-                Err(ChangeHistoryError::Expired | ChangeHistoryError::DifferentStage) => {
+                Err(_) => {
                     discover = true;
                 }
             }
@@ -452,16 +453,15 @@ impl SceneEvaluator {
                 SceneErrorKind::MissingSchemas,
             ));
         };
-        if ["Mesh", "GenerativeProcedural", BOX_SCHEMA, CYLINDER_SCHEMA]
-            .iter()
-            .any(|name| {
-                store
-                    .tokens()
-                    .lookup(name)
-                    .and_then(|token| registry.schema(token))
-                    .is_none()
-            })
-        {
+        // Custom generators may use the standard registry with authored fallback
+        // types. Unused built-in generators must not require application schemas.
+        if ["Mesh", "GenerativeProcedural"].iter().any(|name| {
+            store
+                .tokens()
+                .lookup(name)
+                .and_then(|token| registry.schema(token))
+                .is_none()
+        }) {
             return Err(SceneError::new(
                 store,
                 self.root,
@@ -565,6 +565,10 @@ impl SceneEvaluator {
                     }
                     ProceduralError::Input(error) => SceneErrorKind::Input(error),
                     ProceduralError::Evaluation(error) => error,
+                    other => SceneErrorKind::Generator {
+                        code: "procedural.unsupported",
+                        message: format!("{other:?}"),
+                    },
                 };
                 SceneError::new(store, path, kind)
             })?;
@@ -682,9 +686,9 @@ impl SceneEvaluator {
             let output = previous.map_or_else(
                 || {
                     let spelling = alloc::format!("{source}/{GENERATED_CHILD}");
-                    let output = Path::parse_absolute(&spelling, store.tokens_mut())
+                    let output = Path::parse_absolute(&spelling, store.tokens())
                         .expect("source paths are absolute");
-                    store.paths_mut().intern(output)
+                    store.paths().intern(output)
                 },
                 |previous| previous.output,
             );
@@ -704,7 +708,7 @@ impl SceneEvaluator {
             }
             let site = self
                 .target
-                .map_to_spec_path(output, store.paths_mut())
+                .map_to_spec_path(output, store.paths())
                 .ok_or_else(|| SceneError::new(store, output, SceneErrorKind::PublicationTarget))?;
             let local = store
                 .layer(self.target.layer())
@@ -782,7 +786,7 @@ impl SceneEvaluator {
             if !published.contains_key(path) {
                 retire(store, &self.target, previous, &mut transaction)
                     .map_err(|kind| SceneError::new(store, previous.output, kind))?;
-                let extent = store.tokens_mut().intern("extent");
+                let extent = store.tokens().intern("extent");
                 transaction.remove_spec(self.target.property(PropertyPath::new(*path, extent)));
                 stats.meshes_removed += 1;
             }
@@ -841,7 +845,7 @@ fn retire(
     transaction: &mut Transaction,
 ) -> Result<(), SceneErrorKind> {
     let site = target
-        .map_to_spec_path(previous.output, store.paths_mut())
+        .map_to_spec_path(previous.output, store.paths())
         .ok_or(SceneErrorKind::PublicationTarget)?;
     let layer = store
         .layer(target.layer())
@@ -883,10 +887,10 @@ fn prepare_extent(
     owned: bool,
     transaction: &mut Transaction,
 ) -> Result<bool, SceneErrorKind> {
-    let name = store.tokens_mut().intern("extent");
+    let name = store.tokens().intern("extent");
     let property = PropertyPath::new(path, name);
     let site = target
-        .map_property_to_spec_path(property, store.paths_mut())
+        .map_property_to_spec_path(property, store.paths())
         .ok_or(SceneErrorKind::PublicationTarget)?;
     let layer = store
         .layer(target.layer())

@@ -20,10 +20,10 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
             schemas::Domain::UsdProc,
             schemas::Domain::UsdShade,
         ],
-        &store.tokens,
+        store.tokens(),
     )?;
-    register_schemas(&mut registry, &mut store.tokens);
-    let registry = Arc::new(registry.build(&store.tokens));
+    register_schemas(&mut registry, store.tokens());
+    let registry = Arc::new(registry.build(store.tokens()));
     let authored = LayerId(1);
     store.insert_layer(Layer::new(authored));
     let mut live = LiveStage::compose(
@@ -41,7 +41,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     world.create_prim(
         target.prim(root),
         Specifier::Def,
-        Some(store.tokens.intern("Xform")),
+        Some(store.tokens().intern("Xform")),
     );
     live.apply(&mut store, &world)?;
     let construction = define_primitive(
@@ -68,7 +68,7 @@ fn main() -> Result<(), Box<dyn std::error::Error>> {
     let initial_bound = bounds
         .world_bound(&schemas::Scene::new(live.stage(), &store), panel)
         .expect("published construction has native bounds");
-    let size = PropertyPath::new(panel, store.tokens.intern(exedra_scene::SIZE));
+    let size = PropertyPath::new(panel, store.tokens().intern(exedra_scene::SIZE));
     let mut edit = Transaction::new();
     edit.set_default(target.property(size), Value::Vec3d([4.0, 0.2, 3.0]));
     let changed = live.apply(&mut store, &edit)?;

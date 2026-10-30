@@ -6,6 +6,7 @@ import test from "node:test";
 import { mountViews } from "../src/views.ts";
 import * as THREE from "three";
 import { meshTriangles } from "../src/mesh-overlay.ts";
+import { updateInstanceBounds } from "../src/scene-bounds.ts";
 const settle = () => new Promise((resolve) => setImmediate(resolve));
 function harness(loadScene: Parameters<typeof mountViews>[0]["loadScene"]) {
   const select = Object.assign(new EventTarget(), {
@@ -202,4 +203,42 @@ test("triangle overlays retain one surface geometry and preserve native mesh pic
   material.dispose();
   assert.equal(geometryReleases, 1);
   assert.equal(surfaceReleases, 1);
+});
+
+test("a larger prototype updates instance raycast bounds with zero transform transfer", () => {
+  const original = new THREE.BoxGeometry(2, 2, 2);
+  const expanded = new THREE.BoxGeometry(20, 2, 2);
+  const material = new THREE.MeshBasicMaterial();
+  const mesh = new THREE.InstancedMesh(original, material, 1);
+  mesh.setMatrixAt(0, new THREE.Matrix4().makeTranslation(5, 0, 0));
+  mesh.updateMatrixWorld(true);
+  mesh.computeBoundingSphere();
+  mesh.computeBoundingBox();
+  const oldRadius = mesh.boundingSphere!.radius;
+  const matrices = mesh.instanceMatrix.array.slice();
+  const ray = new THREE.Raycaster(
+    new THREE.Vector3(13, 0, 5),
+    new THREE.Vector3(0, 0, -1),
+  );
+  assert.equal(ray.intersectObject(mesh).length, 0);
+
+  mesh.geometry = expanded;
+  assert.equal(
+    ray.intersectObject(mesh).length,
+    0,
+    "the inherited cached sphere rejects a valid hit outside the old extent",
+  );
+  updateInstanceBounds(mesh, true, false);
+  assert.deepEqual(mesh.instanceMatrix.array, matrices);
+  assert.ok(mesh.boundingSphere!.radius > oldRadius);
+  assert.equal(mesh.boundingBox, null);
+  const hits = ray.intersectObject(mesh);
+  assert.ok(hits.length > 0);
+  assert.ok(hits.every((hit) => hit.instanceId === 0));
+  mesh.computeBoundingBox();
+  assert.ok(mesh.boundingBox!.max.x >= 15);
+  mesh.dispose();
+  original.dispose();
+  expanded.dispose();
+  material.dispose();
 });

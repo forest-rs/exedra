@@ -2,570 +2,445 @@
 // SPDX-License-Identifier: Apache-2.0 OR MIT
 
 use super::*;
-use serde_json::{Value, json};
+use layerstack_wasm::{EditBatch, EditReceipt, Stage as OfficialStage};
+use serde_json::Value as Json;
 
 const REALM: &str = "test-native-scene-realm-a";
+const FIRST: &str = "/World/Placements/P0000";
 
-#[test]
-fn all_four_scene_layers_are_readable_native_usda() {
-    let mut kernel = kernel(3);
-    stage(
-        &mut kernel,
-        json!({"type":"transaction","target":protocol::layer_handle(REALM,backend::OVERRIDES),"edits":[
-            {"type":"setAttribute","path":"/World/PanelAsset","name":native_scene::PANEL_DEPTH,"value":{"type":"double","value":6}},
-            {"type":"setAttribute","path":"/World/Placements/P0000","name":"xformOp:translate","value":{"type":"double3","value":[220,15,4]}},
-            {"type":"definePrim","path":"/World/Placements/P0003"},
-            {"type":"addReference","path":"/World/Placements/P0003","layer":protocol::layer_handle(REALM,backend::ROOT),"primPath":"/World/PanelAsset"},
-            {"type":"setInstanceable","path":"/World/Placements/P0003","value":true},
-            create_attribute("/World/Placements/P0003","xformOp:translate",json!({"type":"double3","value":[600,0,0]})),
-            {"type":"createAttribute","path":"/World/Placements/P0003","name":"xformOpOrder","typeName":"token[]","variability":"uniform","value":{"type":"token[]","value":["xformOp:translate"]}}
-        ]}),
-    );
-    sync(&mut kernel);
-    let b = kernel.backend.as_ref().unwrap();
-    let mut imported = b.store.snapshot();
-    let options = b.live.options().clone();
-    for id in [
-        backend::ROOT,
-        backend::BASE,
-        backend::OVERRIDES,
-        backend::GENERATED,
-    ] {
-        let result = call(
-            &mut kernel,
-            "layerstack",
-            json!({"type":"layerText","layer":protocol::layer_handle(REALM,id)}),
-        );
-        assert_eq!(
-            result["ok"], true,
-            "all authored scene layers must export: {result}"
-        );
-        let text = result["result"]["text"].as_str().unwrap();
-        assert!(
-            layerstack_usda::parser::parse(text).diagnostics.is_empty(),
-            "saved layer parses"
-        );
-        if id == backend::BASE {
-            assert!(
-                text.contains("</World/PanelAsset>"),
-                "instances save as internal references"
-            );
-        }
-        let read = layerstack_usda::read_usda_with_registry(
-            text,
-            id,
-            &imported.tokens,
-            &imported.paths,
-            &mut NamedLayers,
-            options.schemas.as_ref().unwrap(),
-        );
-        assert!(read.parse_diagnostics.is_empty(), "USDA syntax diagnostics");
-        assert!(
-            read.lower_diagnostics.is_empty(),
-            "USDA lowering diagnostics"
-        );
-        assert!(
-            read.emitted.diagnostics.is_empty(),
-            "USDA import diagnostics: {:?}",
-            read.emitted.diagnostics
-        );
-        assert!(!read.emitted.rejected, "saved USD must import");
-        assert_eq!(
-            layerstack_usda::save::save_usda(
-                &read.emitted.layer,
-                &imported.tokens,
-                &imported.paths
-            )
-            .unwrap(),
-            text,
-            "canonical saved text roundtrips"
-        );
-        imported.insert_layer(read.emitted.layer);
-    }
-    let reloaded = Stage::compose(&mut imported, backend::ROOT, options);
-    assert!(
-        reloaded.composition_errors().is_empty(),
-        "all four saved layers compose"
-    );
-    let b = kernel.backend.as_mut().unwrap();
-    let mut before = exedra_scene::schemas::XformCache::new(Time::Default);
-    let mut after = exedra_scene::schemas::XformCache::new(Time::Default);
-    for index in 0..4 {
-        let name = format!("/World/Placements/P{index:04}");
-        let old = b.store.path(&name);
-        let new = imported.path(&name);
-        assert!(
-            reloaded.view(&imported).prim(new).unwrap().is_instance(),
-            "native instances survive layer reload"
-        );
-        assert_eq!(
-            before.local_to_world(
-                &exedra_scene::schemas::Scene::new(b.live.stage(), &b.store),
-                old
-            ),
-            after.local_to_world(
-                &exedra_scene::schemas::Scene::new(&reloaded, &imported),
-                new
-            ),
-            "native placement survives layer reload"
-        );
-        let name = format!("{name}/{}", exedra_scene::GENERATED_CHILD);
-        let old = b.store.path(&name);
-        let new = imported.path(&name);
-        let points = |stage: &Stage, store: &InMemoryStore, path| {
-            stage
-                .view(store)
-                .prim(path)
-                .unwrap()
-                .attribute("points")
-                .unwrap()
-                .get(Time::Default)
-                .unwrap()
-                .value
-        };
-        assert_eq!(
-            points(b.live.stage(), &b.store, old),
-            points(&reloaded, &imported, new),
-            "actual instance proxy geometry survives export/reload"
-        );
-    }
+fn fresh() -> OfficialStage {
+    OfficialStage::open_with_provenance(
+        backend::ROOT_NAME,
+        scene_root(),
+        false,
+        false,
+        layerstack_wasm::BROWSER_LIMITS,
+        true,
+    )
+    .unwrap()
 }
-#[test]
-fn foreign_layer_reference_requires_explicit_asset_intent() {
-    let mut kernel = kernel(1);
-    let before = stage(
-        &mut kernel,
-        json!({"type":"layerText","layer":protocol::layer_handle(REALM,backend::OVERRIDES)}),
-    );
-    let result = call(
-        &mut kernel,
-        "layerstack",
-        json!({"type":"transaction","target":protocol::layer_handle(REALM,backend::OVERRIDES),"edits":[
-            {"type":"definePrim","path":"/World/Uncommitted"},
-            {"type":"addReference","path":"/World/Uncommitted","layer":protocol::layer_handle(REALM,backend::BASE),"primPath":"/World/PanelAsset"}
-        ]}),
-    );
-    assert_eq!(result["ok"], false);
-    assert_eq!(result["error"]["code"], "edit.referenceAsset");
-    assert_eq!(
-        stage(
-            &mut kernel,
-            json!({"type":"layerText","layer":protocol::layer_handle(REALM,backend::OVERRIDES)})
-        ),
-        before,
-        "refusal must leave transaction unpublished"
-    );
+
+fn kernel(instances: u32) -> (OfficialStage, SceneKernel) {
+    let mut stage = fresh();
+    let kernel = SceneKernel::new_inner(&mut stage, instances, REALM.into()).unwrap();
+    (stage, kernel)
 }
-struct NamedLayers;
-impl AssetResolver for NamedLayers {
-    fn resolve(
-        &mut self,
-        path: &str,
-        _: Option<LayerId>,
-        _: &TokenInterner,
-        _: &PathInterner,
-    ) -> std::result::Result<ResolvedAsset, AssetResolveError> {
-        let id = match path {
-            "base.usda" => backend::BASE,
-            "overrides.usda" => backend::OVERRIDES,
-            "generated.usda" => backend::GENERATED,
-            _ => return Err(AssetResolveError::NotFound),
-        };
-        Ok(ResolvedAsset {
-            layer_id: id,
-            resolved_path: path.into(),
-            layer: None,
-        })
-    }
-    fn resolved_path(&self, _: LayerId) -> Option<&str> {
-        None
-    }
+
+fn overrides(stage: &OfficialStage) -> LayerId {
+    let document = stage.document();
+    document
+        .store()
+        .layer_ids()
+        .into_iter()
+        .find(|&id| document.identifier(id) == Some("overrides.usda"))
+        .unwrap()
 }
-fn kernel(instances: u32) -> SceneKernel {
-    SceneKernel::new(instances, REALM.into()).unwrap()
+
+fn sync(stage: &mut OfficialStage, kernel: &mut SceneKernel) -> Json {
+    serde_json::from_str(&kernel.sync_inner(stage).unwrap()).unwrap()
 }
-fn call(kernel: &mut SceneKernel, namespace: &str, op: Value) -> Value {
-    let request = json!({"protocol":namespace,"version":1,"stage":protocol::stage_id(&kernel.realm),"store":protocol::store_id(&kernel.realm),"op":op});
-    serde_json::from_str(&kernel.request(&request.to_string())).unwrap()
+
+fn packet(stage: &mut OfficialStage, kernel: &mut SceneKernel) -> ScenePacket {
+    packet::pack(&mut kernel.state.borrow(stage).unwrap(), REALM).unwrap()
 }
-fn stage(kernel: &mut SceneKernel, op: Value) -> Value {
-    let response = call(kernel, "layerstack", op);
-    assert_eq!(response["ok"], true, "{response}");
-    response["result"].clone()
-}
-fn sync(kernel: &mut SceneKernel) -> Value {
-    let response = call(kernel, "exedra.scene", json!({"type":"sync"}));
-    assert_eq!(response["ok"], true, "{response}");
-    response["result"].clone()
-}
-fn packet(kernel: &mut SceneKernel) -> ScenePacket {
-    packet::pack(kernel.backend.as_mut().unwrap(), &kernel.realm).unwrap()
-}
-fn meta(packet: &ScenePacket) -> Value {
+
+fn meta(packet: &ScenePacket) -> Json {
     serde_json::from_str(&packet.metadata()).unwrap()
 }
-fn create_attribute(path: &str, name: &str, value: Value) -> Value {
-    json!({"type":"createAttribute","path":path,"name":name,"typeName":value["type"],"value":value})
+
+fn number_edit(
+    stage: &mut OfficialStage,
+    target: LayerId,
+    path: &str,
+    ty: &str,
+    value: Vec<f64>,
+) -> EditReceipt {
+    let mut batch = EditBatch::new();
+    let value = batch.value_numbers(ty.into(), value);
+    // Official createAttribute copies the composed declaration into stronger layers.
+    batch.create_attribute(path.into(), ty.into(), false, false, Some(value));
+    stage.apply(target.0, &mut batch).unwrap()
 }
 
 #[test]
-fn native_stage_edits_transfer_only_changed_prototype_or_instance_data() {
-    let mut kernel = kernel(1000);
-    let info = stage(&mut kernel, json!({"type":"inspect"}));
+fn official_edits_undo_and_native_publication_preserve_incremental_contracts() {
+    let (mut stage, mut kernel) = kernel(1000);
     assert!(
-        info["schemaTypes"]
-            .as_array()
-            .unwrap()
-            .contains(&json!(native_scene::PANEL_SCHEMA))
-    );
-    assert_eq!(info["compositionErrors"], json!([]));
-    let initial = sync(&mut kernel);
-    assert_eq!(initial["stats"]["geometryEvaluations"], 1);
-    let mut first = packet(&mut kernel);
-    assert!(meta(&first)["nativePicking"].as_bool().unwrap());
-    assert_eq!(first.take_matrices().len(), 1000 * 16);
-    assert!(!first.take_positions().is_empty());
-    assert!(
-        first.take_positions().is_empty(),
-        "transfers consume their buffers exactly once"
-    );
-    let noop = sync(&mut kernel);
-    assert_eq!(noop["stats"]["geometryEvaluations"], 0);
-    let mut no_change = packet(&mut kernel);
-    assert_eq!(meta(&no_change)["geometryBytes"], 0);
-    assert_eq!(meta(&no_change)["transformBytes"], 0);
-    assert_eq!(meta(&no_change)["prototypeChecks"], 0);
-    assert_eq!(meta(&no_change)["instanceChecks"], 0);
-    assert!(no_change.take_positions().is_empty());
-    let moved = stage(
-        &mut kernel,
-        json!({"type":"transaction","target":protocol::layer_handle(REALM,backend::OVERRIDES),"edits":[{"type":"setAttribute","path":"/World/Placements/P0000","name":"xformOp:translate","value":{"type":"double3","value":[220,15,4]}}]}),
-    );
-    let posed = sync(&mut kernel);
-    assert_eq!(posed["stats"]["geometryEvaluations"], 0);
-    assert_eq!(posed["source"]["scope"], initial["source"]["scope"]);
-    let mut placement = packet(&mut kernel);
-    assert_eq!(
-        meta(&placement)["instances"].as_array().unwrap().len(),
-        1,
-        "one changed native instance"
-    );
-    assert_eq!(meta(&placement)["instances"][0], "/World/Placements/P0000");
-    assert_eq!(meta(&placement)["geometryBytes"], 0);
-    let matrices = placement.take_matrices();
-    assert_eq!(matrices.len(), 16);
-    assert_eq!(&matrices[12..15], &[220.0, 15.0, 4.0]);
-    let edit = stage(
-        &mut kernel,
-        json!({"type":"transaction","target":protocol::layer_handle(REALM,backend::OVERRIDES),"edits":[create_attribute("/World/PanelAsset",native_scene::PANEL_DEPTH,json!({"type":"double","value":6}))]}),
-    );
-    let changed = sync(&mut kernel);
-    assert_eq!(changed["stats"]["geometryEvaluations"], 1);
-    assert_ne!(changed["source"]["scope"], initial["source"]["scope"]);
-    let changed_packet = packet(&mut kernel);
-    assert!(meta(&changed_packet)["geometryBytes"].as_u64().unwrap() > 0);
-    assert_eq!(meta(&changed_packet)["transformBytes"], 0);
-    stage(
-        &mut kernel,
-        json!({"type":"undo","receipt":edit["receipt"]}),
-    );
-    let restored = sync(&mut kernel);
-    assert_eq!(restored["stats"]["geometryEvaluations"], 0);
-    assert_eq!(restored["source"]["volume"], initial["source"]["volume"]);
-    stage(
-        &mut kernel,
-        json!({"type":"releaseReceipt","receipt":moved["receipt"]}),
-    );
-    let muted = stage(
-        &mut kernel,
-        json!({"type":"mute","layer":protocol::layer_handle(REALM,backend::OVERRIDES),"muted":true}),
-    );
-    assert!(muted["changes"].is_object());
-    sync(&mut kernel);
-    let queried = stage(
-        &mut kernel,
-        json!({"type":"query","path":"/World/Placements/P0000","attributes":["xformOp:translate"]}),
-    );
-    assert_eq!(queried["worldTransform"][12], 160.0);
-    assert_eq!(queried["isInstance"], true);
-    stage(
-        &mut kernel,
-        json!({"type":"mute","layer":protocol::layer_handle(REALM,backend::OVERRIDES),"muted":false}),
-    );
-    sync(&mut kernel);
-    packet(&mut kernel);
-    // The first stronger edit had incomplete ancestor inventories; conservative
-    // queries must still emit only changed values. A real ancestor transform,
-    // however, must affect every descendant native instance.
-    stage(
-        &mut kernel,
-        json!({"type":"transaction","target":protocol::layer_handle(REALM,backend::BASE),"edits":[
-            create_attribute("/World/Placements","xformOp:translate",json!({"type":"double3","value":[10,0,0]})),
-            {"type":"createAttribute","path":"/World/Placements","name":"xformOpOrder","typeName":"token[]","variability":"uniform","value":{"type":"token[]","value":["xformOp:translate"]}}
-        ]}),
-    );
-    let translated = sync(&mut kernel);
-    assert_eq!(translated["stats"]["geometryEvaluations"], 0);
-    let mut ancestor = packet(&mut kernel);
-    assert_eq!(meta(&ancestor)["geometryBytes"], 0);
-    assert_eq!(meta(&ancestor)["instances"].as_array().unwrap().len(), 1000);
-    let matrices = ancestor.take_matrices();
-    assert_eq!(&matrices[12..15], &[230.0, 15.0, 4.0]);
-}
-
-#[test]
-fn generic_native_transport_checks_affinity_exact_values_and_atomic_failure() {
-    let mut kernel = kernel(2);
-    let mut other = SceneKernel::new(2, "test-native-scene-realm-b".into()).unwrap();
-    let foreign = json!({"protocol":"layerstack","version":1,"stage":protocol::stage_id(REALM),"store":protocol::store_id(REALM),"op":{"type":"transaction","target":protocol::layer_handle(REALM,backend::BASE),"edits":[]}});
-    let rejected: Value = serde_json::from_str(&other.request(&foreign.to_string())).unwrap();
-    assert_eq!(rejected["ok"], false);
-    assert_eq!(rejected["error"]["code"], "stage.affinity");
-    let rejected = call(
-        &mut other,
-        "layerstack",
-        json!({"type":"transaction","target":protocol::layer_handle(REALM,backend::BASE),"edits":[]}),
-    );
-    assert_eq!(
-        rejected["ok"], false,
-        "foreign layer handle refused despite correct stage envelope"
-    );
-    assert_eq!(rejected["error"]["code"], "handle.affinity");
-    let edit = stage(
-        &mut kernel,
-        json!({"type":"transaction","target":protocol::layer_handle(REALM,backend::OVERRIDES),"edits":[create_attribute("/World/PanelAsset","serial",json!({"type":"uint64","value":"18446744073709551615"}))]}),
-    );
-    let queried = stage(
-        &mut kernel,
-        json!({"type":"query","path":"/World/PanelAsset","attributes":["serial"]}),
-    );
-    assert_eq!(
-        queried["attributes"]["serial"]["value"]["value"],
-        "18446744073709551615"
-    );
-    let rejected = call(
-        &mut kernel,
-        "layerstack",
-        json!({"type":"transaction","target":protocol::layer_handle(REALM,backend::OVERRIDES),"edits":[create_attribute("/World/PanelAsset","mustNotAppear",json!({"type":"double","value":2})),{"type":"addReference","path":"/World/Bad","layer":"other/layer/1","primPath":"/World/PanelAsset"}]}),
-    );
-    assert_eq!(rejected["ok"], false);
-    let queried = stage(
-        &mut kernel,
-        json!({"type":"query","path":"/World/PanelAsset","attributes":["mustNotAppear"]}),
-    );
-    assert!(queried["attributes"]["mustNotAppear"].is_null());
-    stage(
-        &mut kernel,
-        json!({"type":"undo","receipt":edit["receipt"]}),
-    );
-    assert_eq!(
-        call(
-            &mut kernel,
-            "layerstack",
-            json!({"type":"undo","receipt":edit["receipt"]})
-        )["ok"],
-        false
-    );
-    let text = stage(
-        &mut kernel,
-        json!({"type":"layerText","layer":protocol::layer_handle(REALM,backend::ROOT)}),
-    );
-    assert!(
-        layerstack_usda::parser::parse(text["text"].as_str().unwrap())
-            .diagnostics
+        stage
+            .document()
+            .stage()
+            .stage()
+            .composition_errors()
             .is_empty()
     );
-    stage(&mut kernel, json!({"type":"dispose"}));
-    assert!(
-        kernel.backend.is_none(),
-        "stage and geometry owners released"
-    );
-    assert_eq!(
-        call(&mut kernel, "layerstack", json!({"type":"inspect"}))["ok"],
-        false
-    );
-    let oversized: Value =
-        serde_json::from_str(&kernel.request(&"x".repeat((1 << 20) + 1))).unwrap();
-    assert_eq!(oversized["error"]["code"], "request.budget");
-}
+    let initial = sync(&mut stage, &mut kernel);
+    assert_eq!(initial["stats"]["geometryEvaluations"], 1);
+    let mut first = packet(&mut stage, &mut kernel);
+    assert_eq!(meta(&first)["nativePicking"], true);
+    assert_eq!(first.take_matrices().len(), 1000 * 16);
+    assert!(!first.take_positions().is_empty());
+    assert!(first.take_positions().is_empty());
 
-#[test]
-fn native_pose_range_is_distinct_from_gpu_range_and_failed_packets_keep_last_sent_state() {
-    let mut kernel = kernel(1);
-    sync(&mut kernel);
-    let _held = packet(&mut kernel);
-    let edit = stage(
-        &mut kernel,
-        json!({"type":"transaction","target":protocol::layer_handle(REALM,backend::BASE),"edits":[{"type":"setAttribute","path":"/World/Placements/P0000","name":"xformOp:translate","value":{"type":"double3","value":[1e300,0,0]}}]}),
-    );
-    let result = sync(&mut kernel);
-    assert_eq!(result["stats"]["geometryEvaluations"], 0);
-    let query = stage(
-        &mut kernel,
-        json!({"type":"query","path":"/World/Placements/P0000","attributes":[]}),
-    );
-    assert_eq!(
-        query["worldTransform"][12],
-        json!(1e300),
-        "native stage retains f64 placement"
-    );
-    assert!(
-        packet::pack(kernel.backend.as_mut().unwrap(), REALM).is_err(),
-        "GPU range must be refused before narrowing"
-    );
-    stage(
-        &mut kernel,
-        json!({"type":"undo","receipt":edit["receipt"]}),
-    );
-    sync(&mut kernel);
-    let restored = packet(&mut kernel);
-    assert_eq!(
-        meta(&restored)["transformBytes"],
-        0,
-        "failed transfer did not advance last-sent matrices"
-    );
-    assert_eq!(meta(&restored)["geometryBytes"], 0);
-}
-
-#[test]
-fn stronger_instance_reference_cannot_borrow_another_sources_render_or_pick_identity() {
-    let mut kernel = kernel(2);
-    sync(&mut kernel);
-    packet(&mut kernel);
-    add_other_panel(&mut kernel, 160.0, 3.0);
-    let current = sync(&mut kernel);
-    for (path, width) in [
-        ("/World/Placements/P0000", 160.0),
-        ("/World/Placements/P0001", 120.0),
+    let no_op = sync(&mut stage, &mut kernel);
+    assert_eq!(no_op["stats"]["geometryEvaluations"], 0);
+    let unchanged = meta(&packet(&mut stage, &mut kernel));
+    for counter in [
+        "geometryBytes",
+        "transformBytes",
+        "prototypeChecks",
+        "instanceChecks",
+        "transformQueries",
     ] {
-        let query = stage(
-            &mut kernel,
-            json!({"type":"query","path":path,"attributes":[native_scene::PANEL_WIDTH]}),
-        );
-        assert_eq!(query["isInstance"], true);
-        assert_eq!(
-            query["attributes"][native_scene::PANEL_WIDTH]["value"]["value"],
-            width
+        assert_eq!(unchanged[counter], 0, "{counter}");
+    }
+
+    let overrides = overrides(&stage);
+    let _move = number_edit(
+        &mut stage,
+        overrides,
+        &format!("{FIRST}.xformOp:translate"),
+        "double3",
+        vec![220.0, 15.0, 4.0],
+    );
+    let posed = sync(&mut stage, &mut kernel);
+    assert_eq!(posed["stats"]["geometryEvaluations"], 0);
+    assert_eq!(posed["source"]["scope"], initial["source"]["scope"]);
+    let mut moved = packet(&mut stage, &mut kernel);
+    assert_eq!(meta(&moved)["instances"], json!([FIRST]));
+    assert_eq!(meta(&moved)["geometryBytes"], 0);
+    assert_eq!(&moved.take_matrices()[12..15], &[220.0, 15.0, 4.0]);
+
+    let _material = number_edit(
+        &mut stage,
+        overrides,
+        "/World/PanelAsset.displayOpacity",
+        "float",
+        vec![0.7],
+    );
+    let appeared = sync(&mut stage, &mut kernel);
+    assert_eq!(appeared["stats"]["geometryEvaluations"], 0);
+    let appeared = meta(&packet(&mut stage, &mut kernel));
+    assert_eq!(appeared["geometryBytes"], 0);
+    assert_eq!(appeared["transformBytes"], 0);
+
+    let mut edit = number_edit(
+        &mut stage,
+        overrides,
+        &format!("/World/PanelAsset.{}", native_scene::PANEL_DEPTH),
+        "double",
+        vec![6.0],
+    );
+    let changed = sync(&mut stage, &mut kernel);
+    assert_eq!(changed["stats"]["geometryEvaluations"], 1);
+    assert_ne!(changed["source"]["scope"], initial["source"]["scope"]);
+    let changed = meta(&packet(&mut stage, &mut kernel));
+    assert!(changed["geometryBytes"].as_u64().unwrap() > 0);
+    assert_eq!(changed["transformBytes"], 0);
+    stage.undo(&mut edit).unwrap();
+    let restored = sync(&mut stage, &mut kernel);
+    assert_eq!(restored["stats"]["geometryEvaluations"], 0);
+    assert_eq!(restored["source"]["volume"], initial["source"]["volume"]);
+
+    assert!(stage.js_set_layer_muted(overrides.0, true).unwrap());
+    sync(&mut stage, &mut kernel);
+    let mut muted = packet(&mut stage, &mut kernel);
+    assert_eq!(&muted.take_matrices()[12..15], &[160.0, 0.0, 0.0]);
+    assert!(stage.js_set_layer_muted(overrides.0, false).unwrap());
+    sync(&mut stage, &mut kernel);
+    packet(&mut stage, &mut kernel);
+
+    let mut batch = EditBatch::new();
+    let translate = batch.value_numbers("double3".into(), vec![10.0, 0.0, 0.0]);
+    batch.create_attribute(
+        "/World/Placements.xformOp:translate".into(),
+        "double3".into(),
+        false,
+        false,
+        Some(translate),
+    );
+    let order = batch.value_text("token[]".into(), vec!["xformOp:translate".into()]);
+    batch.create_attribute(
+        "/World/Placements.xformOpOrder".into(),
+        "token[]".into(),
+        true,
+        false,
+        Some(order),
+    );
+    stage.apply(kernel.state.layers.base.0, &mut batch).unwrap();
+    let translated = sync(&mut stage, &mut kernel);
+    assert_eq!(translated["stats"]["geometryEvaluations"], 0);
+    let mut ancestor = packet(&mut stage, &mut kernel);
+    assert_eq!(meta(&ancestor)["geometryBytes"], 0);
+    assert_eq!(meta(&ancestor)["instances"].as_array().unwrap().len(), 1000);
+    assert_eq!(&ancestor.take_matrices()[12..15], &[230.0, 15.0, 4.0]);
+}
+
+#[test]
+fn official_save_observes_native_publication_and_reopens_all_named_layers() {
+    let (mut stage, mut kernel) = kernel(3);
+    sync(&mut stage, &mut kernel);
+    let layers = kernel.state.layers;
+    let overrides = overrides(&stage);
+    assert!(stage.document().is_dirty(layers.base));
+    assert!(stage.document().is_dirty(layers.generated));
+    let _edit = number_edit(
+        &mut stage,
+        overrides,
+        &format!("/World/PanelAsset.{}", native_scene::PANEL_DEPTH),
+        "double",
+        vec![6.0],
+    );
+    let current = sync(&mut stage, &mut kernel);
+    assert!(stage.document().is_dirty(overrides));
+    stage.document_mut().save();
+    for id in [layers.root, layers.base, overrides, layers.generated] {
+        assert!(!stage.document().is_dirty(id));
+    }
+    let storage = stage.document().storage();
+    let mut reopened = OfficialStage::open_with_provenance(
+        backend::ROOT_NAME,
+        storage.bytes(backend::ROOT_NAME).unwrap().to_vec(),
+        false,
+        false,
+        layerstack_wasm::BROWSER_LIMITS,
+        true,
+    )
+    .unwrap();
+    for name in ["base.usda", "overrides.usda", "generated.usda"] {
+        reopened
+            .document_mut()
+            .storage_mut()
+            .supply(name, storage.bytes(name).unwrap().to_vec());
+    }
+    reopened.document_mut().load_requested_assets().unwrap();
+    let doc = reopened.document();
+    assert!(doc.stage().stage().composition_errors().is_empty());
+    let source = doc.store().path("/World/PanelAsset");
+    let actual = doc
+        .stage()
+        .stage()
+        .view(doc.store())
+        .prim(source)
+        .unwrap()
+        .attribute(native_scene::PANEL_DEPTH)
+        .unwrap()
+        .get(Time::Default)
+        .unwrap()
+        .value;
+    assert_eq!(actual, Value::Double(6.0));
+    // Resolve through the official document rather than a separately composed clone.
+    assert!(
+        doc.stage()
+            .stage()
+            .view(doc.store())
+            .prim(source)
+            .unwrap()
+            .children()
+            .any(|p| p.type_name() == Some("Mesh"))
+    );
+    let scope = current["source"]["scope"].as_str().unwrap();
+    assert!(kernel.pick_inner(&mut stage, FIRST, 0, scope).is_ok());
+    assert!(
+        kernel.state.borrow(&mut reopened).is_err(),
+        "reopened stores require a new geometry evaluator identity"
+    );
+}
+
+#[test]
+fn foreign_stages_and_invalid_seeds_are_refused_before_mutation() {
+    let mut no_provenance = OfficialStage::open(
+        backend::ROOT_NAME,
+        scene_root(),
+        false,
+        false,
+        layerstack_wasm::BROWSER_LIMITS,
+    )
+    .unwrap();
+    let before = no_provenance.document().store().layer_ids();
+    let refused = SceneKernel::new_inner(&mut no_provenance, 1, REALM.into()).unwrap_err();
+    assert_eq!(
+        refused
+            .downcast_ref::<layerstack_wasm::Error>()
+            .unwrap()
+            .code,
+        "scene.provenance"
+    );
+    assert_eq!(no_provenance.document().store().layer_ids(), before);
+    let (mut stage, mut kernel) = kernel(1);
+    let initial = sync(&mut stage, &mut kernel);
+    let mut foreign = fresh();
+    let before = foreign.document().store().layer_ids();
+    let error = kernel.sync_inner(&mut foreign).unwrap_err();
+    assert_eq!(
+        error.downcast_ref::<layerstack_wasm::Error>().unwrap().code,
+        "scene.stage_affinity"
+    );
+    assert_eq!(foreign.document().store().layer_ids(), before);
+    let stale = kernel.pick_inner(&mut stage, FIRST, 0, "foreign/source/1");
+    assert_eq!(error::native(stale.unwrap_err()).code, "scene.stale_pick");
+    assert_eq!(
+        sync(&mut stage, &mut kernel)["source"]["scope"],
+        initial["source"]["scope"]
+    );
+    assert!(SceneKernel::new_inner(&mut stage, 1, REALM.into()).is_err());
+    drop(kernel);
+    assert!(
+        stage
+            .document()
+            .stage()
+            .stage()
+            .view(stage.document().store())
+            .prim(stage.document().store().path(FIRST))
+            .is_some(),
+        "dropping geometry state does not dispose the official stage"
+    );
+}
+
+#[test]
+fn invalid_drafts_preserve_native_output_and_quality_reuses_the_source() {
+    let (mut stage, mut kernel) = kernel(1);
+    let initial = sync(&mut stage, &mut kernel);
+    packet(&mut stage, &mut kernel);
+    let overrides = overrides(&stage);
+    let mut invalid = number_edit(
+        &mut stage,
+        overrides,
+        &format!("/World/PanelAsset.{}", native_scene::PANEL_DEPTH),
+        "double",
+        vec![-1.0],
+    );
+    assert_eq!(
+        error::native(kernel.sync_inner(&mut stage).unwrap_err()).code,
+        "scene.geometry"
+    );
+    let held = meta(&packet(&mut stage, &mut kernel));
+    assert_eq!(held["sourceScope"], initial["source"]["scope"]);
+    assert_eq!(held["geometryBytes"], 0);
+    stage.undo(&mut invalid).unwrap();
+    let recovered = sync(&mut stage, &mut kernel);
+    kernel.state.policy.native.tolerance = 0.1;
+    let refined = sync(&mut stage, &mut kernel);
+    assert_eq!(refined["stats"]["sourceEvaluations"], 0);
+    assert_eq!(refined["stats"]["geometryEvaluations"], 1);
+    assert_eq!(refined["source"]["scope"], recovered["source"]["scope"]);
+    assert_eq!(refined["accuracy"]["tolerance"], 0.1);
+}
+
+#[test]
+fn native_f64_pose_refuses_gpu_overflow_without_advancing_transfer_state() {
+    let (mut stage, mut kernel) = kernel(1);
+    sync(&mut stage, &mut kernel);
+    packet(&mut stage, &mut kernel);
+    let mut edit = number_edit(
+        &mut stage,
+        kernel.state.layers.base,
+        &format!("{FIRST}.xformOp:translate"),
+        "double3",
+        vec![1e300, 0.0, 0.0],
+    );
+    assert_eq!(
+        sync(&mut stage, &mut kernel)["stats"]["geometryEvaluations"],
+        0
+    );
+    assert!(packet::pack(&mut kernel.state.borrow(&mut stage).unwrap(), REALM).is_err());
+    stage.undo(&mut edit).unwrap();
+    sync(&mut stage, &mut kernel);
+    let restored = meta(&packet(&mut stage, &mut kernel));
+    assert_eq!(restored["geometryBytes"], 0);
+    assert_eq!(restored["transformBytes"], 0);
+}
+
+fn add_other_panel(stage: &mut OfficialStage, kernel: &SceneKernel, width: f64, depth: f64) {
+    let mut batch = EditBatch::new();
+    batch.define_prim(
+        "/World/OtherPanel".into(),
+        "def".into(),
+        Some(native_scene::PANEL_SCHEMA.into()),
+    );
+    let system = batch.value_text("token".into(), vec![native_scene::PANEL_SYSTEM.into()]);
+    batch.create_attribute(
+        "/World/OtherPanel.proceduralSystem".into(),
+        "token".into(),
+        false,
+        false,
+        Some(system),
+    );
+    for (name, value) in [
+        (native_scene::PANEL_WIDTH, width),
+        (native_scene::PANEL_DEPTH, depth),
+    ] {
+        let value = batch.value_numbers("double".into(), vec![value]);
+        batch.create_attribute(
+            format!("/World/OtherPanel.{name}"),
+            "double".into(),
+            false,
+            false,
+            Some(value),
         );
     }
-    let (different, proxy_widths) = {
-        let b = kernel.backend.as_mut().unwrap();
-        let different = mismatched_instance(b);
-        let mut widths = Vec::new();
-        for parent in ["/World/Placements/P0000", "/World/Placements/P0001"] {
-            let child = b
-                .store
-                .path(&format!("{parent}/{}", exedra_scene::GENERATED_CHILD));
-            let points = b
-                .live
-                .stage()
-                .view(&b.store)
-                .prim(child)
-                .unwrap()
-                .attribute("points")
-                .unwrap()
-                .get(Time::Default)
-                .unwrap()
-                .value;
-            let exedra_scene::composition::Value::TypedArray(TypedArray::Vec3f(points)) = points
-            else {
-                panic!("native proxy points")
-            };
-            widths.push(
-                points
-                    .iter()
-                    .map(|p| p[0])
-                    .fold(f32::NEG_INFINITY, f32::max)
-                    - points.iter().map(|p| p[0]).fold(f32::INFINITY, f32::min),
+    stage.apply(kernel.state.layers.base.0, &mut batch).unwrap();
+    let mut batch = EditBatch::new();
+    batch.add_arc(
+        false,
+        FIRST.into(),
+        None,
+        Some("/World/OtherPanel".into()),
+        "backOfPrepend".into(),
+        0.0,
+        1.0,
+    );
+    stage.apply(overrides(stage).0, &mut batch).unwrap();
+}
+
+#[test]
+fn stronger_reference_cannot_borrow_another_native_sources_identity() {
+    for (width, depth) in [(160.0, 3.0), (120.0, 5.0)] {
+        let (mut stage, mut kernel) = kernel(2);
+        sync(&mut stage, &mut kernel);
+        packet(&mut stage, &mut kernel);
+        add_other_panel(&mut stage, &kernel, width, depth);
+        let current = sync(&mut stage, &mut kernel);
+        let sources = &kernel.state.snapshot.as_ref().unwrap().sources;
+        assert_eq!(sources.len(), 2);
+        if width == 120.0 {
+            assert!(sources[0].shares_geometry(&sources[1]));
+            assert!(
+                !sources[0]
+                    .native()
+                    .unwrap()
+                    .same_installation(sources[1].native().unwrap())
             );
         }
-        (different, widths)
-    };
-    assert_eq!(
-        proxy_widths,
-        vec![160.0, 120.0],
-        "actual native instance proxy geometry differs"
-    );
-    let rendered = packet::pack(kernel.backend.as_mut().unwrap(), REALM);
-    let picked = call(
-        &mut kernel,
-        "exedra.scene",
-        json!({"type":"pick","instance":different,"triangle":0,"sourceScope":current["source"]["scope"]}),
-    );
-    assert!(
-        rendered.is_err(),
-        "one-prototype renderer must refuse differing native proxy geometry"
-    );
-    assert_eq!(
-        picked["ok"], false,
-        "native pick cannot borrow the wrong retained source: {picked}"
-    );
-    assert_eq!(picked["error"]["code"], "scene.instanceCorrespondence");
-}
-
-fn add_other_panel(kernel: &mut SceneKernel, width: f64, depth: f64) {
-    stage(
-        kernel,
-        json!({"type":"transaction","target":protocol::layer_handle(REALM,backend::BASE),"edits":[
-            {"type":"definePrim","path":"/World/OtherPanel","typeName":native_scene::PANEL_SCHEMA},
-            create_attribute("/World/OtherPanel",native_scene::PANEL_WIDTH,json!({"type":"double","value":width})),
-            create_attribute("/World/OtherPanel",native_scene::PANEL_DEPTH,json!({"type":"double","value":depth}))
-        ]}),
-    );
-    stage(
-        kernel,
-        json!({"type":"transaction","target":protocol::layer_handle(REALM,backend::OVERRIDES),"edits":[
-            {"type":"addReference","path":"/World/Placements/P0000","layer":protocol::layer_handle(REALM,backend::ROOT),"primPath":"/World/OtherPanel"}
-        ]}),
-    );
-}
-fn mismatched_instance(b: &Backend) -> &'static str {
-    if b.snapshot.as_ref().unwrap().sources[0].source == "/World/PanelAsset" {
-        "/World/Placements/P0000"
-    } else {
-        "/World/Placements/P0001"
+        let instance = if sources[0].source == "/World/PanelAsset" {
+            FIRST
+        } else {
+            "/World/Placements/P0001"
+        };
+        let picked = kernel
+            .pick_inner(
+                &mut stage,
+                instance,
+                0,
+                current["source"]["scope"].as_str().unwrap(),
+            )
+            .unwrap_err();
+        assert_eq!(
+            picked
+                .downcast_ref::<layerstack_wasm::Error>()
+                .unwrap()
+                .code,
+            "scene.instanceCorrespondence"
+        );
+        assert!(packet::pack(&mut kernel.state.borrow(&mut stage).unwrap(), REALM).is_err());
     }
 }
 
 #[test]
-fn shared_equal_geometry_buffers_do_not_erase_native_source_provenance() {
-    let mut kernel = kernel(2);
-    sync(&mut kernel);
-    packet(&mut kernel);
-    add_other_panel(&mut kernel, 120.0, 5.0);
-    let current = sync(&mut kernel);
-    let b = kernel.backend.as_mut().unwrap();
-    let sources = &b.snapshot.as_ref().unwrap().sources;
-    assert_eq!(sources.len(), 2);
-    assert!(
-        sources[0].shares_geometry(&sources[1]),
-        "equal geometry really shares compiler storage"
-    );
-    assert!(
-        !sources[0]
-            .native()
-            .unwrap()
-            .same_installation(sources[1].native().unwrap()),
-        "retained native identities remain independent"
-    );
-    let instance = mismatched_instance(b);
-    let proxy = b
-        .store
-        .path(&format!("{instance}/{}", exedra_scene::GENERATED_CHILD));
-    let source = packet::composed_arrays(b).unwrap();
-    let actual = packet::mesh_values_at(b, proxy).unwrap();
-    assert!(
-        source
-            .iter()
-            .zip(&actual)
-            .all(|(a, (b, _))| a.shares_storage(b)),
-        "numeric buffers really are shared; provenance must distinguish them"
-    );
-    let result = call(
-        &mut kernel,
-        "exedra.scene",
-        json!({"type":"pick","instance":instance,"triangle":0,"sourceScope":current["source"]["scope"]}),
-    );
-    assert_eq!(result["error"]["code"], "scene.instanceCorrespondence");
-    assert!(packet::pack(kernel.backend.as_mut().unwrap(), REALM).is_err());
+fn native_error_records_preserve_extension_codes_and_path_context() {
+    assert_eq!(layerstack_wasm::ABI, 3);
+    let original = layerstack_wasm::Error::new("scene.stale_pick", "extract again").at_path(FIRST);
+    assert_eq!(error::native(Box::new(original.clone())), original);
+    let generic = error::native("missing source".into());
+    assert_eq!(generic.code, "scene.operation");
+    assert_eq!(generic.message, "missing source");
 }
