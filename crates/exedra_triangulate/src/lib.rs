@@ -7,8 +7,10 @@
 //! - triangulation of simple polygons with holes via ear clipping,
 //! - deterministic hole bridging into a single ring,
 //! - optional constrained-Delaunay edge legalization,
-//! - opt-in, budgeted Delaunay refinement with generated vertices,
-//! - the exact-sign planar predicates those algorithms rely on.
+//! - opt-in, budgeted Delaunay refinement with generated vertices.
+//!
+//! Its decisions use the exact-sign predicates in
+//! [`exedra_math::predicates`].
 //!
 //! Determinism is the contract: identical input bits produce identical output
 //! triangles on every platform, in every build mode. The algorithms use only
@@ -57,7 +59,6 @@ mod bridge;
 pub use boundary::{BoundaryContactKind, BoundaryEdge};
 mod delaunay;
 mod earclip;
-pub mod predicates;
 mod refine;
 mod spatial;
 #[cfg(test)]
@@ -69,8 +70,8 @@ use alloc::vec::Vec;
 use crate::bridge::{bridge_holes, prune_collinear_between};
 use crate::delaunay::legalize_edges;
 use crate::earclip::{earclip_ring, len_u32, twice_signed_area};
-pub use crate::predicates::MAX_COORDINATE;
 use crate::refine::refine_cover;
+pub use exedra_math::predicates::MAX_COORDINATE;
 
 /// One planar polygon: an outer loop with zero or more hole loops.
 ///

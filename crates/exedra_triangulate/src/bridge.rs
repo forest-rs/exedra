@@ -26,7 +26,7 @@ use index::BoundaryIndex;
 
 use crate::TriError;
 use crate::boundary::{between, contact};
-use crate::predicates::{Orientation, orient2d};
+use exedra_math::predicates::{Orientation, orient2d};
 
 /// Splices `holes` into `ring`, returning the composite ring.
 ///

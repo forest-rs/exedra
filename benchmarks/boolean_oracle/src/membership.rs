@@ -4,11 +4,11 @@
 //! Exact ray-parity point-in-mesh over promoted f64 triangles.
 //!
 //! Every geometric decision routes through the exact-sign
-//! [`exedra_triangulate::predicates::orient3d`] predicate; a hit that lands
+//! [`exedra_math::predicates::orient3d`] predicate; a hit that lands
 //! on an edge, vertex, or the plane of a triangle end-point is degenerate
 //! and retried with the next deterministic direction instead of guessed.
 
-use exedra_triangulate::predicates::{Orientation3d, orient3d};
+use exedra_math::predicates::{Orientation3d, orient3d};
 
 /// Deterministic, pairwise-independent ray directions. Irrational-looking
 /// components keep axis-aligned model edges off the ray in most retries.

@@ -41,7 +41,7 @@ use alloc::vec::Vec;
 
 use hashbrown::{HashMap, HashSet};
 
-use exedra_triangulate::predicates::{Orientation, orient2d};
+use exedra_math::predicates::{Orientation, orient2d};
 
 use super::diag::{BooleanDiagnostic, BooleanDiagnostics, BooleanFailureKind};
 use super::edge_index::HalfEdgeIndex;

@@ -8,8 +8,8 @@ use crate::End;
 use crate::body::FaceId;
 use crate::realize::{RealizationError, RealizationPolicy, RealizedBody, VertexSource};
 use alloc::vec::Vec;
+use exedra_math::predicates::{MAX_COORDINATE, Orientation, orient2d};
 use exedra_profile::{LoopRef, SegmentRef};
-use exedra_triangulate::predicates::{MAX_COORDINATE, Orientation, orient2d};
 
 /// Why a charted revolution was refused. The caller receives no partial result.
 #[derive(Clone, Debug, PartialEq)]

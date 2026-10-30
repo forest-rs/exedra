@@ -655,7 +655,7 @@ struct SourceFacePlane {
 }
 
 fn source_face_plane(mesh: &Mesh, face: FaceId) -> Option<SourceFacePlane> {
-    use exedra_triangulate::predicates::{Orientation3d, orient3d};
+    use exedra_math::predicates::{Orientation3d, orient3d};
 
     let points: Vec<_> = mesh
         .face_loop(face)

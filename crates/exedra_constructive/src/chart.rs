@@ -31,7 +31,7 @@
 
 use crate::discretize::{DiscretizePolicy, DiscretizedProfile};
 use alloc::vec::Vec;
-use exedra_triangulate::predicates::{MAX_COORDINATE, Orientation, orient2d};
+use exedra_math::predicates::{MAX_COORDINATE, Orientation, orient2d};
 
 /// Maps two construction coordinates to dimensionless texture coordinates.
 ///
@@ -74,8 +74,8 @@ impl ChartTransform {
         Ok(())
     }
     pub(crate) fn map_face(&self, points: &[[f64; 2]]) -> Result<Vec<[f32; 2]>, ChartError> {
-        // Exact-sign predicates share the triangulator's declared coordinate
-        // envelope. Refuse larger chart coordinates rather than extrapolating it.
+        // Exact-sign predicates declare one coordinate envelope, which the
+        // triangulator also enforces. Refuse larger chart coordinates rather than extrapolating it.
         if points
             .iter()
             .flatten()

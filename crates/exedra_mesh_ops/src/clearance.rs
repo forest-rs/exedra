@@ -21,8 +21,8 @@ pub use polygon::{
 use crate::workplane::{Workplane, WorkplaneError};
 use alloc::vec::Vec;
 use exedra_math::Placement3;
+use exedra_math::predicates::{MAX_COORDINATE, Orientation, orient2d};
 use exedra_mesh::{FaceId, HalfEdgeId, Mesh};
-use exedra_triangulate::predicates::{MAX_COORDINATE, Orientation, orient2d};
 
 /// Finite work and separation limits for extracting a planar patch boundary.
 #[derive(Copy, Clone, Debug, PartialEq)]

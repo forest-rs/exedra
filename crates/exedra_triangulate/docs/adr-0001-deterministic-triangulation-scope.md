@@ -37,7 +37,9 @@ determinism is an invariant, not a preference. A shared facility must sit
   [`triangulate`] never invents points;
 - exact-sign geometric predicates (`orient2d`, `orient3d`, `incircle`, and
   `plane_side`), with plane-equation classification sharing the existing dyadic
-  accumulator rather than normalizing coefficients or adding a tolerance;
+  accumulator rather than normalizing coefficients or adding a tolerance. These
+  later moved to `exedra_math::predicates` so that crates outside triangulation
+  share them; the exponent-domain sections below still describe their design;
 - a typed failure taxonomy ([`TriError`]) distinguishing invalid-input
   classes from internal invariant violations — the triangulator never panics
   and never returns garbage triangles.
@@ -55,8 +57,8 @@ Contract points:
   `SteinerOrigin` for each of them.
 - **Index-based boundary.** Inputs are f64 coordinate slices, outputs are
   `u32` indices into their concatenation. The crate knows nothing about
-  meshes, curves, tolerances, or Exedra ID types, and has zero dependencies
-  (`no_std` + `alloc`).
+  meshes, curves, tolerances, or Exedra ID types, and depends only on
+  `exedra_math` (`no_std` + `alloc`).
 - **Strategy seam.** `TriParams::strategy` is `#[non_exhaustive]`; later
   strategies arrive behind the same API and must each be independently
   deterministic. `EarClip` remains the default. `triangulate_with_stats`

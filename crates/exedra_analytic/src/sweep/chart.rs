@@ -10,8 +10,8 @@ use crate::{
     realize::{RealizationError, RealizationPolicy, RealizedBody, VertexSource},
 };
 use alloc::vec::Vec;
+use exedra_math::predicates::{MAX_COORDINATE, Orientation, orient2d};
 use exedra_profile::{Arc, LoopRef, SegmentRef};
-use exedra_triangulate::predicates::{MAX_COORDINATE, Orientation, orient2d};
 
 /// A native sweep could not deliver valid construction coordinates or mapped UVs.
 #[derive(Clone, Debug, PartialEq)]
