@@ -53,6 +53,10 @@ cavity star-shaped, so no tetrahedron is ever flat or inverted.
 - A point on the hull splits the hull face it lies on; the hull stays the box.
 - A point outside the hull returns `TetError::OutsideHull`; a non-finite point
   returns `TetError::NonFinite`.
+- `insert_spaced` refuses a point closer than a given spacing to an existing
+  vertex with `TetError::Crowded`, changing nothing. The new vertex's nearest
+  neighbor would bound its cavity, so the check costs nothing beyond the
+  insertion's own search; refinement uses it to keep points apart.
 
 ## Weighted points
 
@@ -93,7 +97,8 @@ consistently oriented surface without further checks.
 ## Diagnostics
 
 `stats` reports insertions, coincident points, walk steps, cavity sizes,
-insphere and power tests, and hidden points and vertices, per tetrahedralization and without global counters.
+insphere and power tests, hidden points and vertices, and points refused for
+crowding, per tetrahedralization and without global counters.
 `validate` checks orientation, adjacency, the local Delaunay property of every
 face (weighted when weights are present), and every vertex's recorded
 tetrahedron or hidden state; it is linear in the size of the

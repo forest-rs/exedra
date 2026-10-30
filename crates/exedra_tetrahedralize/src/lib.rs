@@ -131,6 +131,13 @@ pub enum TetError {
     /// The weighted point is hidden: its power cell would be empty, so the
     /// regular tetrahedralization does not change.
     Hidden,
+    /// The point lies closer than the requested spacing to this vertex, so
+    /// [`Tetrahedralization::insert_spaced`] left the tetrahedralization
+    /// unchanged.
+    Crowded {
+        /// The vertex too close.
+        vertex: VertexId,
+    },
 }
 
 impl fmt::Display for TetError {
@@ -144,6 +151,9 @@ impl fmt::Display for TetError {
             Self::NonFinite => f.write_str("point has a non-finite coordinate"),
             Self::OutsideHull => f.write_str("point lies outside the hull"),
             Self::Hidden => f.write_str("weighted point is hidden by its neighbors"),
+            Self::Crowded { vertex } => {
+                write!(f, "point lies too close to vertex {}", vertex.index())
+            }
         }
     }
 }
@@ -184,6 +194,9 @@ pub struct TetStats {
     pub hidden_points: usize,
     /// Vertices hidden by heavier points inserted later.
     pub hidden_vertices: usize,
+    /// Points refused by [`Tetrahedralization::insert_spaced`] for lying too
+    /// close to a vertex.
+    pub crowded_points: usize,
 }
 
 const NONE: u32 = u32::MAX;
@@ -502,7 +515,7 @@ impl Tetrahedralization {
     /// [`is_hidden`](Self::is_hidden). A point equal to an existing vertex
     /// returns that vertex, keeping its weight.
     pub fn insert_weighted(&mut self, point: [f64; 3], weight: f64) -> Result<VertexId, TetError> {
-        self.insert_from(point, weight, None)
+        self.insert_from(point, weight, None, 0.0)
     }
 
     /// Inserts `point` with `weight` (zero for an unweighted point), walking
@@ -514,7 +527,26 @@ impl Tetrahedralization {
         weight: f64,
         near: VertexId,
     ) -> Result<VertexId, TetError> {
-        self.insert_from(point, weight, Some(near))
+        self.insert_from(point, weight, Some(near), 0.0)
+    }
+
+    /// Inserts `point` with `weight` like [`insert_near`](Self::insert_near),
+    /// unless a vertex lies closer to it than `spacing`.
+    ///
+    /// The new vertex's nearest neighbor would be one of its Delaunay
+    /// neighbors, all of which bound the cavity the insertion replaces, so
+    /// the check costs nothing beyond the insertion's own search; a refused
+    /// point returns [`TetError::Crowded`] and changes nothing. With weights,
+    /// the nearest vertex need not be a neighbor, and only neighbors are
+    /// checked.
+    pub fn insert_spaced(
+        &mut self,
+        point: [f64; 3],
+        weight: f64,
+        near: VertexId,
+        spacing: f64,
+    ) -> Result<VertexId, TetError> {
+        self.insert_from(point, weight, Some(near), spacing)
     }
 
     fn insert_from(
@@ -522,6 +554,7 @@ impl Tetrahedralization {
         point: [f64; 3],
         weight: f64,
         near: Option<VertexId>,
+        spacing: f64,
     ) -> Result<VertexId, TetError> {
         if point.iter().any(|v| !v.is_finite()) || !weight.is_finite() {
             return Err(TetError::NonFinite);
@@ -547,10 +580,16 @@ impl Tetrahedralization {
             .ok()
             .filter(|&id| id != NONE)
             .ok_or(TetError::TooLarge)?;
+        self.carve(start, point, weight);
+        if spacing > 0.0
+            && let Some(vertex) = self.crowding(point, spacing)
+        {
+            self.stats.crowded_points += 1;
+            return Err(TetError::Crowded { vertex });
+        }
         self.points.push(point);
         self.weights.push(weight);
         self.vertex_tets.push(NONE);
-        self.carve(start, point, weight);
         self.fill(id, point)?;
         let bucket = self.bucket(point);
         self.buckets[bucket] = id;
@@ -734,6 +773,29 @@ impl Tetrahedralization {
             insphere(a, b, c, d, point)
         };
         test == InSphere::Inside
+    }
+
+    /// The cavity vertex nearest `point`, if closer than `spacing`.
+    ///
+    /// Distances are measured in units of `spacing`, so nothing squared
+    /// underflows or overflows at any scale.
+    fn crowding(&self, point: [f64; 3], spacing: f64) -> Option<VertexId> {
+        let mut nearest: Option<(f64, u32)> = None;
+        for &tet in &self.cavity {
+            for vertex in self.tets[tet as usize].vertices {
+                let q = self.points[vertex as usize];
+                let offset: [f64; 3] = core::array::from_fn(|i| (q[i] - point[i]) / spacing);
+                // No nearer than its longest side, which must be under one.
+                if offset.iter().any(|o| o.is_nan() || o.abs() >= 1.0) {
+                    continue;
+                }
+                let d = offset[0] * offset[0] + offset[1] * offset[1] + offset[2] * offset[2];
+                if d < 1.0 && nearest.is_none_or(|(best, v)| (d, vertex) < (best, v)) {
+                    nearest = Some((d, vertex));
+                }
+            }
+        }
+        nearest.map(|(_, vertex)| VertexId(vertex))
     }
 
     fn carve(&mut self, start: u32, point: [f64; 3], weight: f64) {
