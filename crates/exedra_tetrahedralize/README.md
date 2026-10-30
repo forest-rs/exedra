@@ -62,8 +62,8 @@ cavity star-shaped, so no tetrahedron is ever flat or inverted.
 
 `insert_weighted` gives a point a weight, a squared radius, and keeps the
 tetrahedralization regular (weighted Delaunay) using the exact power test
-`insphere_weighted`. Unweighted tetrahedralizations keep using the cheaper
-`insphere` until the first nonzero weight arrives.
+`insphere_weighted`. Tests among points that all have zero weight use the
+cheaper `insphere`, whatever weights other vertices carry.
 
 - A point whose power cell would be empty changes nothing and returns
   `TetError::Hidden`.
