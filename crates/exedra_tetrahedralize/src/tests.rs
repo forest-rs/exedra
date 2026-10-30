@@ -271,3 +271,59 @@ fn stars_hold_exactly_the_tetrahedra_around_a_vertex() {
         assert_eq!(star, expected, "vertex {index}");
     }
 }
+
+#[test]
+fn spaced_insertions_hold_at_any_scale() {
+    for scale in [1e-200, 1.0, 1e200] {
+        let axis = [0.0, scale];
+        let mut tets = Tetrahedralization::grid(&axis, &axis, &axis).expect("valid grid");
+        // Every corner is sqrt(3)/2 of the spacing from the center.
+        let center = [0.5 * scale; 3];
+        assert!(
+            matches!(
+                tets.insert_spaced(center, 0.0, VertexId(0), scale),
+                Err(TetError::Crowded { .. })
+            ),
+            "scale {scale}"
+        );
+        assert!(
+            tets.insert_spaced(center, 0.0, VertexId(0), 0.8 * scale)
+                .is_ok()
+        );
+    }
+}
+
+#[test]
+fn spaced_insertions_refuse_points_near_a_vertex_and_change_nothing() {
+    let axis = [0.0, 0.5, 1.0];
+    let mut tets = Tetrahedralization::grid(&axis, &axis, &axis).expect("valid grid");
+    let points = random_points(200, 71, 1.0);
+    for &point in &points {
+        tets.insert(point).expect("inside");
+    }
+    let before = (tets.points().len(), tets.tetrahedron_count());
+    let near = VertexId(0);
+    for (index, &point) in points.iter().enumerate() {
+        let nudged = [point[0] + 1e-4, point[1], point[2]];
+        let nearest = (0..tets.points().len())
+            .map(|v| VertexId(index_u32(v)))
+            .min_by(|&a, &b| {
+                let d = |v: VertexId| exedra_math::distance_squared(tets.point(v), nudged);
+                d(a).total_cmp(&d(b))
+            })
+            .expect("vertices");
+        assert_eq!(
+            tets.insert_spaced(nudged, 0.0, near, 1e-3),
+            Err(TetError::Crowded { vertex: nearest }),
+            "point {index}"
+        );
+    }
+    assert_eq!((tets.points().len(), tets.tetrahedron_count()), before);
+    assert_eq!(tets.stats().crowded_points, points.len());
+    assert_eq!(tets.validate(), Ok(()));
+    let apart = tets
+        .insert_spaced([0.31, 0.62, 0.17], 0.0, near, 1e-6)
+        .expect("far enough");
+    assert_eq!(tets.point(apart), [0.31, 0.62, 0.17]);
+    assert_eq!(tets.validate(), Ok(()));
+}
