@@ -395,10 +395,10 @@ impl Tetrahedralization {
     /// records, so the cost is proportional to the star's size.
     #[must_use]
     pub fn star(&self, vertex: VertexId) -> Vec<TetId> {
-        let first = self.vertex_tets[vertex.index()];
-        if first == NONE {
+        let Some(first) = self.tetrahedron_at(vertex) else {
             return Vec::new();
-        }
+        };
+        let first = first.0;
         let mut star = alloc::vec![TetId(first)];
         let mut next = 0;
         while let Some(&TetId(tet)) = star.get(next) {
@@ -415,6 +415,14 @@ impl Tetrahedralization {
             }
         }
         star
+    }
+
+    /// A tetrahedron with `vertex` as a corner, or `None` when the vertex is
+    /// hidden: where a walk around the vertex can start.
+    #[must_use]
+    pub fn tetrahedron_at(&self, vertex: VertexId) -> Option<TetId> {
+        let tet = self.vertex_tets[vertex.index()];
+        (tet != NONE).then_some(TetId(tet))
     }
 
     /// Whether `tet` names a live tetrahedron. An index kept across
