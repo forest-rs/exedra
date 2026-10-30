@@ -5,20 +5,33 @@ edition.workspace = true
 rust-version.workspace = true
 license.workspace = true
 repository.workspace = true
-description = "Implicit fields and dual-contouring surface extraction for Exedra"
+description = "Surface extraction from implicit fields: restricted Delaunay refinement and dual contouring"
 keywords = ["implicit", "isosurface", "sdf", "no_std"]
 categories = ["data-structures", "algorithms"]
 
 [dependencies]
+exedra_implicit.workspace = true
 exedra_math.workspace = true
 exedra_mesh.workspace = true
+exedra_tetrahedralize.workspace = true
 hashbrown.workspace = true
 libm = { optional = true, workspace = true }
 
 [features]
 default = ["std"]
-libm = ["dep:libm", "exedra_mesh/libm", "exedra_math/libm"]
-std = ["exedra_mesh/std", "exedra_math/std"]
+libm = [
+    "dep:libm",
+    "exedra_implicit/libm",
+    "exedra_math/libm",
+    "exedra_mesh/libm",
+    "exedra_tetrahedralize/libm",
+]
+std = [
+    "exedra_implicit/std",
+    "exedra_math/std",
+    "exedra_mesh/std",
+    "exedra_tetrahedralize/std",
+]
 
 [lints]
 workspace = true
