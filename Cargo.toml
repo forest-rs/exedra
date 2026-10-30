@@ -22,6 +22,7 @@ members = [
     "crates/exedra_edit",
     "crates/exedra_fidget",
     "crates/exedra_gltf",
+    "crates/exedra_implicit",
     "crates/exedra_isosurface",
     "crates/exedra_math",
     "crates/exedra_measurements",
@@ -31,8 +32,8 @@ members = [
     "crates/exedra_profile",
     "crates/exedra_scene",
     "crates/exedra_step",
-    "crates/exedra_tetrahedralize",
     "crates/exedra_testkit",
+    "crates/exedra_tetrahedralize",
     "crates/exedra_triangulate",
     "crates/joiner",
     "crates/joiner_masonry",
@@ -124,6 +125,7 @@ exedra_constructive = { default-features = false, path = "crates/exedra_construc
 exedra_edit = { default-features = false, path = "crates/exedra_edit", version = "0.1.0" }
 exedra_fidget = { default-features = false, path = "crates/exedra_fidget", version = "0.1.0" }
 exedra_gltf = { default-features = false, path = "crates/exedra_gltf", version = "0.1.0" }
+exedra_implicit = { default-features = false, path = "crates/exedra_implicit", version = "0.1.0" }
 exedra_isosurface = { default-features = false, path = "crates/exedra_isosurface", version = "0.1.0" }
 exedra_math = { default-features = false, path = "crates/exedra_math", version = "0.1.0" }
 exedra_measurements = { default-features = false, path = "crates/exedra_measurements", version = "0.1.0" }
@@ -133,8 +135,8 @@ exedra_primitives = { default-features = false, path = "crates/exedra_primitives
 exedra_profile = { path = "crates/exedra_profile", version = "0.1.0" }
 exedra_scene = { default-features = false, path = "crates/exedra_scene", version = "0.1.0" }
 exedra_step = { default-features = false, path = "crates/exedra_step", version = "0.1.0" }
-exedra_tetrahedralize = { default-features = false, path = "crates/exedra_tetrahedralize", version = "0.1.0" }
 exedra_testkit = { default-features = false, path = "crates/exedra_testkit" }
+exedra_tetrahedralize = { default-features = false, path = "crates/exedra_tetrahedralize", version = "0.1.0" }
 exedra_triangulate = { default-features = false, path = "crates/exedra_triangulate", version = "0.1.0" }
 fidget = { default-features = false, version = "0.5.0" }
 hashbrown = { default-features = false, features = ["default-hasher"], version = "0.17.1" }

@@ -22,6 +22,7 @@ env:
     -p exedra_constructive
     -p exedra_fidget
     -p exedra_gltf
+    -p exedra_implicit
     -p exedra_isosurface
     -p exedra_math
     -p exedra_measurements
@@ -43,6 +44,7 @@ env:
     -p exedra_assembly
     -p exedra_compile
     -p exedra_constructive
+    -p exedra_implicit
     -p exedra_isosurface
     -p exedra_math
     -p exedra_measurements
