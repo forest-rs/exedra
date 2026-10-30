@@ -11,8 +11,10 @@
 //! fast floating-point filter answers the overwhelming majority of queries,
 //! narrow exponent spans fall back to exact expansion arithmetic after a
 //! lossless common power-of-two scaling, and wider spans use fixed-size exact
-//! dyadic accumulation. [`orient3d`] filters the same way and falls back to
-//! exact expansion arithmetic over the original coordinates.
+//! dyadic accumulation. [`orient3d`] filters the same way, then evaluates
+//! exactly from the coordinate differences when subtracting lost nothing, and
+//! otherwise falls back to the dyadic accumulator over the original
+//! coordinates.
 //!
 //! [`incircle()`] uses the same shape: a fast error-bound filter followed by a
 //! fixed-size exact dyadic accumulator. The exact path expands the homogeneous
@@ -428,13 +430,34 @@ const O3D_ERRBOUND_A: f64 = (7.0 + 56.0 * U) * U;
 /// and [`Orientation3d::Coplanar`] when the four points are exactly
 /// coplanar.
 ///
-/// A floating-point filter answers clear cases; borderline cases fall
-/// back to exact expansion arithmetic over the original coordinates. The
-/// sign is exact for all finite inputs within [`MAX_COORDINATE`], and the
-/// result is bit-identical on every platform.
+/// A floating-point filter answers clear cases. Borderline cases whose
+/// coordinate differences are exact, as for grid-aligned or coplanar input,
+/// take Shewchuk's exact expansion of those differences; the rest fall back
+/// to a fixed-size exact dyadic accumulator over the original coordinates. The
+/// sign is exact for all finite inputs, including subnormal ones, and the
+/// result is bit-identical on every platform. Non-finite input returns
+/// [`Orientation3d::Coplanar`] as a deterministic sentinel.
 #[must_use]
 #[inline]
 pub fn orient3d(a: [f64; 3], b: [f64; 3], c: [f64; 3], d: [f64; 3]) -> Orientation3d {
+    if [a, b, c, d]
+        .iter()
+        .flatten()
+        .any(|coordinate| !coordinate.is_finite())
+    {
+        return Orientation3d::Coplanar;
+    }
+    orient3d_filter(a, b, c, d)
+        .or_else(|| orient3d_exact_differences(a, b, c, d))
+        .unwrap_or_else(|| orient3d_exact(a, b, c, d))
+}
+
+/// Shewchuk's floating-point orient3d with its static error bound.
+///
+/// The bound assumes no product underflows, so an underflowing product, or a
+/// non-finite or subnormal result, defers to the exact path instead.
+#[inline]
+fn orient3d_filter(a: [f64; 3], b: [f64; 3], c: [f64; 3], d: [f64; 3]) -> Option<Orientation3d> {
     let adx = a[0] - d[0];
     let ady = a[1] - d[1];
     let adz = a[2] - d[2];
@@ -452,73 +475,134 @@ pub fn orient3d(a: [f64; 3], b: [f64; 3], c: [f64; 3], d: [f64; 3]) -> Orientati
     let adxbdy = adx * bdy;
     let bdxady = bdx * ady;
 
-    let det = adz * (bdxcdy - cdxbdy) + bdz * (cdxady - adxcdy) + cdz * (adxbdy - bdxady);
+    let bc = bdxcdy - cdxbdy;
+    let ca = cdxady - adxcdy;
+    let ab = adxbdy - bdxady;
+    let (adet, bdet, cdet) = (adz * bc, bdz * ca, cdz * ab);
+    let normal =
+        |left: f64, right: f64, product: f64| left == 0.0 || right == 0.0 || product.is_normal();
+    if !(normal(bdx, cdy, bdxcdy)
+        && normal(cdx, bdy, cdxbdy)
+        && normal(cdx, ady, cdxady)
+        && normal(adx, cdy, adxcdy)
+        && normal(adx, bdy, adxbdy)
+        && normal(bdx, ady, bdxady)
+        && normal(adz, bc, adet)
+        && normal(bdz, ca, bdet)
+        && normal(cdz, ab, cdet))
+    {
+        return None;
+    }
+    let det = adet + bdet + cdet;
     let permanent = (bdxcdy.abs() + cdxbdy.abs()) * adz.abs()
         + (cdxady.abs() + adxcdy.abs()) * bdz.abs()
         + (adxbdy.abs() + bdxady.abs()) * cdz.abs();
+    if !det.is_finite() || !permanent.is_finite() {
+        return None;
+    }
     let errbound = O3D_ERRBOUND_A * permanent;
+    if !errbound.is_normal() {
+        return None;
+    }
     if det > errbound {
-        return Orientation3d::Below;
+        Some(Orientation3d::Below)
+    } else if -det > errbound {
+        Some(Orientation3d::Above)
+    } else {
+        None
     }
-    if -det > errbound {
-        return Orientation3d::Above;
-    }
-    orient3d_exact(a, b, c, d)
 }
 
-/// Exact fallback: the sign of the homogeneous 4x4 determinant as a sum
-/// of 24 exact triple products of original coordinates.
-fn orient3d_exact(a: [f64; 3], b: [f64; 3], c: [f64; 3], d: [f64; 3]) -> Orientation3d {
-    // det3(rows a-d, b-d, c-d) == det4 of homogeneous rows (a b c d | 1),
-    // expanded along the ones column: -M(b,c,d) + M(a,c,d) - M(a,b,d)
-    // + M(a,b,c), each minor a 3x3 determinant contributing six triple
-    // products. 24 triple products, each exact as a 4-component expansion;
-    // the running sum stays a nonoverlapping expansion via grow_expansion.
-    let mut e = [0.0_f64; 100];
-    let mut scratch = [0.0_f64; 100];
+/// Exact sign from the coordinate differences, when they are exact.
+///
+/// Shewchuk's adaptive middle stage: if subtracting `d` loses nothing, which
+/// is the common case for grid-aligned and exactly coplanar input, the
+/// determinant of the differences equals the true one and costs six exact
+/// triple products. Differences of extreme magnitude, where a product could
+/// underflow or overflow, defer to the dyadic accumulator.
+fn orient3d_exact_differences(
+    a: [f64; 3],
+    b: [f64; 3],
+    c: [f64; 3],
+    d: [f64; 3],
+) -> Option<Orientation3d> {
+    // Keeps every triple product and its error terms normal.
+    const SAFE: core::ops::RangeInclusive<f64> = 1.0e-75..=1.0e75;
+    let mut rows = [[0.0; 3]; 3];
+    for (row, p) in rows.iter_mut().zip([a, b, c]) {
+        for k in 0..3 {
+            let (difference, tail) = two_sum(p[k], -d[k]);
+            if tail != 0.0 || (difference != 0.0 && !SAFE.contains(&difference.abs())) {
+                return None;
+            }
+            row[k] = difference;
+        }
+    }
+    let [p, q, r] = rows;
+    let mut e = [0.0_f64; 25];
+    let mut scratch = [0.0_f64; 25];
     let mut len = 0_usize;
-
-    let mut acc = |x: f64, y: f64, z: f64, e: &mut [f64; 100], len: &mut usize| {
+    // p·(q × r) as six signed triple products, each a four-term expansion.
+    for (x, y, z) in [
+        (p[0], q[1], r[2]),
+        (-p[0], q[2], r[1]),
+        (-p[1], q[0], r[2]),
+        (p[1], q[2], r[0]),
+        (p[2], q[0], r[1]),
+        (-p[2], q[1], r[0]),
+    ] {
         let (hi, lo) = two_product(x, y);
         let (hh, hl) = two_product(hi, z);
         let (lh, ll) = two_product(lo, z);
         for value in [ll, lh, hl, hh] {
-            if *len + 1 >= scratch.len() {
-                // Unreachable by construction (bounded at 96 components);
-                // stay safe rather than indexing out of range.
-                break;
-            }
-            let n = grow_expansion(&e[..*len], value, &mut scratch);
+            let n = grow_expansion(&e[..len], value, &mut scratch);
             e[..n].copy_from_slice(&scratch[..n]);
-            *len = n;
-        }
-    };
-
-    let mut det3 =
-        |p: [f64; 3], q: [f64; 3], r: [f64; 3], sign: f64, e: &mut [f64; 100], len: &mut usize| {
-            // px(qy rz - qz ry) - py(qx rz - qz rx) + pz(qx ry - qy rx)
-            acc(sign * p[0], q[1], r[2], e, len);
-            acc(-sign * p[0], q[2], r[1], e, len);
-            acc(-sign * p[1], q[0], r[2], e, len);
-            acc(sign * p[1], q[2], r[0], e, len);
-            acc(sign * p[2], q[0], r[1], e, len);
-            acc(-sign * p[2], q[1], r[0], e, len);
-        };
-
-    det3(b, c, d, -1.0, &mut e, &mut len);
-    det3(a, c, d, 1.0, &mut e, &mut len);
-    det3(a, b, d, -1.0, &mut e, &mut len);
-    det3(a, b, c, 1.0, &mut e, &mut len);
-
-    for &component in e[..len].iter().rev() {
-        if component > 0.0 {
-            return Orientation3d::Below;
-        }
-        if component < 0.0 {
-            return Orientation3d::Above;
+            len = n;
         }
     }
-    Orientation3d::Coplanar
+    // The determinant of rows (a - d, b - d, c - d) is positive when `d`
+    // lies below the plane of `a`, `b`, `c`.
+    Some(match e[..len].iter().rev().find(|&&v| v != 0.0) {
+        Some(&v) if v > 0.0 => Orientation3d::Below,
+        Some(_) => Orientation3d::Above,
+        None => Orientation3d::Coplanar,
+    })
+}
+
+/// Enough bits for the complete finite-f64 orient3d determinant.
+///
+/// A three-significand product occupies at most 159 bits. Its largest base
+/// exponent is 2913, placing its highest bit at 3072. Relative to the minimum
+/// exponent -3222 that is bit 6294; summing 24 monomials can carry through
+/// bit 6299, while 99 limbs store through bit 6335.
+const ORIENT3D_LIMBS: usize = 99;
+
+/// Exact fallback: the sign of the homogeneous 4×4 determinant as a sum
+/// of 24 exact triple products of original coordinates.
+fn orient3d_exact(a: [f64; 3], b: [f64; 3], c: [f64; 3], d: [f64; 3]) -> Orientation3d {
+    // det3(rows a-d, b-d, c-d) == det4 of homogeneous rows (a b c d | 1),
+    // expanded along the ones column: -M(b,c,d) + M(a,c,d) - M(a,b,d)
+    // + M(a,b,c), each minor a 3×3 determinant contributing six triple
+    // products. Finite inputs always fit the reviewed accumulator bound.
+    let mut sum = Accumulator::<3, ORIENT3D_LIMBS>::new();
+    let mut det3 = |p: [f64; 3], q: [f64; 3], r: [f64; 3], positive: bool| {
+        // px(qy rz - qz ry) - py(qx rz - qz rx) + pz(qx ry - qy rx)
+        sum.add([p[0], q[1], r[2]], positive)
+            && sum.add([p[0], q[2], r[1]], !positive)
+            && sum.add([p[1], q[0], r[2]], !positive)
+            && sum.add([p[1], q[2], r[0]], positive)
+            && sum.add([p[2], q[0], r[1]], positive)
+            && sum.add([p[2], q[1], r[0]], !positive)
+    };
+    let accumulated =
+        det3(b, c, d, false) && det3(a, c, d, true) && det3(a, b, d, false) && det3(a, b, c, true);
+    debug_assert!(accumulated, "reviewed orient3d accumulator bound");
+
+    match sum.sign() {
+        Ordering::Greater => Orientation3d::Below,
+        Ordering::Less => Orientation3d::Above,
+        Ordering::Equal => Orientation3d::Coplanar,
+    }
 }
 
 #[cfg(test)]
@@ -788,6 +872,58 @@ mod tests {
         assert_eq!(orient3d(a, b, c, [0.3, 0.3, 1.0]), Orientation3d::Above);
         assert_eq!(orient3d(a, b, c, [0.3, 0.3, -1.0]), Orientation3d::Below);
         assert_eq!(orient3d(a, b, c, [5.0, -3.0, 0.0]), Orientation3d::Coplanar);
+    }
+
+    #[test]
+    fn orient3d_stays_exact_through_underflow() {
+        // Triple products of subnormal coordinates underflow to zero in
+        // binary64, yet the tetrahedron is not flat.
+        let tiny = f64::from_bits(1);
+        let [a, b, c] = [[0.0, 0.0, 0.0], [tiny, 0.0, 0.0], [0.0, tiny, 0.0]];
+        assert_eq!(orient3d(a, b, c, [0.0, 0.0, tiny]), Orientation3d::Above);
+        assert_eq!(orient3d(a, b, c, [0.0, 0.0, -tiny]), Orientation3d::Below);
+        assert_eq!(
+            orient3d(a, b, c, [tiny, tiny, 0.0]),
+            Orientation3d::Coplanar
+        );
+        let huge = f64::MAX / 2.0;
+        let [a, b, c] = [[0.0, 0.0, 0.0], [huge, 0.0, 0.0], [0.0, huge, 0.0]];
+        assert_eq!(orient3d(a, b, c, [0.0, 0.0, huge]), Orientation3d::Above);
+        assert_eq!(
+            orient3d(a, b, c, [f64::NAN, 0.0, 0.0]),
+            Orientation3d::Coplanar
+        );
+    }
+
+    #[test]
+    fn orient3d_matches_an_independent_integer_oracle() {
+        // Small integer coordinates admit an exact `i128` determinant; a small
+        // cube makes exact coplanar ties common.
+        let mut state = 0x2f6b_93d1_c4a8_0e57_u64;
+        for round in 0..20_000 {
+            let range = if round % 2 == 0 { 3 } else { 1 << 20 };
+            let mut points = [[0_i128; 3]; 4];
+            for coordinate in points.iter_mut().flatten() {
+                state = state
+                    .wrapping_mul(6_364_136_223_846_793_005)
+                    .wrapping_add(1_442_695_040_888_963_407);
+                *coordinate = i128::from((state >> 33) as i32 % range);
+            }
+            let [a, b, c, _] = points.map(|p| [0, 1, 2].map(|k| p[k] - points[3][k]));
+            let det = a[0] * (b[1] * c[2] - b[2] * c[1]) - a[1] * (b[0] * c[2] - b[2] * c[0])
+                + a[2] * (b[0] * c[1] - b[1] * c[0]);
+            let expected = match det.cmp(&0) {
+                Ordering::Greater => Orientation3d::Below,
+                Ordering::Less => Orientation3d::Above,
+                Ordering::Equal => Orientation3d::Coplanar,
+            };
+            let [a, b, c, d] = points.map(|p| p.map(|v| v as f64));
+            assert_eq!(orient3d(a, b, c, d), expected);
+            assert_eq!(orient3d_exact(a, b, c, d), expected);
+            if let Some(middle) = orient3d_exact_differences(a, b, c, d) {
+                assert_eq!(middle, expected);
+            }
+        }
     }
 
     #[test]

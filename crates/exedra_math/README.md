@@ -76,8 +76,11 @@ or `Dyadic`). A non-finite query instead reports `NonFiniteInput` alongside a
 deterministic `Collinear` sentinel, which is not a geometric classification.
 The diagnostic is per call; there are no global counters.
 
-`predicates::orient3d` uses the same filter shape with an exact expansion
-fallback over the original coordinates.
+`predicates::orient3d` uses the same filter shape. An inconclusive query whose
+coordinate differences are exact, the common case for grid-aligned and
+coplanar input, expands six exact triple products of those differences;
+otherwise it sums 24 exact triple products of the original coordinates in the
+dyadic accumulator, so the sign stays exact through overflow and underflow.
 
 `predicates::incircle` classifies a point against an oriented circumcircle.
 Its ordinary path uses a floating-point error-bound filter; inconclusive
