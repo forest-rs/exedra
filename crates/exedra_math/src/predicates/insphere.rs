@@ -60,12 +60,16 @@ pub struct InsphereEvaluation {
 const U: f64 = f64::EPSILON / 2.0;
 /// Shewchuk's error bound for the insphere floating-point filter.
 const INSPHERE_ERRBOUND_A: f64 = (16.0 + 224.0 * U) * U;
+/// The same bound with half again as much slack for the weighted lift's
+/// extra subtraction.
+const WEIGHTED_ERRBOUND_A: f64 = (24.0 + 336.0 * U) * U;
 /// Enough bits for the complete finite-f64 insphere determinant.
 ///
 /// A five-significand product occupies at most 265 bits. Its largest base
 /// exponent is 4855, placing its highest bit at 5120. Relative to the minimum
-/// exponent -5370 that is bit 10490; summing 360 monomials can carry through
-/// bit 10499, while 165 limbs store through bit 10559.
+/// exponent -5370 that is bit 10490; summing the at most 480 monomials of the
+/// weighted test can carry through bit 10499, while 165 limbs store through
+/// bit 10559.
 const DYADIC_LIMBS: usize = 165;
 
 /// Returns the exact position of `e` relative to the oriented circumsphere
@@ -105,31 +109,84 @@ pub fn insphere_evaluated(
             path: InspherePath::NonFiniteInput,
         };
     }
-    if let Some(position) = insphere_filter(a, b, c, d, e) {
+    if let Some(position) = insphere_filter(points, [0.0; 5], INSPHERE_ERRBOUND_A) {
         return InsphereEvaluation {
             position,
             path: InspherePath::Filter,
         };
     }
     InsphereEvaluation {
-        position: sign_of_dyadic_insphere(points),
+        position: sign_of_dyadic_lifted(points, [0.0; 5]),
         path: InspherePath::Dyadic,
     }
 }
 
-/// Shewchuk's floating-point insphere with its static error bound.
+/// Returns the exact position of the weighted point `e` relative to the
+/// orthosphere of the weighted points `a`, `b`, `c` and `d`: the power test of
+/// regular (weighted Delaunay) tetrahedralizations.
+///
+/// Each point is `[x, y, z, weight]`, the weight being a squared radius. For a
+/// positively oriented tetrahedron (see [`InSphere`]), [`InSphere::Inside`]
+/// means `e` has negative power distance to the sphere orthogonal to all four,
+/// so `e` conflicts with the tetrahedron. A heavier `e` conflicts sooner;
+/// heavier corners shrink the orthosphere, which stays orthogonal to their
+/// larger balls. With every weight zero this is
+/// [`insphere()`]. The sign is exact for all finite inputs.
+#[must_use]
+#[inline]
+pub fn insphere_weighted(
+    a: [f64; 4],
+    b: [f64; 4],
+    c: [f64; 4],
+    d: [f64; 4],
+    e: [f64; 4],
+) -> InSphere {
+    insphere_weighted_evaluated(a, b, c, d, e).position
+}
+
+/// Exact power-test sign plus the arithmetic path that established it.
+///
+/// Non-finite inputs use the [`InSphere::Cospherical`] sentinel and report
+/// [`InspherePath::NonFiniteInput`].
+#[must_use]
+pub fn insphere_weighted_evaluated(
+    a: [f64; 4],
+    b: [f64; 4],
+    c: [f64; 4],
+    d: [f64; 4],
+    e: [f64; 4],
+) -> InsphereEvaluation {
+    let weighted = [a, b, c, d, e];
+    if weighted.iter().flatten().any(|value| !value.is_finite()) {
+        return InsphereEvaluation {
+            position: InSphere::Cospherical,
+            path: InspherePath::NonFiniteInput,
+        };
+    }
+    let points = weighted.map(|[x, y, z, _]| [x, y, z]);
+    let weights = weighted.map(|[_, _, _, w]| w);
+    if let Some(position) = insphere_filter(points, weights, WEIGHTED_ERRBOUND_A) {
+        return InsphereEvaluation {
+            position,
+            path: InspherePath::Filter,
+        };
+    }
+    InsphereEvaluation {
+        position: sign_of_dyadic_lifted(points, weights),
+        path: InspherePath::Dyadic,
+    }
+}
+
+/// Shewchuk's floating-point insphere with its static error bound, each lift
+/// reduced by its point's weight relative to `e`'s.
 ///
 /// The bound assumes no product underflows, so any product that lost bits to
 /// underflow, and any non-finite or subnormal result, defers to the exact
-/// path instead.
+/// path instead. Weights enter the permanent by magnitude, so the same
+/// derivation bounds the weighted lift's one extra rounding.
 #[inline]
-fn insphere_filter(
-    a: [f64; 3],
-    b: [f64; 3],
-    c: [f64; 3],
-    d: [f64; 3],
-    e: [f64; 3],
-) -> Option<InSphere> {
+fn insphere_filter(points: [[f64; 3]; 5], weights: [f64; 5], bound: f64) -> Option<InSphere> {
+    let [a, b, c, d, e] = points;
     let exact = Cell::new(true);
     let mul = |left: f64, right: f64| {
         let product = left * right;
@@ -168,10 +225,25 @@ fn insphere_filter(
     let cda = mul(cez, da) + mul(dez, ac) + mul(aez, cd);
     let dab = mul(dez, ab) + mul(aez, bd) + mul(bez, da);
 
-    let alift = mul(aex, aex) + mul(aey, aey) + mul(aez, aez);
-    let blift = mul(bex, bex) + mul(bey, bey) + mul(bez, bez);
-    let clift = mul(cex, cex) + mul(cey, cey) + mul(cez, cez);
-    let dlift = mul(dex, dex) + mul(dey, dey) + mul(dez, dez);
+    let [asq, bsq, csq, dsq] = [
+        mul(aex, aex) + mul(aey, aey) + mul(aez, aez),
+        mul(bex, bex) + mul(bey, bey) + mul(bez, bez),
+        mul(cex, cex) + mul(cey, cey) + mul(cez, cez),
+        mul(dex, dex) + mul(dey, dey) + mul(dez, dez),
+    ];
+    let shift = [0, 1, 2, 3].map(|i| weights[i] - weights[4]);
+    let [alift, blift, clift, dlift] = [
+        asq - shift[0],
+        bsq - shift[1],
+        csq - shift[2],
+        dsq - shift[3],
+    ];
+    let [aplus, bplus, cplus, dplus] = [
+        asq + shift[0].abs(),
+        bsq + shift[1].abs(),
+        csq + shift[2].abs(),
+        dsq + shift[3].abs(),
+    ];
 
     let det = (mul(dlift, abc) - mul(clift, dab)) + (mul(blift, cda) - mul(alift, bcd));
 
@@ -181,22 +253,22 @@ fn insphere_filter(
     let [aexcey, cexaey, bexdey, dexbey] = [aexcey.abs(), cexaey.abs(), bexdey.abs(), dexbey.abs()];
     let permanent = mul(
         mul(cexdey + dexcey, bez) + mul(dexbey + bexdey, cez) + mul(bexcey + cexbey, dez),
-        alift,
+        aplus,
     ) + mul(
         mul(dexaey + aexdey, cez) + mul(aexcey + cexaey, dez) + mul(cexdey + dexcey, aez),
-        blift,
+        bplus,
     ) + mul(
         mul(aexbey + bexaey, dez) + mul(bexdey + dexbey, aez) + mul(dexaey + aexdey, bez),
-        clift,
+        cplus,
     ) + mul(
         mul(bexcey + cexbey, aez) + mul(cexaey + aexcey, bez) + mul(aexbey + bexaey, cez),
-        dlift,
+        dplus,
     );
 
     if !exact.get() || !det.is_finite() || !permanent.is_finite() {
         return None;
     }
-    let errbound = INSPHERE_ERRBOUND_A * permanent;
+    let errbound = bound * permanent;
     if errbound.is_normal() && (det > errbound || -det > errbound) {
         return Some(sign_of_det(det));
     }
@@ -213,16 +285,17 @@ const PERMUTATIONS: [([usize; 3], bool); 6] = [
     ([2, 1, 0], false),
 ];
 
-fn sign_of_dyadic_insphere(points: [[f64; 3]; 5]) -> InSphere {
+fn sign_of_dyadic_lifted(points: [[f64; 3]; 5], weights: [f64; 5]) -> InSphere {
     let mut sum = Accumulator::<5, DYADIC_LIMBS>::new();
 
-    // The 5×5 determinant of rows (x, y, z, x² + y² + z², 1), which equals
-    // the filter's determinant of differences. Expanding along the lift
-    // column, row i contributes (-1)^(i+3) lift(i) times the 4×4 minor of the
-    // other rows over (x, y, z, 1); expanding that minor along its ones
-    // column gives four signed 3×3 determinants of six products each. With
-    // the lift's three squares that is 360 exact five-factor monomials over
-    // the original coordinates, so no difference is ever rounded.
+    // The 5×5 determinant of rows (x, y, z, x² + y² + z² - w, 1), which
+    // equals the filters' determinants of differences. Expanding along the
+    // lift column, row i contributes (-1)^(i+3) lift(i) times the 4×4 minor
+    // of the other rows over (x, y, z, 1); expanding that minor along its
+    // ones column gives four signed 3×3 determinants of six products each.
+    // The lift's three squares make 360 exact five-factor monomials over the
+    // original coordinates, so no difference is ever rounded; a weight adds
+    // 24 more per point, padded with an exact factor of one.
     let mut accumulated = true;
     for (i, lifted) in points.iter().enumerate() {
         let lift_positive = (i + 3) % 2 == 0;
@@ -257,6 +330,10 @@ fn sign_of_dyadic_insphere(points: [[f64; 3]; 5]) -> InSphere {
                         positive,
                     );
                 }
+                accumulated &= sum.add(
+                    [weights[i], 1.0, p[columns[0]], q[columns[1]], r[columns[2]]],
+                    !positive,
+                );
             }
         }
     }
@@ -401,6 +478,89 @@ mod tests {
     }
 
     #[test]
+    fn weights_move_the_orthosphere() {
+        // A point on the circumsphere conflicts once it carries weight, and
+        // stops conflicting once heavier corners shrink the orthosphere.
+        let [a, b, c, d] = corner(1.0).map(|[x, y, z]| [x, y, z, 0.0]);
+        assert_eq!(
+            insphere_weighted(a, b, c, d, [1.0, 1.0, 1.0, 0.0]),
+            InSphere::Cospherical
+        );
+        assert_eq!(
+            insphere_weighted(a, b, c, d, [1.0, 1.0, 1.0, 0.25]),
+            InSphere::Inside
+        );
+        assert_eq!(
+            insphere_weighted(a, b, c, d, [1.0, 1.0, 1.0, -0.25]),
+            InSphere::Outside
+        );
+        let heavy = [a, b, c, d].map(|[x, y, z, _]| [x, y, z, 0.5]);
+        assert_eq!(
+            insphere_weighted(heavy[0], heavy[1], heavy[2], heavy[3], [1.0, 1.0, 1.0, 0.0]),
+            InSphere::Outside
+        );
+        // Clear cases stay on the floating-point filter.
+        assert_eq!(
+            insphere_weighted_evaluated(a, b, c, d, [0.25, 0.25, 0.25, 0.01]).path,
+            InspherePath::Filter
+        );
+        // Equal weights everywhere cancel exactly.
+        assert_eq!(
+            insphere_weighted(heavy[0], heavy[1], heavy[2], heavy[3], [1.0, 1.0, 1.0, 0.5]),
+            InSphere::Cospherical
+        );
+    }
+
+    #[test]
+    fn weighted_test_matches_an_independent_integer_oracle() {
+        // Integer coordinates and weights admit an exact `i128` power test;
+        // zero weights must agree with the unweighted predicate.
+        let mut state = 0x1d6e_2a90_c3f4_8b57_u64;
+        let mut next = |range: i32| {
+            state = state
+                .wrapping_mul(6_364_136_223_846_793_005)
+                .wrapping_add(1_442_695_040_888_963_407);
+            i128::from((state >> 33) as i32 % range)
+        };
+        for round in 0..4_000 {
+            let range = if round % 2 == 0 { 4 } else { 1 << 12 };
+            let points: [[i128; 4]; 5] =
+                core::array::from_fn(|_| [next(range), next(range), next(range), next(range * 4)]);
+            let e = points[4];
+            let rows = [0, 1, 2, 3].map(|i| {
+                let [x, y, z] = [0, 1, 2].map(|k| points[i][k] - e[k]);
+                [x, y, z, x * x + y * y + z * z - (points[i][3] - e[3])]
+            });
+            let det3 = |p: [i128; 4], q: [i128; 4], r: [i128; 4]| {
+                p[0] * (q[1] * r[2] - q[2] * r[1]) - p[1] * (q[0] * r[2] - q[2] * r[0])
+                    + p[2] * (q[0] * r[1] - q[1] * r[0])
+            };
+            let [a, b, c, d] = rows;
+            let det = d[3] * det3(a, b, c) - c[3] * det3(a, b, d) + b[3] * det3(a, c, d)
+                - a[3] * det3(b, c, d);
+            let expected = match det.cmp(&0) {
+                Ordering::Greater => InSphere::Inside,
+                Ordering::Less => InSphere::Outside,
+                Ordering::Equal => InSphere::Cospherical,
+            };
+            let [a, b, c, d, e] = points.map(|p| p.map(|v| v as f64));
+            assert_eq!(insphere_weighted(a, b, c, d, e), expected);
+            let unweighted = |p: [f64; 4]| [p[0], p[1], p[2], 0.0];
+            let plain = |p: [f64; 4]| [p[0], p[1], p[2]];
+            assert_eq!(
+                insphere_weighted(
+                    unweighted(a),
+                    unweighted(b),
+                    unweighted(c),
+                    unweighted(d),
+                    unweighted(e)
+                ),
+                insphere(plain(a), plain(b), plain(c), plain(d), plain(e))
+            );
+        }
+    }
+
+    #[test]
     fn matches_an_independent_integer_oracle() {
         // Small integer coordinates admit an exact `i128` determinant of
         // differences, checking both the public dispatcher and the dyadic
@@ -441,7 +601,7 @@ mod tests {
             let [a, b, c, d, e] = points.map(as_f64);
             let expected = exact(points);
             assert_eq!(insphere(a, b, c, d, e), expected);
-            assert_eq!(sign_of_dyadic_insphere([a, b, c, d, e]), expected);
+            assert_eq!(sign_of_dyadic_lifted([a, b, c, d, e], [0.0; 5]), expected);
         }
     }
 }
