@@ -28,8 +28,13 @@
 //! [`orient2d_evaluated`] and [`incircle_evaluated`] expose which arithmetic
 //! path proved one query without introducing global mutable counters.
 
+mod dyadic;
 mod incircle;
 mod plane;
+
+use core::cmp::Ordering;
+
+use dyadic::Accumulator;
 pub use plane::plane_side;
 
 pub use incircle::{InCircle, IncircleEvaluation, IncirclePath, incircle, incircle_evaluated};
@@ -100,8 +105,6 @@ const SPLITTER: f64 = 134_217_729.0;
 /// smallest possible product bit at exponent `-1004` (`2 * (-450 - 52)`),
 /// safely above the normal/subnormal boundary at `-1022`.
 const NORMALIZED_EXPONENT_SPAN: i32 = 450;
-/// Least exponent in the product of two finite binary64 values.
-const DYADIC_MIN_PRODUCT_EXPONENT: i32 = -2148;
 /// Enough bits for a sum of six products across the complete finite f64
 /// exponent domain, not merely the smaller public coordinate domain.
 ///
@@ -353,36 +356,6 @@ fn power_of_two(exponent: i32) -> f64 {
     }
 }
 
-#[derive(Copy, Clone)]
-struct Dyadic {
-    negative: bool,
-    significand: u64,
-    exponent: i32,
-}
-
-fn decode_dyadic(value: f64) -> Option<Dyadic> {
-    let bits = value.to_bits();
-    let magnitude = bits & 0x7fff_ffff_ffff_ffff;
-    if magnitude == 0 {
-        return None;
-    }
-    let encoded_exponent = ((magnitude >> 52) & 0x7ff) as i32;
-    let fraction = magnitude & 0x000f_ffff_ffff_ffff;
-    if encoded_exponent == 0x7ff {
-        return None;
-    }
-    let (significand, exponent) = if encoded_exponent == 0 {
-        (fraction, -1074)
-    } else {
-        ((1_u64 << 52) | fraction, encoded_exponent - 1075)
-    };
-    Some(Dyadic {
-        negative: bits >> 63 != 0,
-        significand,
-        exponent,
-    })
-}
-
 fn sign_of_dyadic_product_sum(a: [f64; 2], b: [f64; 2], c: [f64; 2]) -> Option<Orientation> {
     if [a[0], a[1], b[0], b[1], c[0], c[1]]
         .iter()
@@ -406,70 +379,17 @@ fn dyadic_product_sum(terms: &[(f64, f64)]) -> Option<Orientation> {
         terms.len() <= 6,
         "dyadic accumulator carry budget is six products"
     );
-    let mut positive = [0_u64; DYADIC_LIMBS];
-    let mut negative = [0_u64; DYADIC_LIMBS];
+    let mut sum = Accumulator::<2, DYADIC_LIMBS>::new();
     for &(left, right) in terms {
-        let (Some(left), Some(right)) = (decode_dyadic(left), decode_dyadic(right)) else {
-            continue;
-        };
-        let product = u128::from(left.significand) * u128::from(right.significand);
-        let shift =
-            usize::try_from(left.exponent + right.exponent - DYADIC_MIN_PRODUCT_EXPONENT).ok()?;
-        let magnitude = if left.negative ^ right.negative {
-            &mut negative
-        } else {
-            &mut positive
-        };
-        if !add_shifted_product(magnitude, product, shift) {
+        if !sum.add([left, right], true) {
             return None;
         }
     }
-
-    for (&positive, &negative) in positive.iter().zip(&negative).rev() {
-        if positive > negative {
-            return Some(Orientation::Ccw);
-        }
-        if positive < negative {
-            return Some(Orientation::Cw);
-        }
-    }
-    Some(Orientation::Collinear)
-}
-
-fn add_shifted_product(limbs: &mut [u64; DYADIC_LIMBS], product: u128, shift: usize) -> bool {
-    let word = shift / 64;
-    let bits = shift % 64;
-    let low = u64::try_from(product & u128::from(u64::MAX)).expect("masked low limb fits u64");
-    let high = u64::try_from(product >> 64).expect("shifted high limb fits u64");
-    add_shifted_word(limbs, word, low, bits) && add_shifted_word(limbs, word + 1, high, bits)
-}
-
-fn add_shifted_word(
-    limbs: &mut [u64; DYADIC_LIMBS],
-    word: usize,
-    value: u64,
-    shift: usize,
-) -> bool {
-    if value == 0 {
-        return true;
-    }
-    if !add_limb(limbs, word, value << shift) {
-        return false;
-    }
-    shift == 0 || add_limb(limbs, word + 1, value >> (64 - shift))
-}
-
-fn add_limb(limbs: &mut [u64; DYADIC_LIMBS], mut word: usize, mut value: u64) -> bool {
-    while value != 0 {
-        let Some(limb) = limbs.get_mut(word) else {
-            return false;
-        };
-        let (sum, carry) = limb.overflowing_add(value);
-        *limb = sum;
-        value = u64::from(carry);
-        word += 1;
-    }
-    true
+    Some(match sum.sign() {
+        Ordering::Greater => Orientation::Ccw,
+        Ordering::Less => Orientation::Cw,
+        Ordering::Equal => Orientation::Collinear,
+    })
 }
 
 #[inline]
@@ -761,16 +681,7 @@ mod tests {
     }
 
     #[test]
-    fn dyadic_accumulator_propagates_carry_and_handles_extreme_limbs() {
-        let mut limbs = [0_u64; DYADIC_LIMBS];
-        limbs[0] = u64::MAX;
-        limbs[1] = u64::MAX;
-        assert!(add_limb(&mut limbs, 0, 1));
-        assert_eq!(limbs[0], 0);
-        assert_eq!(limbs[1], 0);
-        assert_eq!(limbs[2], 1);
-        assert!(limbs[3..].iter().all(|&limb| limb == 0));
-
+    fn dyadic_accumulator_handles_extreme_limbs() {
         let minimum = f64::from_bits(1);
         let maximum = f64::MAX;
         let evaluated = orient2d_evaluated(
