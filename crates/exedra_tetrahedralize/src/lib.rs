@@ -374,6 +374,35 @@ impl Tetrahedralization {
             .map(|(index, _)| TetId(index_u32(index)))
     }
 
+    /// The tetrahedra around `vertex`, its star, in no particular order;
+    /// empty for a hidden vertex.
+    ///
+    /// Found by walking face neighbors from the tetrahedron the vertex
+    /// records, so the cost is proportional to the star's size.
+    #[must_use]
+    pub fn star(&self, vertex: VertexId) -> Vec<TetId> {
+        let first = self.vertex_tets[vertex.index()];
+        if first == NONE {
+            return Vec::new();
+        }
+        let mut star = alloc::vec![TetId(first)];
+        let mut next = 0;
+        while let Some(&TetId(tet)) = star.get(next) {
+            next += 1;
+            let current = self.tets[tet as usize];
+            for (i, &neighbor) in current.neighbors.iter().enumerate() {
+                // The faces through the vertex are those opposite the others.
+                if current.vertices[i] == vertex.0 || neighbor == NONE {
+                    continue;
+                }
+                if !star.contains(&TetId(neighbor)) {
+                    star.push(TetId(neighbor));
+                }
+            }
+        }
+        star
+    }
+
     /// Whether `tet` names a live tetrahedron. An index kept across
     /// insertions may have been removed, or reused for a new tetrahedron;
     /// compare [`vertices`](Self::vertices) to tell those apart.
