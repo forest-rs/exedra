@@ -6,7 +6,7 @@ rust-version.workspace = true
 license.workspace = true
 repository.workspace = true
 publish = false
-description = "Simple executable benchmarks for exedra_fidget field evaluation"
+description = "Simple executable benchmarks for exedra_fidget field evaluation and meshing"
 keywords = ["benchmark", "fidget", "implicit", "field-eval"]
 categories = ["algorithms"]
 
@@ -15,5 +15,6 @@ workspace = true
 
 [dependencies]
 exedra_fidget = { features = ["std"], workspace = true }
+exedra_implicit = { features = ["std"], workspace = true }
 exedra_isosurface = { features = ["std"], workspace = true }
 fidget.workspace = true

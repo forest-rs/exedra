@@ -16,7 +16,7 @@
 //! 2. **Mesh witness**: the `exedra_mesh` boolean pipeline folded over the tree
 //!    (chained classes feed intermediate outputs back in as operands),
 //!    then exact ray-parity membership on the result.
-//! 3. **Field witness**: the `exedra_isosurface` CSG combinators composed
+//! 3. **Field witness**: the `exedra_implicit` CSG combinators composed
 //!    over the placed analytic fields, sign sampled per point.
 //!
 //! The referee describes exactly the polyhedral solid the mesh pipeline
@@ -24,13 +24,12 @@
 //! so any mesh disagreement outside the band is a mesh pipeline finding.
 //! The field solid differs from the referee by at most the per-operand
 //! Hausdorff deviation; any field sign flip outside the wider field band
-//! is an isosurface finding. Bands scale linearly with the case's
+//! is a field finding. Bands scale linearly with the case's
 //! coordinate scale.
 
 use std::collections::{BTreeMap, BTreeSet};
 
-use exedra_isosurface::ScalarField;
-use exedra_isosurface::analytic::{Difference, Intersection, Union};
+use exedra_implicit::{Difference, Intersection, Opaque, ScalarField, Union};
 use exedra_mesh::{FaceTriangulation, Mesh, VertexId};
 use exedra_mesh_ops::boolean::{
     BooleanDiagnostics, BooleanError, BooleanFailureKind, BooleanOp, BooleanOutput, BooleanScratch,
@@ -47,7 +46,7 @@ use crate::scenario::{Case, Node, ScenarioClass, build_case};
 pub(crate) const MESH_BAND: f64 = 1.0e-3;
 
 /// Extra field slop at unit scale on top of per-operand Hausdorff
-/// deviation: f32 SDF arithmetic and the f32 narrowing of sample points.
+/// deviation: operand sizes narrowed to f32 with the meshes they match.
 pub(crate) const FIELD_SLOP: f64 = 1.0e-3;
 
 /// Why the mesh witness skipped a case.
@@ -223,9 +222,9 @@ fn field_tree<'a>(node: &Node, operands: &'a [Operand]) -> Box<dyn ScalarField +
             let l = field_tree(left, operands);
             let r = field_tree(right, operands);
             match op {
-                BooleanOp::Union => Box::new(Union::new(l, r)),
-                BooleanOp::Intersection => Box::new(Intersection::new(l, r)),
-                BooleanOp::Difference => Box::new(Difference::new(l, r)),
+                BooleanOp::Union => Box::new(Union::new(Opaque(l), Opaque(r))),
+                BooleanOp::Intersection => Box::new(Intersection::new(Opaque(l), Opaque(r))),
+                BooleanOp::Difference => Box::new(Difference::new(Opaque(l), Opaque(r))),
             }
         }
     }
@@ -315,13 +314,8 @@ pub(crate) fn run_case(class: ScenarioClass, case_seed: u64, points_per_case: u6
         if margin <= field_band {
             outcome.field_band_points += 1;
         } else {
-            #[expect(
-                clippy::cast_possible_truncation,
-                reason = "field sampling narrows once; the band covers it"
-            )]
-            let point_f32 = [point[0] as f32, point[1] as f32, point[2] as f32];
-            let mut value = [0.0_f32];
-            field.eval_points(&[point_f32], &mut value);
+            let mut value = [0.0];
+            field.eval_points(&[point], &mut value);
             outcome.field_points += 1;
             let inside = value[0] < 0.0;
             if inside != referee_inside {

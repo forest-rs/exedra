@@ -77,7 +77,7 @@ Construction and extraction crates:
 - **[exedra_measurements](crates/exedra_measurements/)** - Exact positive
   lengths, signed offsets, angle magnitudes, and signed angular offsets.
 - **[exedra_fidget](crates/exedra_fidget/)** - Adapter from Fidget expression
-  shapes to the `exedra_isosurface` field traits.
+  shapes to `exedra_implicit` fields.
 
 Workspace-only construction, test, benchmark, and app crates:
 

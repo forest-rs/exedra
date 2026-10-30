@@ -6,7 +6,7 @@
 use core::fmt;
 use std::sync::{Mutex, MutexGuard};
 
-use exedra_isosurface::{Aabb, ScalarField, SpecializableField};
+use exedra_implicit::{Aabb, Dual, ScalarField};
 use fidget::{
     eval::{BulkEvaluator, Function, TracingEvaluator},
     shape::{EzShape, Shape, ShapeBulkEval, ShapeTape, ShapeTracingEval},
@@ -53,7 +53,7 @@ struct GradCache<E: BulkEvaluator> {
 }
 
 impl<F: Function + Clone> FidgetField<F> {
-    /// Wraps a `fidget` shape as an `exedra_isosurface::ScalarField`.
+    /// Wraps a `fidget` shape as an `exedra_implicit::ScalarField`.
     ///
     /// The shape must depend only on the `x`, `y`, and `z` axes.
     pub fn new(shape: Shape<F>) -> Result<Self, FidgetFieldError> {
@@ -90,6 +90,33 @@ impl<F: Function + Clone> FidgetField<F> {
     pub const fn shape(&self) -> &Shape<F> {
         &self.shape
     }
+
+    /// Returns a smaller field equal to this one throughout `region`, with
+    /// the branches of `min` and `max` that never win there pruned, or
+    /// `None` when nothing can be pruned.
+    #[must_use]
+    pub fn specialize(&self, region: &Aabb) -> Option<Self> {
+        if !self.shape.inner().can_simplify() {
+            return None;
+        }
+
+        let trace = {
+            let mut cache = lock_unpoison(&self.interval);
+            let [x, y, z] = intervals(region);
+            let tape = cache.tape.clone();
+            match cache.eval.eval(&tape, x, y, z) {
+                Ok((_interval, Some(trace))) => trace.clone(),
+                Ok((_, None)) | Err(_) => return None,
+            }
+        };
+
+        let shape = self.shape.ez_simplify(&trace).ok()?;
+        if shape.size() >= self.shape.size() {
+            return None;
+        }
+
+        Self::new(shape).ok()
+    }
 }
 
 impl<F: Function + Clone> fmt::Debug for FidgetField<F> {
@@ -110,19 +137,22 @@ impl<F: Function + Clone> TryFrom<Shape<F>> for FidgetField<F> {
 }
 
 impl<F: Function + Clone> ScalarField for FidgetField<F> {
-    fn eval_interval(&self, bounds: &Aabb) -> Option<[f32; 2]> {
+    /// Fidget's single-precision interval bounds over `region` rounded
+    /// outward, one step of `f32` further on each side.
+    fn eval_interval(&self, region: &Aabb) -> exedra_implicit::Interval {
         let mut cache = lock_unpoison(&self.interval);
-        let x = Interval::from([bounds.min[0], bounds.max[0]]);
-        let y = Interval::from([bounds.min[1], bounds.max[1]]);
-        let z = Interval::from([bounds.min[2], bounds.max[2]]);
+        let [x, y, z] = intervals(region);
         let IntervalCache { eval, tape } = &mut *cache;
         match eval.eval(tape, x, y, z) {
-            Ok((interval, _trace)) => Some([interval.lower(), interval.upper()]),
-            Err(_error) => None,
+            Ok((interval, _trace)) => exedra_implicit::Interval::new(
+                f64::from(interval.lower().next_down()),
+                f64::from(interval.upper().next_up()),
+            ),
+            Err(_error) => exedra_implicit::Interval::ENTIRE,
         }
     }
 
-    fn eval_points(&self, points: &[[f32; 3]], out: &mut [f32]) {
+    fn eval_points(&self, points: &[[f64; 3]], out: &mut [f64]) {
         assert_same_len(points.len(), out.len(), "point/value");
         if points.is_empty() {
             return;
@@ -140,12 +170,16 @@ impl<F: Function + Clone> ScalarField for FidgetField<F> {
             z,
         } = &mut *cache;
         match eval.eval(tape, x, y, z) {
-            Ok(values) => out.copy_from_slice(values),
-            Err(_error) => out.fill(f32::NAN),
+            Ok(values) => {
+                for (slot, value) in out.iter_mut().zip(values) {
+                    *slot = f64::from(*value);
+                }
+            }
+            Err(_error) => out.fill(f64::NAN),
         }
     }
 
-    fn eval_gradients(&self, points: &[[f32; 3]], out: &mut [[f32; 4]]) {
+    fn eval_gradients(&self, points: &[[f64; 3]], out: &mut [Dual]) {
         assert_same_len(points.len(), out.len(), "point/gradient");
         if points.is_empty() {
             return;
@@ -165,41 +199,46 @@ impl<F: Function + Clone> ScalarField for FidgetField<F> {
         match eval.eval(tape, x, y, z) {
             Ok(values) => {
                 for (slot, grad) in out.iter_mut().zip(values.iter()) {
-                    *slot = grad_to_array(*grad);
+                    *slot = Dual {
+                        value: f64::from(grad.v),
+                        gradient: [grad.dx, grad.dy, grad.dz].map(f64::from),
+                    };
                 }
             }
-            Err(_error) => out.fill([f32::NAN; 4]),
+            Err(_error) => {
+                out.fill(Dual {
+                    value: f64::NAN,
+                    gradient: [f64::NAN; 3],
+                });
+            }
         }
     }
 }
 
-impl<F: Function + Clone> SpecializableField for FidgetField<F> {
-    type Specialized = Self;
+/// The single-precision intervals covering `region`, rounded outward.
+fn intervals(region: &Aabb) -> [Interval; 3] {
+    core::array::from_fn(|axis| Interval::from([down(region.min[axis]), up(region.max[axis])]))
+}
 
-    fn specialize(&self, bounds: &Aabb) -> Option<Self::Specialized> {
-        if !self.shape.inner().can_simplify() {
-            return None;
-        }
+/// The greatest `f32` at most `value`.
+#[expect(clippy::cast_possible_truncation, reason = "rounded to the side asked")]
+fn down(value: f64) -> f32 {
+    let near = value as f32;
+    if f64::from(near) > value {
+        near.next_down()
+    } else {
+        near
+    }
+}
 
-        let trace = {
-            let mut cache = lock_unpoison(&self.interval);
-            let x = Interval::from([bounds.min[0], bounds.max[0]]);
-            let y = Interval::from([bounds.min[1], bounds.max[1]]);
-            let z = Interval::from([bounds.min[2], bounds.max[2]]);
-            let tape = cache.tape.clone();
-            match cache.eval.eval(&tape, x, y, z) {
-                Ok((_interval, Some(trace))) => trace.clone(),
-                Ok((_interval, None)) => return None,
-                Err(_) => return None,
-            }
-        };
-
-        let shape = self.shape.ez_simplify(&trace).ok()?;
-        if shape.size() >= self.shape.size() {
-            return None;
-        }
-
-        Self::new(shape).ok()
+/// The least `f32` at least `value`.
+#[expect(clippy::cast_possible_truncation, reason = "rounded to the side asked")]
+fn up(value: f64) -> f32 {
+    let near = value as f32;
+    if f64::from(near) < value {
+        near.next_up()
+    } else {
+        near
     }
 }
 
@@ -216,7 +255,9 @@ fn reject_extra_vars<F: Function>(shape: &Shape<F>) -> Result<(), FidgetFieldErr
     }
 }
 
-fn split_points_into(points: &[[f32; 3]], x: &mut Vec<f32>, y: &mut Vec<f32>, z: &mut Vec<f32>) {
+/// Fidget evaluates points in single precision.
+#[expect(clippy::cast_possible_truncation, reason = "fidget evaluates in f32")]
+fn split_points_into(points: &[[f64; 3]], x: &mut Vec<f32>, y: &mut Vec<f32>, z: &mut Vec<f32>) {
     x.clear();
     y.clear();
     z.clear();
@@ -224,14 +265,15 @@ fn split_points_into(points: &[[f32; 3]], x: &mut Vec<f32>, y: &mut Vec<f32>, z:
     y.reserve(points.len());
     z.reserve(points.len());
     for point in points {
-        x.push(point[0]);
-        y.push(point[1]);
-        z.push(point[2]);
+        x.push(point[0] as f32);
+        y.push(point[1] as f32);
+        z.push(point[2] as f32);
     }
 }
 
+#[expect(clippy::cast_possible_truncation, reason = "fidget evaluates in f32")]
 fn split_grad_points_into(
-    points: &[[f32; 3]],
+    points: &[[f64; 3]],
     x: &mut Vec<Grad>,
     y: &mut Vec<Grad>,
     z: &mut Vec<Grad>,
@@ -243,14 +285,10 @@ fn split_grad_points_into(
     y.reserve(points.len());
     z.reserve(points.len());
     for point in points {
-        x.push(Grad::new(point[0], 1.0, 0.0, 0.0));
-        y.push(Grad::new(point[1], 0.0, 1.0, 0.0));
-        z.push(Grad::new(point[2], 0.0, 0.0, 1.0));
+        x.push(Grad::new(point[0] as f32, 1.0, 0.0, 0.0));
+        y.push(Grad::new(point[1] as f32, 0.0, 1.0, 0.0));
+        z.push(Grad::new(point[2] as f32, 0.0, 0.0, 1.0));
     }
-}
-
-fn grad_to_array(grad: Grad) -> [f32; 4] {
-    [grad.v, grad.dx, grad.dy, grad.dz]
 }
 
 fn lock_unpoison<T>(mutex: &Mutex<T>) -> MutexGuard<'_, T> {
@@ -266,28 +304,16 @@ fn assert_same_len(expected: usize, found: usize, label: &str) {
 
 #[cfg(test)]
 mod tests {
-    use exedra_isosurface::ExtractionLimits;
-    use exedra_isosurface::{
-        Aabb, DualContourParams, EdgeSearchParams, QefParams, ScalarField, SpecializableField,
-        dual_contour,
-    };
+    use exedra_implicit::{Aabb, Dual, ScalarField};
+    use exedra_isosurface::{DelaunayParams, DelaunayResult, delaunay_mesh};
     use fidget::{context::Tree, var::Var, vm::VmShape};
 
     use super::{FidgetField, VmField};
 
-    fn params(bounds: Aabb, max_depth: u8) -> DualContourParams {
-        DualContourParams {
-            root_bounds: bounds,
-            max_depth,
-            cell_budget: None,
-            limits: ExtractionLimits::default(),
-            witness_limit: 16,
-            vertex_merge_tolerance: 0.0,
-            edge_search: EdgeSearchParams {
-                bisection_steps: 10,
-            },
-            qef: QefParams::default(),
-        }
+    fn sphere() -> VmField {
+        let (x, y, z) = (Tree::x(), Tree::y(), Tree::z());
+        let sphere = (x.square() + y.square() + z.square()).sqrt() - 1.0;
+        VmField::new(VmShape::from(sphere)).expect("axis-only shape")
     }
 
     fn box_tree(center_x: f32, half_extents: [f32; 3]) -> Tree {
@@ -305,164 +331,104 @@ mod tests {
         outside + inside
     }
 
-    fn nearest_center(value: f32, root_min: f32, step: f32) -> f32 {
-        let center_index = ((value - root_min) / step - 0.5).round();
-        root_min + (center_index + 0.5) * step
+    fn mesh(field: &VmField, bounds: Aabb, cell_size: f64) -> DelaunayResult {
+        let result = delaunay_mesh(field, &DelaunayParams::new(bounds, cell_size))
+            .expect("valid parameters");
+        assert!(result.report.is_complete(), "{:?}", result.report);
+        let mesh = result.mesh().expect("a valid mesh");
+        assert!(mesh.validate_deep().is_empty());
+        assert!(
+            mesh.boundary_loops()
+                .expect("boundary traversal")
+                .is_empty()
+        );
+        result
     }
 
     #[test]
-    fn vm_field_extracts_sphere() {
-        let x = Tree::x();
-        let y = Tree::y();
-        let z = Tree::z();
-        let sphere = (x.square() + y.square() + z.square()).sqrt() - 1.0;
-        let field = VmField::new(VmShape::from(sphere)).expect("axis-only shape");
-        let bounds = Aabb::new([-1.5, -1.5, -1.5], [1.5, 1.5, 1.5]).expect("bounds");
+    fn vm_field_meshes_a_sphere_on_its_surface() {
+        let field = sphere();
+        let bounds = Aabb::new([-1.5; 3], [1.5; 3]).expect("bounds");
+        let result = mesh(&field, bounds, 0.2);
 
-        let result = dual_contour(&field, &params(bounds, 4))
-            .expect("fidget sphere extraction should succeed");
-
-        assert!(result.mesh.validate_deep().is_empty());
-        assert!(result.stats.faces > 0);
+        let mut values = vec![0.0; result.positions.len()];
+        field.eval_points(&result.positions, &mut values);
+        // Surface points are searched to within a small part of a cell.
+        assert!(values.iter().all(|value| value.abs() < 0.2 / 64.0));
     }
 
     #[test]
     fn vm_field_gradients_seed_basis_derivatives() {
         let field = VmField::new(VmShape::from(Tree::x())).expect("axis-only shape");
-        let mut gradients = [[0.0_f32; 4]; 1];
+        let mut gradients = [Dual::default()];
         field.eval_gradients(&[[2.5, -3.0, 4.0]], &mut gradients);
 
-        assert_eq!(gradients[0], [2.5, 1.0, 0.0, 0.0]);
+        assert_eq!(
+            gradients[0],
+            Dual {
+                value: 2.5,
+                gradient: [1.0, 0.0, 0.0]
+            }
+        );
+    }
+
+    #[test]
+    fn vm_field_intervals_contain_values_at_f64_corners() {
+        let field = sphere();
+        // Corners no `f32` represents exactly.
+        let region = Aabb::new([0.1, 0.2, 0.3], [0.7, 0.9, 1.1]).expect("bounds");
+        let bounds = field.eval_interval(&region);
+        let mut values = [0.0; 8];
+        field.eval_points(&region.corners(), &mut values);
+        assert!(values.iter().all(|&value| bounds.contains(value)));
     }
 
     #[test]
     fn vm_field_reuses_scratch_across_varying_batch_sizes() {
-        let x = Tree::x();
-        let y = Tree::y();
-        let z = Tree::z();
-        let sphere = (x.square() + y.square() + z.square()).sqrt() - 1.0;
-        let field = VmField::new(VmShape::from(sphere)).expect("axis-only shape");
+        let field = sphere();
 
-        let small = [[0.125_f32, 0.0, 0.0], [0.5, 0.25, -0.75]];
+        let small = [[0.125, 0.0, 0.0], [0.5, 0.25, -0.75]];
         let large = [
-            [-1.0_f32, 0.0, 0.0],
+            [-1.0, 0.0, 0.0],
             [-0.5, 0.5, 0.0],
             [0.125, -0.25, 0.375],
             [0.5, -0.25, 0.75],
             [1.0, 0.0, 0.0],
         ];
+        let finite = |rows: &[Dual]| {
+            rows.iter()
+                .all(|row| row.value.is_finite() && row.gradient.iter().all(|g| g.is_finite()))
+        };
 
-        let mut point_values = [0.0_f32; 5];
-        let mut gradients = [[0.0_f32; 4]; 5];
-
+        let mut point_values = [0.0; 5];
+        let mut gradients = [Dual::default(); 5];
         field.eval_points(&large, &mut point_values);
         field.eval_gradients(&large, &mut gradients);
         assert!(point_values.iter().all(|value| value.is_finite()));
-        assert!(
-            gradients
-                .iter()
-                .all(|grad| grad.iter().all(|value| value.is_finite()))
-        );
+        assert!(finite(&gradients));
 
-        let mut small_values = [0.0_f32; 2];
-        let mut small_gradients = [[0.0_f32; 4]; 2];
+        let mut small_values = [0.0; 2];
+        let mut small_gradients = [Dual::default(); 2];
         field.eval_points(&small, &mut small_values);
         field.eval_gradients(&small, &mut small_gradients);
-
         assert!(small_values.iter().all(|value| value.is_finite()));
-        assert!(
-            small_gradients
-                .iter()
-                .all(|grad| grad.iter().all(|value| value.is_finite()))
-        );
+        assert!(finite(&small_gradients));
 
         field.eval_points(&large, &mut point_values);
         field.eval_gradients(&large, &mut gradients);
         assert!(point_values.iter().all(|value| value.is_finite()));
-        assert!(
-            gradients
-                .iter()
-                .all(|grad| grad.iter().all(|value| value.is_finite()))
-        );
+        assert!(finite(&gradients));
     }
 
     #[test]
-    fn vm_field_sphere_vertices_move_off_center_lattice() {
-        let x = Tree::x();
-        let y = Tree::y();
-        let z = Tree::z();
-        let sphere = (x.square() + y.square() + z.square()).sqrt() - 1.0;
-        let field = VmField::new(VmShape::from(sphere)).expect("axis-only shape");
-        let bounds = Aabb::new([-1.5, -1.5, -1.5], [1.5, 1.5, 1.5]).expect("bounds");
-        let params = params(bounds, 4);
-
-        let result =
-            dual_contour(&field, &params).expect("fidget sphere extraction should succeed");
-        let resolution = 1_u32 << params.max_depth;
-        let step = [
-            (params.root_bounds.max[0] - params.root_bounds.min[0]) / resolution as f32,
-            (params.root_bounds.max[1] - params.root_bounds.min[1]) / resolution as f32,
-            (params.root_bounds.max[2] - params.root_bounds.min[2]) / resolution as f32,
-        ];
-
-        let moved = result.mesh.vertices().any(|vertex| {
-            let position = result.mesh.vertex_position(vertex).expect("live vertex");
-            let center = [
-                nearest_center(position[0], params.root_bounds.min[0], step[0]),
-                nearest_center(position[1], params.root_bounds.min[1], step[1]),
-                nearest_center(position[2], params.root_bounds.min[2], step[2]),
-            ];
-            let dx = position[0] - center[0];
-            let dy = position[1] - center[1];
-            let dz = position[2] - center[2];
-            dx * dx + dy * dy + dz * dz > 1.0e-8
-        });
-
-        assert!(moved);
-    }
-
-    #[test]
-    fn vm_field_union_builds_valid_mesh() {
+    fn vm_field_union_meshes_closed() {
         let left = box_tree(-0.9, [0.35, 0.35, 0.35]);
         let right = box_tree(0.9, [0.35, 0.45, 0.35]);
-        let union = left.min(right);
-        let field = VmField::new(VmShape::from(union)).expect("axis-only shape");
+        let field = VmField::new(VmShape::from(left.min(right))).expect("axis-only shape");
         let bounds = Aabb::new([-1.6, -1.0, -1.0], [1.6, 1.0, 1.0]).expect("bounds");
 
-        let result = dual_contour(&field, &params(bounds, 4))
-            .expect("fidget union extraction should succeed");
-
-        assert!(result.mesh.validate_deep().is_empty());
-        assert!(
-            result
-                .mesh
-                .boundary_loops()
-                .expect("fidget union boundary traversal")
-                .is_empty()
-        );
-        for face in result.mesh.faces() {
-            for corner in result.mesh.face_loop(face) {
-                let twin = result.mesh.twin(corner).expect("fidget union edge twin");
-                assert_ne!(
-                    result.mesh.face(twin),
-                    Some(exedra_mesh::FaceId::OUTSIDE),
-                    "fidget union must have two incident faces per edge"
-                );
-            }
-        }
-        assert!(result.stats.faces > 0);
-    }
-
-    #[test]
-    fn vm_field_box_builds_valid_mesh() {
-        let field =
-            VmField::new(VmShape::from(box_tree(0.0, [0.7, 0.7, 0.7]))).expect("axis-only shape");
-        let bounds = Aabb::new([-1.2, -1.2, -1.2], [1.2, 1.2, 1.2]).expect("bounds");
-        let result =
-            dual_contour(&field, &params(bounds, 4)).expect("fidget box extraction should succeed");
-
-        assert!(result.mesh.validate_deep().is_empty());
-        assert!(result.stats.faces > 0);
+        let result = mesh(&field, bounds, 0.1);
+        assert!(!result.triangles.is_empty());
     }
 
     #[test]

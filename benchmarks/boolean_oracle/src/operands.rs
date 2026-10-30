@@ -10,15 +10,12 @@
 //!   prisms an analytic box decomposition mapped through the same rigid
 //!   transform (exactly the solid the mesh witness sees, up to the
 //!   documented f32 narrowing the mesh band covers),
-//! - an `exedra_isosurface` scalar field for the analytic solid the mesh
+//! - an `exedra_implicit` scalar field for the analytic solid the mesh
 //!   approximates, plus a Hausdorff bound between the two
 //!   (`field_deviation`), which widens the field comparison band.
 
-use exedra_isosurface::{
-    ScalarField,
-    analytic::{BoxField, CylinderField, SphereField, Union},
-    transform::{RigidTransform3, Transform3},
-};
+use exedra_implicit::{Cuboid, Cylinder, Formula, Placed, ScalarField, Sphere, Union};
+use exedra_math::Placement3;
 use exedra_mesh::{FaceTriangulation, Mesh, op::set_vertex_position};
 use exedra_primitives::{
     BoxParams, CylinderParams, UvSphereParams, box_primitive, cylinder, uv_sphere,
@@ -202,10 +199,8 @@ pub(crate) fn box_operand(size: [f64; 3], rigid: &Rigid) -> Operand {
     });
     let mesh = transform_mesh(&primitive.mesh, rigid);
     let pieces = vec![convex_planes(&mesh)];
-    let field = BoxField {
-        center: [0.0; 3],
-        half_extents: [size_f32[0] * 0.5, size_f32[1] * 0.5, size_f32[2] * 0.5],
-    };
+    let field = Cuboid::new([0.0; 3], size_f32.map(|s| f64::from(s) * 0.5))
+        .expect("sampled sizes are positive");
     Operand {
         describe: format!(
             "box size=({:.3},{:.3},{:.3}) t=({:.3},{:.3},{:.3})",
@@ -235,12 +230,13 @@ pub(crate) fn prism_operand(radius: f64, height: f64, segments: u32, rigid: &Rig
     });
     let mesh = transform_mesh(&primitive.mesh, rigid);
     let pieces = vec![convex_planes(&mesh)];
-    let field = CylinderField {
-        center: [0.0; 3],
-        axis: [0.0, 1.0, 0.0],
-        radius: radius_f32,
-        half_height: height_f32 * 0.5,
-    };
+    let field = Cylinder::new(
+        [0.0; 3],
+        [0.0, 1.0, 0.0],
+        f64::from(radius_f32),
+        f64::from(height_f32) * 0.5,
+    )
+    .expect("sampled sizes are positive");
     let sagitta = radius * (1.0 - (core::f64::consts::PI / f64::from(segments)).cos());
     Operand {
         describe: format!(
@@ -280,10 +276,7 @@ pub(crate) fn sphere_operand(
     });
     let mesh = transform_mesh(&primitive.mesh, rigid);
     let pieces = vec![convex_planes(&mesh)];
-    let field = SphereField {
-        center: [0.0; 3],
-        radius: radius_f32,
-    };
+    let field = Sphere::new([0.0; 3], f64::from(radius_f32)).expect("sampled radii are positive");
     let latitude_step = core::f64::consts::PI / f64::from(lat_segments + 1);
     let longitude_step = core::f64::consts::TAU / f64::from(lon_segments);
     let angular_diameter = latitude_step.hypot(longitude_step);
@@ -450,40 +443,26 @@ fn box_piece(lo: [f64; 3], hi: [f64; 3], rigid: &Rigid) -> Vec<Plane> {
 }
 
 /// Local-space box field for one convex piece of a non-convex operand.
-fn piece_box_field(lo: [f64; 3], hi: [f64; 3]) -> BoxField {
-    #[expect(
-        clippy::cast_possible_truncation,
-        reason = "field placement narrows once; the comparison band covers it"
-    )]
-    let narrow = |v: f64| v as f32;
-    BoxField {
-        center: [
-            narrow((lo[0] + hi[0]) * 0.5),
-            narrow((lo[1] + hi[1]) * 0.5),
-            narrow((lo[2] + hi[2]) * 0.5),
-        ],
-        half_extents: [
-            narrow((hi[0] - lo[0]) * 0.5),
-            narrow((hi[1] - lo[1]) * 0.5),
-            narrow((hi[2] - lo[2]) * 0.5),
-        ],
-    }
+fn piece_box_field(lo: [f64; 3], hi: [f64; 3]) -> Cuboid {
+    Cuboid::new(
+        core::array::from_fn(|i| (lo[i] + hi[i]) * 0.5),
+        core::array::from_fn(|i| (hi[i] - lo[i]) * 0.5),
+    )
+    .expect("sampled pieces are non-empty")
 }
 
-fn place_field<F: ScalarField + 'static>(field: F, rigid: &Rigid) -> Transform3<F> {
-    #[expect(
-        clippy::cast_possible_truncation,
-        reason = "field placement narrows once; the comparison band covers it"
-    )]
-    let narrow = |v: [f64; 3]| [v[0] as f32, v[1] as f32, v[2] as f32];
-    let transform = RigidTransform3::new(
-        narrow(rigid.t),
-        narrow(rigid.cols[0]),
-        narrow(rigid.cols[1]),
-        narrow(rigid.cols[2]),
-    )
-    .expect("sampled rotations are orthonormal");
-    Transform3::new(field, transform)
+fn place_field<F: Formula + 'static>(field: F, rigid: &Rigid) -> Placed<F> {
+    let placement = Placement3 {
+        rows: core::array::from_fn(|i| {
+            [
+                rigid.cols[0][i],
+                rigid.cols[1][i],
+                rigid.cols[2][i],
+                rigid.t[i],
+            ]
+        }),
+    };
+    Placed::new(field, placement).expect("sampled rotations are orthonormal")
 }
 
 /// Clones a mesh with vertices rigid-transformed in f64 and narrowed once.
