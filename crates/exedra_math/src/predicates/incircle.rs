@@ -3,6 +3,10 @@
 
 //! Exact-sign incircle evaluation.
 
+use core::cmp::Ordering;
+
+use super::dyadic::Accumulator;
+
 /// Position of a point relative to an oriented circumcircle.
 ///
 /// For counter-clockwise `a`, `b`, and `c`, [`Inside`](Self::Inside) means
@@ -55,8 +59,6 @@ pub struct IncircleEvaluation {
 const U: f64 = f64::EPSILON / 2.0;
 /// Shewchuk's error bound for the incircle floating-point filter.
 const INCIRCLE_ERRBOUND_A: f64 = (10.0 + 96.0 * U) * U;
-/// Least exponent in a product of four finite binary64 values.
-const DYADIC_MIN_EXPONENT: i32 = -4296;
 /// Enough bits for the complete finite-f64 incircle determinant.
 ///
 /// A four-significand product occupies at most 212 bits. Its largest base
@@ -196,39 +198,8 @@ fn product_is_normal_or_exact_zero(left: f64, right: f64, product: f64) -> bool 
     left == 0.0 || right == 0.0 || product.is_normal()
 }
 
-#[derive(Copy, Clone)]
-struct Dyadic {
-    negative: bool,
-    significand: u64,
-    exponent: i32,
-}
-
-fn decode_dyadic(value: f64) -> Option<Dyadic> {
-    let bits = value.to_bits();
-    let magnitude = bits & 0x7fff_ffff_ffff_ffff;
-    if magnitude == 0 {
-        return None;
-    }
-    let encoded_exponent = ((magnitude >> 52) & 0x7ff) as i32;
-    let fraction = magnitude & 0x000f_ffff_ffff_ffff;
-    if encoded_exponent == 0x7ff {
-        return None;
-    }
-    let (significand, exponent) = if encoded_exponent == 0 {
-        (fraction, -1074)
-    } else {
-        ((1_u64 << 52) | fraction, encoded_exponent - 1075)
-    };
-    Some(Dyadic {
-        negative: bits >> 63 != 0,
-        significand,
-        exponent,
-    })
-}
-
 fn sign_of_dyadic_incircle(a: [f64; 2], b: [f64; 2], c: [f64; 2], d: [f64; 2]) -> InCircle {
-    let mut positive = [0_u64; DYADIC_LIMBS];
-    let mut negative = [0_u64; DYADIC_LIMBS];
+    let mut sum = Accumulator::<4, DYADIC_LIMBS>::new();
 
     // Homogeneous determinant, expanded along the squared-length column:
     //   a² det(b,c,d) - b² det(a,c,d)
@@ -236,26 +207,21 @@ fn sign_of_dyadic_incircle(a: [f64; 2], b: [f64; 2], c: [f64; 2], d: [f64; 2]) -
     // Expanding each squared length and 3×3 determinant produces 48 exact
     // four-factor monomials. Finite inputs are guaranteed to fit the reviewed
     // accumulator bound, so failure here is an internal invariant violation.
-    let accumulated = add_lifted_determinant(&mut positive, &mut negative, a, b, c, d, true)
-        && add_lifted_determinant(&mut positive, &mut negative, b, a, c, d, false)
-        && add_lifted_determinant(&mut positive, &mut negative, c, a, b, d, true)
-        && add_lifted_determinant(&mut positive, &mut negative, d, a, b, c, false);
+    let accumulated = add_lifted_determinant(&mut sum, a, b, c, d, true)
+        && add_lifted_determinant(&mut sum, b, a, c, d, false)
+        && add_lifted_determinant(&mut sum, c, a, b, d, true)
+        && add_lifted_determinant(&mut sum, d, a, b, c, false);
     debug_assert!(accumulated, "reviewed incircle accumulator bound");
 
-    for (&positive, &negative) in positive.iter().zip(&negative).rev() {
-        if positive > negative {
-            return InCircle::Inside;
-        }
-        if positive < negative {
-            return InCircle::Outside;
-        }
+    match sum.sign() {
+        Ordering::Greater => InCircle::Inside,
+        Ordering::Less => InCircle::Outside,
+        Ordering::Equal => InCircle::Cocircular,
     }
-    InCircle::Cocircular
 }
 
 fn add_lifted_determinant(
-    positive: &mut [u64; DYADIC_LIMBS],
-    negative: &mut [u64; DYADIC_LIMBS],
+    sum: &mut Accumulator<4, DYADIC_LIMBS>,
     lift: [f64; 2],
     p: [f64; 2],
     q: [f64; 2],
@@ -272,97 +238,13 @@ fn add_lifted_determinant(
     ];
     for squared_coordinate in lift {
         for (left, right, positive_determinant_term) in determinant_terms {
-            if !add_monomial(
-                positive,
-                negative,
+            if !sum.add(
                 [squared_coordinate, squared_coordinate, left, right],
                 positive_cofactor == positive_determinant_term,
             ) {
                 return false;
             }
         }
-    }
-    true
-}
-
-fn add_monomial(
-    positive: &mut [u64; DYADIC_LIMBS],
-    negative: &mut [u64; DYADIC_LIMBS],
-    factors: [f64; 4],
-    positive_coefficient: bool,
-) -> bool {
-    let [Some(a), Some(b), Some(c), Some(d)] = factors.map(decode_dyadic) else {
-        return true;
-    };
-    let words = multiply_significands([a.significand, b.significand, c.significand, d.significand]);
-    let Some(shift) =
-        usize::try_from(a.exponent + b.exponent + c.exponent + d.exponent - DYADIC_MIN_EXPONENT)
-            .ok()
-    else {
-        return false;
-    };
-    let negative_term = !positive_coefficient ^ a.negative ^ b.negative ^ c.negative ^ d.negative;
-    let magnitude = if negative_term { negative } else { positive };
-    add_shifted_words(magnitude, &words, shift)
-}
-
-fn multiply_significands(factors: [u64; 4]) -> [u64; 4] {
-    let mut words = [0_u64; 4];
-    words[0] = 1;
-    let mut len = 1;
-    for factor in factors {
-        let mut carry = 0_u128;
-        for word in &mut words[..len] {
-            let product = u128::from(*word) * u128::from(factor) + carry;
-            *word = u64::try_from(product & u128::from(u64::MAX))
-                .expect("masked product limb fits u64");
-            carry = product >> 64;
-        }
-        if carry != 0 {
-            debug_assert!(
-                len < words.len(),
-                "four binary64 significands fit four limbs"
-            );
-            words[len] = u64::try_from(carry).expect("multiplication carry fits u64");
-            len += 1;
-        }
-    }
-    words
-}
-
-fn add_shifted_words(limbs: &mut [u64; DYADIC_LIMBS], words: &[u64], shift: usize) -> bool {
-    let word = shift / 64;
-    let bits = shift % 64;
-    words
-        .iter()
-        .enumerate()
-        .all(|(offset, &value)| add_shifted_word(limbs, word + offset, value, bits))
-}
-
-fn add_shifted_word(
-    limbs: &mut [u64; DYADIC_LIMBS],
-    word: usize,
-    value: u64,
-    shift: usize,
-) -> bool {
-    if value == 0 {
-        return true;
-    }
-    if !add_limb(limbs, word, value << shift) {
-        return false;
-    }
-    shift == 0 || add_limb(limbs, word + 1, value >> (64 - shift))
-}
-
-fn add_limb(limbs: &mut [u64; DYADIC_LIMBS], mut word: usize, mut value: u64) -> bool {
-    while value != 0 {
-        let Some(limb) = limbs.get_mut(word) else {
-            return false;
-        };
-        let (sum, carry) = limb.overflowing_add(value);
-        *limb = sum;
-        value = u64::from(carry);
-        word += 1;
     }
     true
 }
@@ -496,22 +378,6 @@ mod tests {
     }
 
     #[test]
-    fn four_significand_product_propagates_every_carry() {
-        // Four maximum-width significands exercise every output limb and the
-        // carry propagation used by each exact determinant monomial.
-        let factors = [(1_u64 << 53) - 1; 4];
-        assert_eq!(
-            multiply_significands(factors),
-            [
-                0xff80_0000_0000_0001,
-                0x0000_17ff_ffff_ffff,
-                0xffff_fffe_0000_0000,
-                0x0000_0000_000f_ffff,
-            ]
-        );
-    }
-
-    #[test]
     fn matches_an_independent_integer_oracle() {
         // Small integer coordinates admit an independent exact `i128`
         // determinant, checking both the public dispatcher and dyadic path.
@@ -526,9 +392,9 @@ mod tests {
                 + (bdx * bdx + bdy * bdy) * (cdx * ady - adx * cdy)
                 + (cdx * cdx + cdy * cdy) * (adx * bdy - bdx * ady);
             match det.cmp(&0) {
-                core::cmp::Ordering::Greater => InCircle::Inside,
-                core::cmp::Ordering::Less => InCircle::Outside,
-                core::cmp::Ordering::Equal => InCircle::Cocircular,
+                Ordering::Greater => InCircle::Inside,
+                Ordering::Less => InCircle::Outside,
+                Ordering::Equal => InCircle::Cocircular,
             }
         }
 
