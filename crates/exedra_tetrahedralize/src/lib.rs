@@ -30,6 +30,13 @@
 //! face it lies on. Points outside the hull are refused, and a point equal to
 //! an existing vertex returns that vertex.
 //!
+//! [`Tetrahedralization::insert_weighted`] gives a point a weight, a squared
+//! radius, and keeps the tetrahedralization regular (weighted Delaunay)
+//! through the exact power test [`insphere_weighted`]. A point whose power
+//! cell would be empty is refused as [hidden](TetError::Hidden), and a heavy
+//! point can hide existing vertices, which then belong to no tetrahedron.
+//! Meshers use weights for protecting balls around sharp features.
+//!
 //! ## Orientation
 //!
 //! Every tetrahedron's vertices `[a, b, c, d]` satisfy
@@ -59,7 +66,7 @@ extern crate alloc;
 use alloc::vec::Vec;
 use core::fmt;
 
-use exedra_math::predicates::{InSphere, Orientation3d, insphere, orient3d};
+use exedra_math::predicates::{InSphere, Orientation3d, insphere, insphere_weighted, orient3d};
 
 /// Index of a vertex, stable for the life of the tetrahedralization.
 ///
@@ -118,6 +125,9 @@ pub enum TetError {
     NonFinite,
     /// The point lies outside the hull, where insertion would change it.
     OutsideHull,
+    /// The weighted point is hidden: its power cell would be empty, so the
+    /// regular tetrahedralization does not change.
+    Hidden,
 }
 
 impl fmt::Display for TetError {
@@ -130,6 +140,7 @@ impl fmt::Display for TetError {
             Self::TooLarge => f.write_str("tetrahedralization exceeds u32 indices"),
             Self::NonFinite => f.write_str("point has a non-finite coordinate"),
             Self::OutsideHull => f.write_str("point lies outside the hull"),
+            Self::Hidden => f.write_str("weighted point is hidden by its neighbors"),
         }
     }
 }
@@ -164,8 +175,12 @@ pub struct TetStats {
     pub cavity_tetrahedra: usize,
     /// The largest single cavity.
     pub largest_cavity: usize,
-    /// Insphere tests made while growing cavities.
+    /// Insphere and power tests made while growing cavities.
     pub insphere_tests: usize,
+    /// Weighted points refused because they were hidden.
+    pub hidden_points: usize,
+    /// Vertices hidden by heavier points inserted later.
+    pub hidden_vertices: usize,
 }
 
 const NONE: u32 = u32::MAX;
@@ -196,6 +211,9 @@ impl Tet {
 pub struct Tetrahedralization {
     axes: [Vec<f64>; 3],
     points: Vec<[f64; 3]>,
+    weights: Vec<f64>,
+    /// Whether any weight is nonzero, which switches to the power test.
+    weighted: bool,
     /// A live tetrahedron at each vertex, where walks start.
     vertex_tets: Vec<u32>,
     tets: Vec<Tet>,
@@ -292,6 +310,8 @@ impl Tetrahedralization {
         let live = tets.len();
         Ok(Self {
             axes: [x.to_vec(), y.to_vec(), z.to_vec()],
+            weights: alloc::vec![0.0; points.len()],
+            weighted: false,
             points,
             vertex_tets,
             marks: alloc::vec![0; live],
@@ -382,12 +402,39 @@ impl Tetrahedralization {
         location
     }
 
+    /// The weight of `vertex`, zero unless it was inserted with one.
+    #[must_use]
+    pub fn weight(&self, vertex: VertexId) -> f64 {
+        self.weights[vertex.index()]
+    }
+
+    /// Whether heavier points inserted since have hidden `vertex`, leaving it
+    /// in no tetrahedron.
+    #[must_use]
+    pub fn is_hidden(&self, vertex: VertexId) -> bool {
+        self.vertex_tets[vertex.index()] == NONE
+    }
+
     /// Inserts `point`, returning its vertex.
     ///
     /// A point equal to an existing vertex returns that vertex and changes
-    /// nothing. A point on the hull splits the hull face it lies on.
+    /// nothing. A point on the hull splits the hull face it lies on. Once
+    /// weighted points are present, an unweighted point inside a heavy
+    /// point's ball can be [hidden](TetError::Hidden).
     pub fn insert(&mut self, point: [f64; 3]) -> Result<VertexId, TetError> {
-        if point.iter().any(|v| !v.is_finite()) {
+        self.insert_weighted(point, 0.0)
+    }
+
+    /// Inserts `point` with `weight`, a squared radius, keeping the
+    /// tetrahedralization regular (weighted Delaunay).
+    ///
+    /// A point whose power cell would be empty is refused as
+    /// [`TetError::Hidden`]; existing vertices that a heavier point leaves
+    /// with empty power cells drop out of every tetrahedron and report
+    /// [`is_hidden`](Self::is_hidden). A point equal to an existing vertex
+    /// returns that vertex, keeping its weight.
+    pub fn insert_weighted(&mut self, point: [f64; 3], weight: f64) -> Result<VertexId, TetError> {
+        if point.iter().any(|v| !v.is_finite()) || !weight.is_finite() {
             return Err(TetError::NonFinite);
         }
         let mut rng = self.rng;
@@ -402,13 +449,19 @@ impl Tetrahedralization {
             }
             Location::Tetrahedron(tet) => tet.0,
         };
+        self.weighted |= weight != 0.0;
+        if !self.conflicts(start, point, weight) {
+            self.stats.hidden_points += 1;
+            return Err(TetError::Hidden);
+        }
         let id = u32::try_from(self.points.len())
             .ok()
             .filter(|&id| id != NONE)
             .ok_or(TetError::TooLarge)?;
         self.points.push(point);
+        self.weights.push(weight);
         self.vertex_tets.push(NONE);
-        self.carve(start, point);
+        self.carve(start, point, weight);
         self.fill(id, point)?;
         self.stats.insertions += 1;
         Ok(VertexId(id))
@@ -448,17 +501,34 @@ impl Tetrahedralization {
                 if mine != theirs {
                     return Err(Violation::Adjacency(id));
                 }
-                let opposite = self.points[other.vertices[back] as usize];
-                if insphere(a, b, c, d, opposite) == InSphere::Inside {
+                let opposite = other.vertices[back];
+                if self.conflicts(
+                    index_u32(index),
+                    self.points[opposite as usize],
+                    self.weights[opposite as usize],
+                ) {
                     return Err(Violation::NotDelaunay(id));
                 }
             }
         }
+        let mut used = alloc::vec![false; self.points.len()];
+        for tet in self.tets.iter().filter(|tet| tet.alive()) {
+            for &vertex in &tet.vertices {
+                used[vertex as usize] = true;
+            }
+        }
         for (vertex, &tet) in self.vertex_tets.iter().enumerate() {
+            let star = VertexId(index_u32(vertex));
+            if tet == NONE {
+                if used[vertex] {
+                    return Err(Violation::VertexStar(star));
+                }
+                continue;
+            }
             let recorded = self.tets.get(tet as usize);
             if !recorded.is_some_and(|tet| tet.alive() && tet.vertices.contains(&index_u32(vertex)))
             {
-                return Err(Violation::VertexStar(VertexId(index_u32(vertex))));
+                return Err(Violation::VertexStar(star));
             }
         }
         Ok(())
@@ -470,7 +540,7 @@ impl Tetrahedralization {
     /// rather than on the order of insertions.
     fn walk(&self, point: [f64; 3], rng: &mut u64) -> (Location, usize) {
         let mut tet = self.vertex_tets[self.nearest_grid_vertex(point)];
-        if !self.tets[tet as usize].alive() {
+        if tet == NONE || !self.tets[tet as usize].alive() {
             tet = self.hint;
         }
         let mut steps = 0;
@@ -523,7 +593,24 @@ impl Tetrahedralization {
     /// Grows the cavity of tetrahedra whose circumspheres strictly contain
     /// `point`, starting from the tetrahedron that holds it, and records the
     /// cavity's boundary faces.
-    fn carve(&mut self, start: u32, point: [f64; 3]) {
+    /// Whether `point` with `weight` conflicts with `tet`: lies inside its
+    /// circumsphere, or has negative power distance to its orthosphere.
+    fn conflicts(&self, tet: u32, point: [f64; 3], weight: f64) -> bool {
+        let vertices = self.tets[tet as usize].vertices;
+        let test = if self.weighted {
+            let [a, b, c, d] = vertices.map(|v| {
+                let [x, y, z] = self.points[v as usize];
+                [x, y, z, self.weights[v as usize]]
+            });
+            insphere_weighted(a, b, c, d, [point[0], point[1], point[2], weight])
+        } else {
+            let [a, b, c, d] = vertices.map(|v| self.points[v as usize]);
+            insphere(a, b, c, d, point)
+        };
+        test == InSphere::Inside
+    }
+
+    fn carve(&mut self, start: u32, point: [f64; 3], weight: f64) {
         self.epoch = self.epoch.wrapping_add(2);
         if self.epoch < 2 {
             self.marks.fill(0);
@@ -544,10 +631,7 @@ impl Tetrahedralization {
                         continue;
                     }
                     self.stats.insphere_tests += 1;
-                    let [a, b, c, d] = self.tets[neighbor as usize]
-                        .vertices
-                        .map(|v| self.points[v as usize]);
-                    if insphere(a, b, c, d, point) == InSphere::Inside {
+                    if self.conflicts(neighbor, point, weight) {
                         self.marks[neighbor as usize] = inside;
                         self.cavity.push(neighbor);
                         continue;
@@ -632,6 +716,17 @@ impl Tetrahedralization {
                 k += 2;
             } else {
                 k += 1;
+            }
+        }
+        // A cavity vertex that no new tetrahedron uses still records a cavity
+        // tetrahedron: a heavier point has hidden it.
+        for c in 0..self.cavity.len() {
+            for vertex in self.tets[self.cavity[c] as usize].vertices {
+                let recorded = self.vertex_tets[vertex as usize];
+                if recorded != NONE && self.marks[recorded as usize] == self.epoch {
+                    self.vertex_tets[vertex as usize] = NONE;
+                    self.stats.hidden_vertices += 1;
+                }
             }
         }
         for c in 0..self.cavity.len() {

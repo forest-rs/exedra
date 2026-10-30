@@ -51,6 +51,23 @@ or inverted.
 - A point outside the hull returns `TetError::OutsideHull`; a non-finite point
   returns `TetError::NonFinite`.
 
+## Weighted points
+
+`insert_weighted` gives a point a weight, a squared radius, and keeps the
+tetrahedralization regular (weighted Delaunay) using the exact power test
+`insphere_weighted`. Unweighted tetrahedralizations keep using the cheaper
+`insphere` until the first nonzero weight arrives.
+
+- A point whose power cell would be empty changes nothing and returns
+  `TetError::Hidden`.
+- A heavy point can hide existing vertices: they drop out of every
+  tetrahedron, keep their `VertexId`, and report `is_hidden`. Hull vertices
+  have unbounded power cells and are never hidden.
+
+Meshers use weights for protecting balls around sharp features: a ball's
+weight keeps refinement points out of it while its neighbors along the
+feature stay connected.
+
 `VertexId`s are stable and dense: grid vertices first, numbered
 `(i * ny + j) * nz + k`, then inserted vertices in order. `TetId`s are valid
 until the next insertion, which may reuse a removed tetrahedron's index;
@@ -67,10 +84,11 @@ consistently oriented surface without further checks.
 
 ## Diagnostics
 
-`stats` reports insertions, coincident points, walk steps, cavity sizes and
-insphere tests, per tetrahedralization and without global counters.
+`stats` reports insertions, coincident points, walk steps, cavity sizes,
+insphere and power tests, and hidden points and vertices, per tetrahedralization and without global counters.
 `validate` checks orientation, adjacency, the local Delaunay property of every
-face, and every vertex's recorded tetrahedron; it is linear in the size of the
+face (weighted when weights are present), and every vertex's recorded
+tetrahedron or hidden state; it is linear in the size of the
 tetrahedralization and meant for tests and debugging.
 
 ## License
