@@ -436,6 +436,13 @@ dependencies = [
 ]
 
 [[package]]
+name = "exedra_implicit"
+version = "0.1.0"
+dependencies = [
+ "exedra_math",
+]
+
+[[package]]
 name = "exedra_isosurface"
 version = "0.1.0"
 dependencies = [

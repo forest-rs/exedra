@@ -1,0 +1,22 @@
+[package]
+name = "exedra_implicit"
+version = "0.1.0"
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+description = "Implicit fields written once as formulas, with exact gradients, interval bounds and creases"
+readme = "README.md"
+keywords = ["implicit", "sdf", "interval", "no_std"]
+categories = ["mathematics", "graphics", "no-std"]
+
+[lints]
+workspace = true
+
+[features]
+default = ["std"]
+libm = ["exedra_math/libm"]
+std = ["exedra_math/std"]
+
+[dependencies]
+exedra_math.workspace = true
