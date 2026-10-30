@@ -39,12 +39,15 @@ hull. Spacing may vary per axis and per cell.
 ## Insertion
 
 `insert` adds one point by Bowyer–Watson. A visibility walk with a
-deterministic randomized face order locates the tetrahedron holding the point,
-starting from the nearest grid vertex, so walks stay short whatever order
-points arrive in. The cavity of tetrahedra whose circumspheres strictly contain
-the point is replaced by tetrahedra joining its boundary to the new vertex.
-Exact predicates keep the cavity star-shaped, so no tetrahedron is ever flat
-or inverted.
+deterministic randomized face order locates the tetrahedron holding the point.
+It starts from whichever is closer, the nearest grid vertex or the latest
+vertex inserted in the same cell of a coarse 32³ grid over the hull, so walks
+stay short whatever order points arrive in and however coarse the grid.
+`insert_near` and `locate_near` start from a vertex the caller already knows
+is close, such as a corner of the face being refined. The cavity of
+tetrahedra whose circumspheres strictly contain the point is replaced by
+tetrahedra joining its boundary to the new vertex. Exact predicates keep the
+cavity star-shaped, so no tetrahedron is ever flat or inverted.
 
 - A point equal to an existing vertex returns that vertex and changes nothing.
 - A point on the hull splits the hull face it lies on; the hull stays the box.
@@ -67,6 +70,10 @@ tetrahedralization regular (weighted Delaunay) using the exact power test
 Meshers use weights for protecting balls around sharp features: a ball's
 weight keeps refinement points out of it while its neighbors along the
 feature stay connected.
+
+`new_tetrahedra` lists the tetrahedra the latest insertion created, which
+are exactly the new vertex's star. Refinement algorithms on top re-examine
+only those instead of rescanning the whole tetrahedralization.
 
 `VertexId`s are stable and dense: grid vertices first, numbered
 `(i * ny + j) * nz + k`, then inserted vertices in order. `TetId`s are valid
