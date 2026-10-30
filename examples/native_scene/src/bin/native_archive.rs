@@ -245,8 +245,8 @@ fn run(output: &Path) -> Result<(), Box<dyn Error>> {
     }
     let text = layerstack_usda::save::save_usda(
         store.layer(root).expect("authored layer"),
-        &store.tokens,
-        &store.paths,
+        store.tokens(),
+        store.paths(),
     )?;
     std::fs::create_dir_all(output)?;
     let file = output.join("housing.usda");
@@ -258,8 +258,8 @@ fn run(output: &Path) -> Result<(), Box<dyn Error>> {
     let loaded = layerstack_usda::read_usda(
         &text,
         LayerId(77),
-        &fresh.tokens,
-        &fresh.paths,
+        fresh.tokens(),
+        fresh.paths(),
         &mut NoAssets,
     );
     assert!(loaded.parse_diagnostics.is_empty(), "saved USDA must parse");

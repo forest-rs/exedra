@@ -32,25 +32,25 @@ impl Fixture {
                 schemas::Domain::UsdProc,
                 schemas::Domain::UsdShade,
             ],
-            &store.tokens,
+            store.tokens(),
         )
         .unwrap();
-        register_schemas(&mut registry, &mut store.tokens);
-        let system = store.tokens.intern(CUSTOM_SYSTEM);
+        register_schemas(&mut registry, store.tokens());
+        let system = store.tokens().intern(CUSTOM_SYSTEM);
         registry.register(
-            SchemaDefinition::typed(store.tokens.intern(CUSTOM_SCHEMA))
-                .with_parent(store.tokens.intern("GenerativeProcedural"))
+            SchemaDefinition::typed(store.tokens().intern(CUSTOM_SCHEMA))
+                .with_parent(store.tokens().intern("GenerativeProcedural"))
                 .with_override(
-                    PropertyDefinition::attribute(store.tokens.intern("proceduralSystem"))
+                    PropertyDefinition::attribute(store.tokens().intern("proceduralSystem"))
                         .with_type(PropertyType::parse("token").unwrap())
                         .with_fallback(Value::Token(system)),
                 )
                 .with_property(
-                    PropertyDefinition::attribute(store.tokens.intern(SIZE))
+                    PropertyDefinition::attribute(store.tokens().intern(SIZE))
                         .with_type(PropertyType::parse("double3").unwrap()),
                 ),
         );
-        let registry = registry.build(&store.tokens);
+        let registry = registry.build(store.tokens());
         assert!(
             registry.issues().is_empty(),
             "schemas must have resolved inheritance: {:?}",
@@ -63,7 +63,7 @@ impl Fixture {
         *local.sublayers_mut() = vec![SublayerEntry::new(BASE), SublayerEntry::new(GENERATED)];
         local.insert_prim(
             root,
-            PrimSpec::def().with_type_name(store.tokens.intern("Xform")),
+            PrimSpec::def().with_type_name(store.tokens().intern("Xform")),
         );
         store.insert_layer(local);
         let live = LiveStage::compose(
@@ -95,7 +95,7 @@ impl Fixture {
     }
 
     fn set(&mut self, path: PathId, name: &str, value: Value) -> Applied {
-        let property = PropertyPath::new(path, self.store.tokens.intern(name));
+        let property = PropertyPath::new(path, self.store.tokens().intern(name));
         let mut transaction = Transaction::new();
         transaction.set_default(EditTarget::for_layer(LOCAL).property(property), value);
         self.live.apply(&mut self.store, &transaction).unwrap()
@@ -115,7 +115,7 @@ impl Fixture {
 
     fn generated_points(&self, output: PathId) -> Vec<[f32; 3]> {
         let scene = Scene::new(self.live.stage(), &self.store);
-        usd_geom::Mesh::new(&scene, output)
+        usd_geom::Mesh::get(&scene, output)
             .unwrap()
             .points()
             .unwrap()
@@ -164,7 +164,7 @@ fn published_polygons_match_direct_construction_and_keep_provenance() {
             direct.bodies[0].body.source_map.stats()
         );
         let scene = Scene::new(fixture.live.stage(), &fixture.store);
-        let mesh = usd_geom::Mesh::new(&scene, source.output).unwrap();
+        let mesh = usd_geom::Mesh::get(&scene, source.output).unwrap();
         assert_eq!(
             mesh.subdivision_scheme(),
             Some(usd_geom::MeshSubdivisionScheme::None)
@@ -205,7 +205,7 @@ fn published_polygons_match_direct_construction_and_keep_provenance() {
             indices.len()
         );
         let normals = mesh.property_path("primvars:normals").unwrap();
-        let interpolation = fixture.store.tokens.lookup("interpolation").unwrap();
+        let interpolation = fixture.store.tokens().lookup("interpolation").unwrap();
         let resolved = fixture
             .live
             .stage()
@@ -218,7 +218,7 @@ fn published_polygons_match_direct_construction_and_keep_provenance() {
             panic!("scalar metadata")
         };
         assert_eq!(
-            value::read_token(&metadata, &fixture.store.tokens),
+            value::read_token(&metadata, fixture.store.tokens()),
             Some("faceVarying")
         );
     }
@@ -389,8 +389,8 @@ fn native_transform_and_material_edits_leave_local_geometry_and_output_untouched
     let first = fixture.sync(&mut evaluator);
     let output = first.sources[0].output;
     let mut transform = PrimSpec::over();
-    let translate = fixture.store.tokens.intern("xformOp:translate");
-    let order = fixture.store.tokens.intern("xformOpOrder");
+    let translate = fixture.store.tokens().intern("xformOp:translate");
+    let order = fixture.store.tokens().intern("xformOpOrder");
     transform.set_property(
         translate,
         PropertySpec::typed_attribute(
@@ -418,12 +418,12 @@ fn native_transform_and_material_edits_leave_local_geometry_and_output_untouched
     bind.create_prim(
         EditTarget::for_layer(LOCAL).prim(material),
         Specifier::Def,
-        Some(fixture.store.tokens.intern("Material")),
+        Some(fixture.store.tokens().intern("Material")),
     );
-    let binding = PropertyPath::new(output, fixture.store.tokens.intern("material:binding"));
+    let binding = PropertyPath::new(output, fixture.store.tokens().intern("material:binding"));
     bind.add_applied_schema(
         EditTarget::for_layer(LOCAL).prim(output),
-        fixture.store.tokens.intern("MaterialBindingAPI"),
+        fixture.store.tokens().intern("MaterialBindingAPI"),
     );
     bind.set_targets(
         EditTarget::for_layer(LOCAL).property(binding),
@@ -688,7 +688,7 @@ fn invalid_input_leaves_the_last_generated_snapshot_intact() {
 fn time_and_policy_participate_in_geometry_identity() {
     let mut fixture = Fixture::new();
     let source = fixture.box_at("/World/Box", [1.0; 3]);
-    let size = PropertyPath::new(source, fixture.store.tokens.intern(SIZE));
+    let size = PropertyPath::new(source, fixture.store.tokens().intern(SIZE));
     let target = EditTarget::for_layer(BASE);
     let mut animate = Transaction::new();
     animate.set_time_sample(target.property(size), 0.0, Value::Vec3d([1.0; 3]));
@@ -935,7 +935,7 @@ fn shared_stage_partners_keep_their_layers_and_strength_order() {
     let mut partner = Layer::new(partner_id);
     partner.insert_prim(
         partner_path,
-        PrimSpec::def().with_type_name(fixture.store.tokens.intern("Xform")),
+        PrimSpec::def().with_type_name(fixture.store.tokens().intern("Xform")),
     );
     fixture.store.insert_layer(partner);
     *fixture.store.layer_mut(LOCAL).unwrap().sublayers_mut() = vec![
@@ -1078,7 +1078,7 @@ fn two_producers_share_a_layer_and_preserve_partner_opinions_on_retirement() {
             .unwrap()
             .property(PropertyPath::new(
                 left_output,
-                fixture.store.tokens.lookup("points").unwrap()
+                fixture.store.tokens().lookup("points").unwrap()
             ))
             .is_none()
     );
@@ -1097,7 +1097,7 @@ fn masked_inputs_reuse_lowering_and_history_loss_refreshes_only_membership() {
     );
     let first = fixture.sync(&mut evaluator);
     let mut masked = Transaction::new();
-    let size = PropertyPath::new(source, fixture.store.tokens.lookup(SIZE).unwrap());
+    let size = PropertyPath::new(source, fixture.store.tokens().lookup(SIZE).unwrap());
     masked.set_default(
         EditTarget::for_layer(BASE).property(size),
         Value::Vec3d([4.0; 3]),
@@ -1114,7 +1114,7 @@ fn masked_inputs_reuse_lowering_and_history_loss_refreshes_only_membership() {
     let mut unrelated = Transaction::new();
     unrelated.set_metadata(
         EditTarget::for_layer(LOCAL).prim(fixture.root),
-        fixture.store.tokens.intern("documentation"),
+        fixture.store.tokens().intern("documentation"),
         "partner edit".into(),
     );
     fixture.live.apply(&mut fixture.store, &unrelated).unwrap();
@@ -1139,7 +1139,7 @@ fn incompatible_publication_is_atomic_across_sources_and_can_be_retried() {
     let first = fixture.sync(&mut evaluator);
     let old_points = fixture.generated_points(first.sources[0].output);
     fixture.set(left, SIZE, Value::Vec3d([4.0; 3]));
-    let points = fixture.store.tokens.lookup("points").unwrap();
+    let points = fixture.store.tokens().lookup("points").unwrap();
     let right_output = first.sources[1].output;
     let layer = fixture.store.layer_mut(GENERATED).unwrap();
     layer
@@ -1226,10 +1226,10 @@ fn procedural_sources_and_native_instances_have_native_bounds() {
             .with_instanceable(true),
     );
     let instancer = fixture.store.path("/World/Instances");
-    let prototypes = fixture.store.tokens.intern("prototypes");
-    let positions = fixture.store.tokens.intern("positions");
-    let indices = fixture.store.tokens.intern("protoIndices");
-    let instancer_type = fixture.store.tokens.intern("PointInstancer");
+    let prototypes = fixture.store.tokens().intern("prototypes");
+    let positions = fixture.store.tokens().intern("positions");
+    let indices = fixture.store.tokens().intern("protoIndices");
+    let instancer_type = fixture.store.tokens().intern("PointInstancer");
     fixture.store.layer_mut(BASE).unwrap().insert_prim(
         instancer,
         PrimSpec::def()
@@ -1342,8 +1342,8 @@ fn mapped_publication_retires_samples_in_authored_layer_time() {
     let original_points = fixture.generated_points(output);
     let mut edits = Transaction::new();
     let properties = [
-        PropertyPath::new(source, fixture.store.tokens.intern("extent")),
-        PropertyPath::new(output, fixture.store.tokens.intern("points")),
+        PropertyPath::new(source, fixture.store.tokens().intern("extent")),
+        PropertyPath::new(output, fixture.store.tokens().intern("points")),
     ];
     for property in properties {
         edits.set_time_sample(
@@ -1355,7 +1355,7 @@ fn mapped_publication_retires_samples_in_authored_layer_time() {
     fixture.live.apply(&mut fixture.store, &edits).unwrap();
     for property in properties {
         let site = target
-            .map_property_to_spec_path(property, &mut fixture.store.paths)
+            .map_property_to_spec_path(property, fixture.store.paths())
             .unwrap();
         let spec = fixture
             .store
@@ -1372,7 +1372,7 @@ fn mapped_publication_retires_samples_in_authored_layer_time() {
     assert_eq!(repaired.stats.source_bounds_written, 1);
     for property in properties {
         let site = target
-            .map_property_to_spec_path(property, &mut fixture.store.paths)
+            .map_property_to_spec_path(property, fixture.store.paths())
             .unwrap();
         let spec = fixture
             .store
@@ -1420,7 +1420,10 @@ fn obsolete_uvs_are_retired_without_removing_partner_properties() {
         )
         .unwrap();
     let output = first.sources[0].output;
-    let uv = PropertyPath::new(output, fixture.store.tokens.lookup("primvars:st").unwrap());
+    let uv = PropertyPath::new(
+        output,
+        fixture.store.tokens().lookup("primvars:st").unwrap(),
+    );
     assert!(
         fixture
             .store
@@ -1429,7 +1432,7 @@ fn obsolete_uvs_are_retired_without_removing_partner_properties() {
             .property(uv)
             .is_some()
     );
-    let tag = PropertyPath::new(output, fixture.store.tokens.intern("user:label"));
+    let tag = PropertyPath::new(output, fixture.store.tokens().intern("user:label"));
     let mut partner = Transaction::new();
     partner.create_property(
         EditTarget::for_layer(GENERATED).property(tag),
@@ -1478,8 +1481,8 @@ fn initial_publication_refuses_occupied_geometry_in_its_target() {
     let mut fixture = Fixture::new();
     fixture.box_at("/World/Box", [1.0; 3]);
     let output = fixture.store.path("/World/Box/__exedra_geometry");
-    let points = fixture.store.tokens.intern("points");
-    let mesh = fixture.store.tokens.intern("Mesh");
+    let points = fixture.store.tokens().intern("points");
+    let mesh = fixture.store.tokens().intern("Mesh");
     let mut partner = Transaction::new();
     partner.create_prim(
         EditTarget::for_layer(GENERATED).prim(output),
@@ -1570,10 +1573,13 @@ fn custom_source(fixture: &mut Fixture) -> PathId {
     author.create_prim(
         target.prim(source),
         Specifier::Def,
-        Some(fixture.store.tokens.intern(CUSTOM_SCHEMA)),
+        Some(fixture.store.tokens().intern(CUSTOM_SCHEMA)),
     );
     author.create_property(
-        target.property(PropertyPath::new(source, fixture.store.tokens.intern(SIZE))),
+        target.property(PropertyPath::new(
+            source,
+            fixture.store.tokens().intern(SIZE),
+        )),
         PropertySpec::typed_attribute(PropertyType::parse("double3").unwrap())
             .with_default(Value::Vec3d([2.0; 3])),
     );
@@ -1606,7 +1612,7 @@ fn same_revision_generator_replacement_invalidates_inputs_and_keeps_publication_
     assert_eq!(fixture.sync(&mut evaluator).stats.source_evaluations, 0);
     let note = PropertyPath::new(
         initial.sources[0].output,
-        fixture.store.tokens.intern("partner:note"),
+        fixture.store.tokens().intern("partner:note"),
     );
     let mut partner = Transaction::new();
     partner.create_property(
@@ -1733,7 +1739,7 @@ fn same_revision_generator_replacement_invalidates_inputs_and_keeps_publication_
             .unwrap()
             .prim(initial.sources[0].output)
             .unwrap()
-            .property(fixture.store.tokens.lookup("points").unwrap())
+            .property(fixture.store.tokens().lookup("points").unwrap())
             .is_none()
     );
 }

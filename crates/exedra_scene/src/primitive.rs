@@ -34,7 +34,7 @@ pub const SEGMENTS: &str = "primvars:exedra:segments";
 /// Register the `OpenUSD` `UsdGeom` and `UsdProc` domains in the same builder.
 /// All registry tokens must belong to the store used to compose the stage.
 /// Dimensions have no fallback: missing construction intent is a refusal.
-pub fn register_schemas(builder: &mut SchemaRegistryBuilder, tokens: &mut TokenInterner) {
+pub fn register_schemas(builder: &mut SchemaRegistryBuilder, tokens: &TokenInterner) {
     let procedural = tokens.intern("GenerativeProcedural");
     let system = tokens.intern("proceduralSystem");
     let box_system = tokens.intern("exedra:box");
@@ -105,15 +105,15 @@ pub fn define_primitive(
     transaction.create_prim(
         target.prim(path),
         Specifier::Def,
-        Some(store.tokens_mut().intern(schema)),
+        Some(store.tokens().intern(schema)),
     );
     let system = match spec {
         PrimitiveSpec::Box { .. } => "exedra:box",
         PrimitiveSpec::Cylinder { .. } => "exedra:cylinder",
         _ => unreachable!("validated supported primitive"),
     };
-    let system = store.tokens_mut().intern(system);
-    let system_name = store.tokens_mut().intern("proceduralSystem");
+    let system = store.tokens().intern(system);
+    let system_name = store.tokens().intern("proceduralSystem");
     transaction.create_property(
         target.property(PropertyPath::new(path, system_name)),
         PropertySpec::typed_attribute(
@@ -127,7 +127,7 @@ pub fn define_primitive(
         if uniform {
             spec = spec.uniform();
         }
-        let name = store.tokens_mut().intern(name);
+        let name = store.tokens().intern(name);
         transaction.create_property(target.property(PropertyPath::new(path, name)), spec);
     };
     match spec {

@@ -32,10 +32,7 @@ fn caller_owned_scene_edit_placement_undo_and_export_are_verified() {
     assert_eq!(report["units"], "mm");
     for file in ["scene.usda", "authored.usda", "generated.usda"] {
         let text = std::fs::read_to_string(output.join(file)).unwrap();
-        assert!(
-            layerstack_usda::parser::parse(&text).diagnostics.is_empty(),
-            "publicly exported layer parses"
-        );
+        assert!(parses_usda(&text), "publicly exported layer parses");
     }
     std::fs::remove_dir_all(output).expect("release test-owned output directory");
 }
@@ -71,12 +68,12 @@ fn native_extent_encloses_unsampled_circle_and_picking_retains_source_scope() {
     schemas::register(
         &mut registry,
         &[schemas::Domain::UsdGeom, schemas::Domain::UsdProc],
-        &store.tokens,
+        store.tokens(),
     )
     .unwrap();
-    register_schemas(&mut registry, &mut store.tokens);
-    panel::register(&mut registry, &mut store.tokens);
-    let registry = Arc::new(registry.build(&store.tokens));
+    register_schemas(&mut registry, store.tokens());
+    panel::register(&mut registry, store.tokens());
+    let registry = Arc::new(registry.build(store.tokens()));
     let root = store.path("/World");
     let asset = store.path("/World/Native");
     store.insert_layer(Layer::new(ROOT));
@@ -95,12 +92,12 @@ fn native_extent_encloses_unsampled_circle_and_picking_retains_source_scope() {
     author.create_prim(
         EditTarget::for_layer(ROOT).prim(root),
         Specifier::Def,
-        Some(store.tokens.intern("Xform")),
+        Some(store.tokens().intern("Xform")),
     );
     author.create_prim(
         EditTarget::for_layer(ROOT).prim(asset),
         Specifier::Def,
-        Some(store.tokens.intern(panel::SCHEMA)),
+        Some(store.tokens().intern(panel::SCHEMA)),
     );
     live.apply(&mut store, &author).unwrap();
     let mut evaluator = SceneEvaluator::new(&store, root, EditTarget::for_layer(GENERATED));
@@ -123,7 +120,7 @@ fn native_extent_encloses_unsampled_circle_and_picking_retains_source_scope() {
     let source = &coarse.sources[0];
     let picked = source.published_native_face(0).unwrap();
     let scene = schemas::Scene::new(live.stage(), &store);
-    let mesh = schemas::usd_geom::Mesh::new(&scene, source.output).unwrap();
+    let mesh = schemas::usd_geom::Mesh::get(&scene, source.output).unwrap();
     let points = mesh.points().unwrap();
     let sampled_max_y = points
         .iter()
@@ -133,7 +130,7 @@ fn native_extent_encloses_unsampled_circle_and_picking_retains_source_scope() {
         sampled_max_y < 4.99,
         "coarse circle deliberately misses the native y extremum"
     );
-    let parent = schemas::usd_geom::Boundable::new(&scene, asset)
+    let parent = schemas::usd_geom::Boundable::get(&scene, asset)
         .unwrap()
         .extent()
         .unwrap();
@@ -153,7 +150,7 @@ fn native_extent_encloses_unsampled_circle_and_picking_retains_source_scope() {
         .unwrap()
         .unwrap();
     assert_eq!(
-        schemas::value::read_uint_array(&native_ids, &store.tokens).unwrap()[0],
+        schemas::value::read_uint_array(&native_ids, store.tokens()).unwrap()[0],
         picked.native_id().0
     );
     display.native.tolerance = 0.02;
@@ -175,7 +172,7 @@ fn native_extent_encloses_unsampled_circle_and_picking_retains_source_scope() {
     // A stronger partner can change composed points. Native queries and the
     // retained producer snapshot keep describing their original source.
     let current_scene = schemas::Scene::new(live.stage(), &store);
-    let current_points = schemas::usd_geom::Mesh::new(&current_scene, source.output)
+    let current_points = schemas::usd_geom::Mesh::get(&current_scene, source.output)
         .unwrap()
         .points()
         .unwrap();
@@ -196,7 +193,7 @@ fn native_extent_encloses_unsampled_circle_and_picking_retains_source_scope() {
     live.apply(&mut store, &override_points).unwrap();
     let scene = schemas::Scene::new(live.stage(), &store);
     assert!(
-        schemas::usd_geom::Mesh::new(&scene, source.output)
+        schemas::usd_geom::Mesh::get(&scene, source.output)
             .unwrap()
             .points()
             .unwrap()[0][0]
@@ -237,8 +234,8 @@ fn composed_state(live: &LiveStage, store: &InMemoryStore) -> Vec<ComposedPrim> 
         },
     );
     let root = store
-        .paths
-        .lookup(&Path::parse_absolute("/World", &store.tokens).unwrap())
+        .paths()
+        .lookup(&Path::parse_absolute("/World", store.tokens()).unwrap())
         .unwrap();
     let mut output = Vec::new();
     for path in live.stage().traverse(root) {
@@ -277,11 +274,11 @@ fn composed_state(live: &LiveStage, store: &InMemoryStore) -> Vec<ComposedPrim> 
                         connections
                             .iter()
                             .map(|p| match p {
-                                TargetPath::Prim(id) => store.paths.display(*id, &store.tokens),
+                                TargetPath::Prim(id) => store.paths().display(*id, store.tokens()),
                                 TargetPath::Property(p) => format!(
                                     "{}.{}",
-                                    store.paths.display(p.prim_path(), &store.tokens),
-                                    store.tokens.resolve(p.property())
+                                    store.paths().display(p.prim_path(), store.tokens()),
+                                    store.tokens().resolve(p.property())
                                 ),
                             })
                             .collect(),
@@ -294,11 +291,11 @@ fn composed_state(live: &LiveStage, store: &InMemoryStore) -> Vec<ComposedPrim> 
                         .targets()
                         .iter()
                         .map(|p| match p {
-                            TargetPath::Prim(id) => store.paths.display(*id, &store.tokens),
+                            TargetPath::Prim(id) => store.paths().display(*id, store.tokens()),
                             TargetPath::Property(p) => format!(
                                 "{}.{}",
-                                store.paths.display(p.prim_path(), &store.tokens),
-                                store.tokens.resolve(p.property())
+                                store.paths().display(p.prim_path(), store.tokens()),
+                                store.tokens().resolve(p.property())
                             ),
                         })
                         .collect(),
@@ -308,9 +305,9 @@ fn composed_state(live: &LiveStage, store: &InMemoryStore) -> Vec<ComposedPrim> 
         let material = bindings
             .compute_bound_material(&scene, path)
             .material
-            .map(|p| store.paths.display(p, &store.tokens));
+            .map(|p| store.paths().display(p, store.tokens()));
         output.push(ComposedPrim {
-            path: store.paths.display(path, &store.tokens),
+            path: store.paths().display(path, store.tokens()),
             type_name: prim.type_name().map(str::to_owned),
             world: transforms.local_to_world(&scene, path),
             attributes,
@@ -340,12 +337,12 @@ pub(super) fn assert_clean_equivalence(
             schemas::Domain::UsdProc,
             schemas::Domain::UsdShade,
         ],
-        &fresh.tokens,
+        fresh.tokens(),
     )
     .unwrap();
-    register_schemas(&mut registry, &mut fresh.tokens);
-    panel::register(&mut registry, &mut fresh.tokens);
-    let registry = Arc::new(registry.build(&fresh.tokens));
+    register_schemas(&mut registry, fresh.tokens());
+    panel::register(&mut registry, fresh.tokens());
+    let registry = Arc::new(registry.build(fresh.tokens()));
     let root = fresh.path("/World");
     let mut clean_live = LiveStage::compose(
         &mut fresh,

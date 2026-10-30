@@ -519,9 +519,12 @@ jobs:
           repository: forest-rs/layerstack
           ref: ${{ steps.layerstack-pin.outputs.revision }}
           path: .local/partners/layerstack
-      - name: verify native client affinity
+      - name: verify official TypeScript binding affinity
         working-directory: apps/exedra_authoring_demo
         run: npm run check:partner
+      - name: install official Layerstack TypeScript build tools
+        working-directory: .local/partners/layerstack/packages/layerstack
+        run: npm ci
       - name: install browser dependencies
         working-directory: apps/exedra_authoring_demo
         run: npm ci

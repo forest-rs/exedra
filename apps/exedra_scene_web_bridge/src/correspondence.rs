@@ -3,8 +3,8 @@
 
 use crate::{
     backend::{Backend, Result},
+    error::refusal,
     packet,
-    protocol::refusal,
 };
 use exedra_scene::{Time, composition::stage::Prototype, composition::*, schemas};
 
@@ -12,15 +12,16 @@ fn unsupported(message: impl Into<String>) -> Box<dyn std::error::Error> {
     refusal("scene.instanceCorrespondence", message)
 }
 
-pub(crate) fn validate_all(b: &mut Backend) -> Result<(u64, usize, usize)> {
+pub(crate) fn validate_all(b: &mut Backend<'_>) -> Result<(u64, usize, usize)> {
     let revision = b.live.change_cursor().revision();
-    if b.verified_instances == Some((revision, b.source_revision)) {
+    if b.state.verified_instances == Some((revision, b.state.source_revision)) {
         return Ok((revision, 0, 0));
     }
     let mut prototypes = 0;
     let mut instances = 0;
     let mut transforms = schemas::XformCache::new(Time::Default);
     let source = b
+        .state
         .snapshot
         .as_ref()
         .and_then(|s| s.sources.first())
@@ -28,7 +29,7 @@ pub(crate) fn validate_all(b: &mut Backend) -> Result<(u64, usize, usize)> {
     let kind = b
         .live
         .stage()
-        .view(&b.store)
+        .view(b.store)
         .prim(source.path)
         .and_then(|p| p.type_name());
     for prototype in b.live.stage().prototypes() {
@@ -36,12 +37,12 @@ pub(crate) fn validate_all(b: &mut Backend) -> Result<(u64, usize, usize)> {
         for &path in prototype
             .instances()
             .iter()
-            .filter(|p| b.placement_set.contains(p))
+            .filter(|p| b.state.placement_set.contains(p))
         {
             let root = b
                 .live
                 .stage()
-                .view(&b.store)
+                .view(b.store)
                 .prim(path)
                 .ok_or_else(|| unsupported("tracked instance disappeared"))?;
             if root.type_name() != kind {
@@ -59,7 +60,7 @@ pub(crate) fn validate_all(b: &mut Backend) -> Result<(u64, usize, usize)> {
         validate_instance(b, instance, &mut transforms)?;
         validate_contents(b, prototype)?;
     }
-    if instances != b.placements.len() {
+    if instances != b.state.placements.len() {
         return Err(unsupported(
             "tracked paths no longer match current native instance roots",
         ));
@@ -67,11 +68,11 @@ pub(crate) fn validate_all(b: &mut Backend) -> Result<(u64, usize, usize)> {
     Ok((revision, prototypes, instances))
 }
 
-fn validate_contents(b: &Backend, prototype: Prototype<'_>) -> Result<()> {
-    let scene = schemas::Scene::new(b.live.stage(), &b.store);
+fn validate_contents(b: &Backend<'_>, prototype: Prototype<'_>) -> Result<()> {
+    let scene = schemas::Scene::new(b.live.stage(), b.store);
     for prim in prototype.prims() {
         if prim.relative_path().len() == 1
-            && b.store.tokens.resolve(prim.relative_path()[0]) == exedra_scene::GENERATED_CHILD
+            && b.store.tokens().resolve(prim.relative_path()[0]) == exedra_scene::GENERATED_CHILD
         {
             continue;
         }
@@ -84,12 +85,12 @@ fn validate_contents(b: &Backend, prototype: Prototype<'_>) -> Result<()> {
     Ok(())
 }
 
-pub(crate) fn validate_pick(b: &Backend, instance: PathId) -> Result<()> {
+pub(crate) fn validate_pick(b: &Backend<'_>, instance: PathId) -> Result<()> {
     validate_instance(b, instance, &mut schemas::XformCache::new(Time::Default))?;
     let id = b
         .live
         .stage()
-        .view(&b.store)
+        .view(b.store)
         .prim(instance)
         .and_then(|p| p.prototype())
         .ok_or_else(|| unsupported("instance has no current prototype"))?;
@@ -103,16 +104,17 @@ pub(crate) fn validate_pick(b: &Backend, instance: PathId) -> Result<()> {
 }
 
 pub(crate) fn validate_instance(
-    b: &Backend,
+    b: &Backend<'_>,
     instance: PathId,
     transforms: &mut schemas::XformCache,
 ) -> Result<()> {
     let source = b
+        .state
         .snapshot
         .as_ref()
         .and_then(|s| s.sources.first())
         .ok_or("sync before verifying instance")?;
-    let view = b.live.stage().view(&b.store);
+    let view = b.live.stage().view(b.store);
     let root = view
         .prim(instance)
         .ok_or_else(|| unsupported("instance is missing"))?;
@@ -137,11 +139,11 @@ pub(crate) fn validate_instance(
         if origin.is_none() || origin != actual_origin || !expected.shares_storage(actual) {
             return Err(unsupported(format!(
                 "{} resolves geometry or provenance from a different source",
-                b.store.paths.display(instance, &b.store.tokens)
+                b.store.paths().display(instance, b.store.tokens())
             )));
         }
     }
-    let scene = schemas::Scene::new(b.live.stage(), &b.store);
+    let scene = schemas::Scene::new(b.live.stage(), b.store);
     for path in [source.output, mesh.path()] {
         let local = transforms
             .local_transform(&scene, path)
@@ -160,7 +162,7 @@ pub(crate) fn validate_instance(
             ("subdivisionScheme", "none"),
             ("orientation", "rightHanded"),
         ] {
-            if !matches!(prim.attribute(name).and_then(|a|a.get(Time::Default)).map(|v|v.value),Some(Value::Token(token)) if b.store.tokens.resolve(token)==expected)
+            if !matches!(prim.attribute(name).and_then(|a|a.get(Time::Default)).map(|v|v.value),Some(Value::Token(token)) if b.store.tokens().resolve(token)==expected)
             {
                 return Err(unsupported(
                     "unsupported composed mesh orientation or subdivision",
@@ -171,7 +173,7 @@ pub(crate) fn validate_instance(
             ("primvars:normals", "faceVarying"),
             (exedra_scene::NATIVE_FACE, "uniform"),
         ] {
-            if !matches!(prim.property(name).and_then(|p|p.metadata("interpolation")).map(|v|v.value),Some(ResolvedValue::Scalar(Value::Token(token))) if b.store.tokens.resolve(token)==interpolation)
+            if !matches!(prim.property(name).and_then(|p|p.metadata("interpolation")).map(|v|v.value),Some(ResolvedValue::Scalar(Value::Token(token))) if b.store.tokens().resolve(token)==interpolation)
             {
                 return Err(unsupported("unsupported composed mesh interpolation"));
             }

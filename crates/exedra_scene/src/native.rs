@@ -207,7 +207,7 @@ pub fn define_native_body(
             Value::TypedArray(TypedArray::Double(Arc::new(archive.geometry))),
         ),
     ] {
-        let property = PropertyPath::new(path, store.tokens_mut().intern(name));
+        let property = PropertyPath::new(path, store.tokens().intern(name));
         tx.create_property(
             target.property(property),
             PropertySpec::typed_attribute(
@@ -392,7 +392,7 @@ mod tests {
             restored.fingerprint()
         );
         let mut corrupt = Transaction::new();
-        let property = PropertyPath::new(path, store.tokens_mut().intern(FORMAT));
+        let property = PropertyPath::new(path, store.tokens().intern(FORMAT));
         corrupt.set_default(
             EditTarget::for_layer(root).property(property),
             Value::UInt(999),
@@ -616,7 +616,7 @@ mod composition_recovery_tests {
         let mut stronger = Transaction::new();
         let target = EditTarget::for_layer(root);
         stronger.create_prim(target.prim(path), Specifier::Over, None);
-        let property = PropertyPath::new(path, store.tokens_mut().intern(GEOMETRY));
+        let property = PropertyPath::new(path, store.tokens().intern(GEOMETRY));
         stronger.create_property(
             target.property(property),
             PropertySpec::typed_attribute(PropertyType::parse("double[]").unwrap()).with_default(
@@ -658,7 +658,7 @@ mod composition_recovery_tests {
         });
         let mut deferred = Transaction::new();
         deferred.create_prim(target.prim(path), Specifier::Over, None);
-        let property = PropertyPath::new(path, store.tokens_mut().intern(TOPOLOGY));
+        let property = PropertyPath::new(path, store.tokens().intern(TOPOLOGY));
         deferred.create_property(
             target.property(property),
             PropertySpec::typed_attribute(PropertyType::parse("uint[]").unwrap())

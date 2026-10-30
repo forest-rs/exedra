@@ -1,7 +1,7 @@
 // Copyright 2026 the Exedra Authors
 // SPDX-License-Identifier: Apache-2.0 OR MIT
 
-use crate::backend::{Backend, GENERATED, Result};
+use crate::backend::{Backend, Result};
 use exedra_scene::{Time, composition::*, schemas};
 use serde_json::json;
 use wasm_bindgen::prelude::*;
@@ -36,8 +36,9 @@ impl ScenePacket {
     }
 }
 
-pub(crate) fn composed_arrays(b: &Backend) -> Result<[TypedArray; 5]> {
+pub(crate) fn composed_arrays(b: &Backend<'_>) -> Result<[TypedArray; 5]> {
     let source = b
+        .state
         .snapshot
         .as_ref()
         .and_then(|s| s.sources.first())
@@ -45,13 +46,13 @@ pub(crate) fn composed_arrays(b: &Backend) -> Result<[TypedArray; 5]> {
     Ok(mesh_values_at(b, source.output)?.map(|(array, _)| array))
 }
 pub(crate) fn mesh_values_at(
-    b: &Backend,
+    b: &Backend<'_>,
     path: PathId,
 ) -> Result<[(TypedArray, Option<Provenance>); 5]> {
     let prim = b
         .live
         .stage()
-        .view(&b.store)
+        .view(b.store)
         .prim(path)
         .ok_or("published mesh is missing")?;
     let get = |name| -> Result<(TypedArray, Option<Provenance>)> {
@@ -73,32 +74,37 @@ pub(crate) fn mesh_values_at(
     ])
 }
 
-pub(crate) fn producer_output(b: &Backend, arrays: &[TypedArray; 5]) -> bool {
-    let Some(source) = b.snapshot.as_ref().and_then(|s| s.sources.first()) else {
+pub(crate) fn producer_output(b: &Backend<'_>, arrays: &[TypedArray; 5]) -> bool {
+    let Some(source) = b.state.snapshot.as_ref().and_then(|s| s.sources.first()) else {
         return false;
     };
-    let Some(layer) = b.store.layer(GENERATED) else {
+    let Some(layer) = b.store.layer(b.state.layers.generated) else {
         return false;
     };
     ["points","faceVertexCounts","faceVertexIndices","primvars:normals",exedra_scene::NATIVE_FACE]
         .iter().zip(arrays).all(|(name,array)| {
-            let Some(token) = b.store.tokens.lookup(name) else { return false; };
+            let Some(token) = b.store.tokens().lookup(name) else { return false; };
             let site = SpecPath::from_property_path(PropertyPath::new(source.output,token));
             matches!(layer.property_at(&site).and_then(|s|s.default.as_ref()),Some(Value::TypedArray(owned)) if owned.shares_storage(array))
         })
 }
 
-pub(crate) fn pack(b: &mut Backend, realm: &str) -> Result<ScenePacket> {
-    b.live.synchronize(&mut b.store);
+pub(crate) fn pack(b: &mut Backend<'_>, realm: &str) -> Result<ScenePacket> {
+    b.live.synchronize(b.store);
     let arrays = composed_arrays(b)?;
     let (revision, prototype_checks, instance_checks) = crate::correspondence::validate_all(b)?;
     let changed = b
+        .state
         .last_mesh
         .as_ref()
         .is_none_or(|old| !old.iter().zip(&arrays).all(|(a, b)| a.shares_storage(b)));
     let mut positions = Vec::new();
     let mut normals = Vec::new();
-    let mut display_abs = if changed { [0.0_f64; 3] } else { b.display_abs };
+    let mut display_abs = if changed {
+        [0.0_f64; 3]
+    } else {
+        b.state.display_abs
+    };
     let [
         TypedArray::Vec3f(points),
         TypedArray::Int(counts),
@@ -138,21 +144,21 @@ pub(crate) fn pack(b: &mut Backend, realm: &str) -> Result<ScenePacket> {
             }
         }
     }
-    let scene = schemas::Scene::new(b.live.stage(), &b.store);
+    let scene = schemas::Scene::new(b.live.stage(), b.store);
     let mut transforms = schemas::XformCache::new(Time::Default);
-    let mut matrices = Vec::with_capacity(b.pending_placements.len() * 16);
-    let mut paths = Vec::with_capacity(b.pending_placements.len());
-    let mut updates = Vec::with_capacity(b.pending_placements.len());
+    let mut matrices = Vec::with_capacity(b.state.pending_placements.len() * 16);
+    let mut paths = Vec::with_capacity(b.state.pending_placements.len());
+    let mut updates = Vec::with_capacity(b.state.pending_placements.len());
     if changed {
-        for matrix in b.last_transforms.values() {
+        for matrix in b.state.last_transforms.values() {
             validate_gpu_placement(matrix, display_abs)?;
         }
     }
-    for &path in &b.pending_placements {
+    for &path in &b.state.pending_placements {
         let prim = b
             .live
             .stage()
-            .view(&b.store)
+            .view(b.store)
             .prim(path)
             .ok_or("instance disappeared")?;
         if !prim.is_instance() {
@@ -165,33 +171,34 @@ pub(crate) fn pack(b: &mut Backend, realm: &str) -> Result<ScenePacket> {
             return Err("nonfinite instance transform".into());
         }
         validate_gpu_placement(&matrix, display_abs)?;
-        if b.reset_instances || b.last_transforms.get(&path) != Some(&matrix) {
+        if b.state.reset_instances || b.state.last_transforms.get(&path) != Some(&matrix) {
             matrices.extend(matrix.into_iter().flatten());
-            paths.push(b.store.paths.display(path, &b.store.tokens));
+            paths.push(b.store.paths().display(path, b.store.tokens()));
             updates.push((path, matrix));
         }
     }
-    let snapshot = b.snapshot.as_ref().expect("checked composed source");
+    let snapshot = b.state.snapshot.as_ref().expect("checked composed source");
     let metadata = json!({
-        "geometryChanged":changed,"source":snapshot.sources[0].source,"sourceScope":format!("{realm}/source/{}",b.source_revision),"instances":paths,"resetInstances":b.reset_instances,
+        "geometryChanged":changed,"source":snapshot.sources[0].source,"sourceScope":format!("{realm}/source/{}",b.state.source_revision),"instances":paths,"resetInstances":b.state.reset_instances,
         "triangles":counts.len(),"nativePicking":producer_output(b,&arrays),
         "geometryBytes":(positions.len()+normals.len())*size_of::<f32>(),
         "transformBytes":matrices.len()*size_of::<f64>(),
-        "transformQueries":b.pending_placements.len(),
+        "transformQueries":b.state.pending_placements.len(),
         "prototypeChecks":prototype_checks,"instanceChecks":instance_checks,
-        "instanceCount":b.placements.len(),"matrixConvention":"row-vector", 
+        "instanceCount":b.state.placements.len(),"matrixConvention":"row-vector",
         "accuracySpace":"source-local","occurrencePrecision":"renderer f32, separately from source-local geometry accuracy"
     }).to_string();
-    b.last_mesh = Some(arrays);
-    b.verified_instances = Some((revision, b.source_revision));
-    b.display_abs = display_abs;
-    if b.reset_instances {
-        b.last_transforms
-            .retain(|path, _| b.placement_set.contains(path));
+    b.state.last_mesh = Some(arrays);
+    b.state.verified_instances = Some((revision, b.state.source_revision));
+    b.state.display_abs = display_abs;
+    if b.state.reset_instances {
+        b.state
+            .last_transforms
+            .retain(|path, _| b.state.placement_set.contains(path));
     }
-    b.last_transforms.extend(updates);
-    b.pending_placements.clear();
-    b.reset_instances = false;
+    b.state.last_transforms.extend(updates);
+    b.state.pending_placements.clear();
+    b.state.reset_instances = false;
     Ok(ScenePacket {
         metadata,
         positions,

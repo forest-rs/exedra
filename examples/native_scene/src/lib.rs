@@ -22,7 +22,7 @@ pub const PANEL_WIDTH: &str = panel::WIDTH;
 pub const PANEL_DEPTH: &str = panel::DEPTH;
 
 /// Registers the shared example's typed native schema in a caller's registry.
-pub fn register_panel_schema(builder: &mut SchemaRegistryBuilder, tokens: &mut TokenInterner) {
+pub fn register_panel_schema(builder: &mut SchemaRegistryBuilder, tokens: &TokenInterner) {
     panel::register(builder, tokens);
 }
 

@@ -1,33 +1,34 @@
 # Native scene browser bridge
 
-This unpublished application module owns one native Layerstack store and stage,
-plus the shared Exedra geometry compiler and scene adapter. Layerstack owns
-composition, explicit-layer transactions, inverse receipts, queries and mute
-controls. Exedra owns the native construction provider, compilation and derived
-Mesh publication. The generic TypeScript client lives in Layerstack; it talks to
-this same stage through an injected transport.
+The official Layerstack binding owns the native document, composition, typed
+transactions, undo receipts, queries, asset loading and persistence. Exedra owns
+only construction, compilation, derived Mesh publication and display caches.
+Both bindings are linked into one Wasm module and borrow the same document.
 
-All four authored layers can be inspected or downloaded as native USDA. Internal
-references are authored against their owning layer and resolve in the composed
-stage. The bounded transport's `addReference` accepts the stage root or edit-target
-layer for that intent. Other layer roots require an authored external asset path,
-which this endpoint currently refuses with `edit.referenceAsset`; it does not
-invent filenames for foreign in-memory layers. Export refuses unrepresentable
-arcs rather than silently dropping them.
+Open `scene_root()` through the official `Layerstack` client with identifier
+`scene.usda` and `provenance: true`. Use `stage.withNative` to construct
+`SceneKernel(nativeStage, instances, realm)` with a unique host-generated realm
+such as `crypto.randomUUID()`. Construction supplies the three named dependency
+layers and authors the demo assembly. The official registry supplies standard
+schemas; the root's fallback type metadata identifies the custom procedural.
 
-`SceneKernel(instances, realm)` installs the shared native panel provider and
-authors base, override and generated layers with millimetres and Z up. Pass a
-unique host-generated realm such as `crypto.randomUUID()` for each backend,
-including separate Wasm module instances. Stage/store/layer/receipt IDs retain
-that realm and use strings. The demo never exchanges raw geometry handles with
-the separate geometry-only Wasm module.
+`sync(nativeStage)`, `pack(nativeStage)` and `pick(nativeStage, ...)` borrow the
+caller's official stage for that call. Store identity rejects another document
+before mutation. No pointer or borrowed view is retained by the geometry kernel.
+Disposing the kernel leaves the stage usable; the official client guards calls
+after stage disposal. `set_display_tolerance` affects realization only.
+Layer muting, editing, undo, inspection and export use the official client
+directly. Native errors use the official binding's structured error record:
+`scene.provenance` requires provenance at creation, `scene.stage_affinity`
+rejects another document, `scene.stale_pick` requires current display scope,
+and `scene.geometry` reports failed geometry evaluation. `Stage.withNative`
+preserves these codes and attaches the caller's operation name.
 
-`request` accepts Layerstack's version-one generic envelope and the separate
-`exedra.scene` extension on the same transport. Source authoring and geometry
-synchronization are explicit operations. Native transaction failures are atomic;
-generator or publication failure preserves last-good output. Request size,
-transaction/query sizes, instance count and retained inverse receipts are
-bounded. Release unused receipts or dispose the stage to release ownership.
+Native publication mutates the official document's store, so `save` observes the
+actual dirty layer generations. All four named layers can be inspected,
+downloaded and reopened through the official API. Generator or publication
+failure preserves last-good output. Instance count and geometry work remain
+bounded by their existing native policies.
 
 `pack` extracts actual composed USD Mesh values and instance world transforms,
 not a JavaScript scene tree or a second geometry model. Immutable array storage
@@ -62,9 +63,9 @@ advance last-sent geometry or transform state.
 
 The app observes stage-call, synchronization, packing and buffer-copy elapsed
 times separately with its host clock. Wasm-call timings include their ABI and
-JSON work; client elapsed also includes asynchronous transport overhead. No
+report encoding; client elapsed includes official wrapper decoding. No
 clock or DOM dependency enters the core adapter.
 
 The web build checks out the TypeScript partner at the exact Layerstack git
-revision used by all three Rust dependencies. The geometry-only SDK does not
+revision used by the Rust dependencies. The geometry-only SDK does not
 import this runtime; the Scene module and its separate Wasm binary load lazily.

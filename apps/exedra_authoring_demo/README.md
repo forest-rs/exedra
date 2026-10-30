@@ -16,6 +16,7 @@ From this directory, with Node.js 22.18+ (or 24+), Rust's
 ```sh
 git clone https://github.com/forest-rs/layerstack ../../.local/partners/layerstack
 git -C ../../.local/partners/layerstack checkout --detach "$(node scripts/check-layerstack-partner.mjs --revision)"
+npm --prefix ../../.local/partners/layerstack/packages/layerstack ci
 npm run check:lockfile
 npm ci
 npm run dev
@@ -74,11 +75,17 @@ logical native ownership. It excludes view creation and GPU work.
 
 Select **View → Scene** in the gallery to open the native Layerstack scene application.
 `/scene.html` also runs this view on its own. Its separate Wasm
-binary loads only when this view is mounted. The combined backend owns one
-store/stage and attaches the Exedra provider to it; the generic Stage client is
-owned by Layerstack and accepts an injected transport. No handles cross the
-geometry-only and scene Wasm memories. Both Rust and TypeScript use the exact
-same checked Layerstack revision, including clean CI checkout.
+binary loads only when this view is mounted. The official `@forest-rs/layerstack` binding and Exedra extensions share the same
+application-owned Stage and combined Wasm module. Typed edits, layer inspection,
+change listeners and native geometry operate on that Stage through Layerstack’s
+public API. No handles cross the geometry-only and scene Wasm memories. Rust,
+TypeScript source and the runtime version report use the same checked Layerstack
+revision, including clean CI checkout. The package build uses the combined
+module’s actual generated glue; it does not initialize a second Layerstack Wasm.
+The Stage opts into provenance for native correspondence. Public layer muting
+and typed edit receipts use the official binding; generated geometry stays in
+its own layer, so undo changes authored inputs and the next sync republishes the
+derived output. Extension refusals use `LayerstackError.code` and `.operation`.
 
 The view shows a shared tagged native prototype at actual stage instance paths.
 Source parameter edits, one-instance placement, undo, override-layer mute and
@@ -87,8 +94,8 @@ counts distinguish source lowering, geometry, polygon encoding/validation and
 publication. Discovery remains visible: first stronger opinions or declarations
 can scan the composed namespace despite reusing geometry. Numeric transfer counts
 exclude metadata. Stage, sync and packing
-timings measure Wasm calls including ABI work; client elapsed additionally
-includes asynchronous transport overhead. They are observations, not controlled
+timings measure Wasm calls including ABI work; Stage API elapsed also includes
+typed client conversion and notification work. They are observations, not controlled
 benchmarks. Native accuracy is source-local; GPU occurrence matrices use f32.
 
 Picking maps the actual composed polygon ordinal and instance path to retained

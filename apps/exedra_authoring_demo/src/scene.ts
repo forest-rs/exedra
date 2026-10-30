@@ -4,11 +4,13 @@
 import * as THREE from "three";
 import { OrbitControls } from "three/examples/jsm/controls/OrbitControls.js";
 import {
-  Stage,
+  Layerstack,
+  type Stage,
   type Layer,
-  type UndoReceipt,
+  type EditReceipt,
   type Edit,
-} from "@layerstack/client";
+} from "@forest-rs/layerstack";
+import { updateInstanceBounds } from "./scene-bounds";
 import "./scene.css";
 
 interface Work {
@@ -45,7 +47,7 @@ interface Controller {
 const number = (value: number, digits = 2) =>
   value.toLocaleString(undefined, { maximumFractionDigits: digits });
 
-/** App-only view. Generic native Stage ownership belongs to the injected client. */
+/** App-only view over the official Layerstack Stage and its native extensions. */
 export async function mountScene({
   container,
   controls,
@@ -55,7 +57,13 @@ export async function mountScene({
 }): Promise<Controller> {
   const wasm =
     await import("../../../packages/exedra/dist/scene_wasm/exedra_scene_web_bridge.js");
-  await wasm.default();
+  const initialized = await wasm.default();
+  const layerstack = new Layerstack({
+    Stage: wasm.Stage,
+    EditBatch: wasm.EditBatch,
+    nativeVersion: wasm.nativeVersion,
+    memory: initialized.memory,
+  });
   container.innerHTML = `<section class="native-scene">
     <aside class="scene-controls"><h2>Native stage</h2>
       <label>Instances <select data-field="count"><option>1</option><option>16</option><option selected>100</option><option>1000</option></select></label>
@@ -120,7 +128,7 @@ export async function mountScene({
   let layers: Layer[] = [];
   let overrides: Layer;
   let inspectedLayer: Layer | null = null;
-  let receipts: UndoReceipt[] = [];
+  let receipts: EditReceipt[] = [];
   let disposed = false,
     active = true,
     frame = 0,
@@ -135,7 +143,9 @@ export async function mountScene({
     if (!native || released.has(native)) return;
     released.add(native);
     try {
-      await client?.dispose();
+      for (const receipt of receipts) receipt.release();
+      receipts = [];
+      client?.free();
     } finally {
       native.free();
     }
@@ -206,31 +216,22 @@ export async function mountScene({
     orbit.update();
     invalidate();
   }
-  function extension<T>(op: Record<string, unknown>): T {
-    const request = {
-      protocol: "exedra.scene",
-      version: 1,
-      stage: stage.stageId,
-      store: stage.storeId,
-      op,
-    };
-    const response = JSON.parse(kernel.request(JSON.stringify(request)));
-    if (
-      response.protocol !== "exedra.scene" ||
-      response.stage !== stage.stageId ||
-      response.store !== stage.storeId
-    )
-      throw new Error("Foreign scene extension response");
-    if (!response.ok)
-      throw new Error(response.error?.message ?? "Scene operation refused");
-    return response.result as T;
+  function stageCall<T>(call: () => T): T {
+    const start = performance.now();
+    try {
+      return call();
+    } finally {
+      lastStageCall += performance.now() - start;
+    }
   }
   async function synchronize(label: string, editElapsed = 0) {
     const start = performance.now();
-    const work = extension<Work>({ type: "sync" });
+    const work = JSON.parse(
+      stage.withNative("exedra.sync", (native) => kernel.sync(native)),
+    ) as Work;
     const syncElapsed = performance.now() - start;
     const packStart = performance.now(),
-      packet = kernel.pack();
+      packet = stage.withNative("exedra.pack", (native) => kernel.pack(native));
     const packElapsed = performance.now() - packStart;
     try {
       const previous = info;
@@ -294,8 +295,8 @@ export async function mountScene({
         }
         if (matrices.length) {
           mesh.instanceMatrix.needsUpdate = true;
-          mesh.computeBoundingSphere();
         }
+        updateInstanceBounds(mesh, info.geometryChanged, matrices.length > 0);
       }
       rows("work", [
         ["Discovered prims", work.stats.discoveredPrims],
@@ -310,7 +311,7 @@ export async function mountScene({
         ],
       ]);
       rows("timings", [
-        ["Stage calls · Wasm", `${number(lastStageCall, 3)} ms`],
+        ["Stage API · elapsed", `${number(lastStageCall, 3)} ms`],
         ["Edit · client elapsed", `${number(editElapsed, 3)} ms`],
         ["Sync · Wasm call", `${number(syncElapsed, 3)} ms`],
         ["Pack · Wasm call", `${number(packElapsed, 3)} ms`],
@@ -322,6 +323,9 @@ export async function mountScene({
         ["Transform queries", info.transformQueries],
         ["Instance patches", info.instances.length],
         ["Triangles / prototype", info.triangles],
+        ["Stage bytes in · total", layerstack.transfer().bytesIn],
+        ["Stage bytes out · total", layerstack.transfer().bytesOut],
+        ["Module memory", layerstack.transfer().memoryBytes],
       ]);
       rows("source", [
         ["Volume", `${number(work.source.volume)} mm³`],
@@ -353,20 +357,27 @@ export async function mountScene({
   }
   async function initialize() {
     const start = performance.now();
-    const created = new wasm.SceneKernel(
-      Number(field<HTMLSelectElement>("count").value),
-      crypto.randomUUID(),
+    const connected = layerstack.open(
+      { identifier: "scene.usda", bytes: wasm.scene_root() },
+      { provenance: true },
     );
+    let created: InstanceType<typeof wasm.SceneKernel>;
+    try {
+      created = connected.withNative(
+        "exedra.create",
+        (native) =>
+          new wasm.SceneKernel(
+            native,
+            Number(field<HTMLSelectElement>("count").value),
+            crypto.randomUUID(),
+          ),
+      );
+    } catch (error) {
+      connected.free();
+      throw error;
+    }
     kernel = created;
     lastStageCall = performance.now() - start;
-    const connected = await Stage.connect({
-      request(raw) {
-        const start = performance.now();
-        const response = created.request(raw);
-        lastStageCall += performance.now() - start;
-        return response;
-      },
-    });
     stage = connected;
     inspectedLayer = null;
     value("layer-text").textContent = "";
@@ -375,10 +386,13 @@ export async function mountScene({
       await releaseNative(created, connected);
       throw new Error("Scene view was disposed while loading");
     }
-    layers = (await stage.inspect()).layers;
-    overrides = layers.find((layer) => layer.name === "overrides.usda")!;
+    layers = stageCall(() => stage.layers());
+    overrides = layers.find((layer) => layer.identifier === "overrides.usda")!;
     field<HTMLSelectElement>("layer").replaceChildren(
-      ...layers.map((layer, index) => new Option(layer.name, String(index))),
+      ...layers.map(
+        (layer, index) =>
+          new Option(layer.identifier ?? "Anonymous layer", String(index)),
+      ),
     );
     field<HTMLInputElement>("overrides").checked = true;
     receipts = [];
@@ -389,21 +403,19 @@ export async function mountScene({
     await refreshInputs();
     root.dataset.ready = "true";
   }
-  async function retain(receipt: UndoReceipt) {
+  function retain(receipt: EditReceipt) {
     receipts.push(receipt);
-    if (receipts.length > 16) await stage.releaseReceipt(receipts.shift()!);
+    if (receipts.length > 16) receipts.shift()!.release();
   }
   async function refreshInputs() {
-    const source = await stage.query("/World/PanelAsset", [
-      "primvars:example:width",
-      "primvars:example:depth",
-    ]);
     for (const [fieldName, attribute] of [
       ["width", "primvars:example:width"],
       ["depth", "primvars:example:depth"],
     ]) {
-      const raw = source.attributes[attribute]?.value;
-      if (raw?.type === "double") {
+      const raw = stageCall(() =>
+        stage.attribute(`/World/PanelAsset.${attribute}`)?.get(),
+      );
+      if (raw?.kind === "scalar" && raw.type === "double") {
         field<HTMLInputElement>(fieldName).value = String(raw.value);
         value(fieldName).textContent = String(raw.value);
       }
@@ -413,9 +425,10 @@ export async function mountScene({
   async function queryPlacement() {
     const path = paths[Number(field<HTMLInputElement>("instance").value)];
     if (!path) return;
-    const part = await stage.query(path, ["xformOp:translate"]);
-    const raw = part.attributes["xformOp:translate"]?.value;
-    if (raw?.type === "double3")
+    const raw = stageCall(() =>
+      stage.attribute(`${path}.xformOp:translate`)?.get(),
+    );
+    if (raw?.kind === "tuple" && raw.type === "double3")
       ["x", "y", "z"].forEach((axis, index) => {
         field<HTMLInputElement>(axis).value = String(raw.value[index]);
       });
@@ -444,22 +457,27 @@ export async function mountScene({
     raw:
       | { type: "double"; value: number }
       | { type: "double3"; value: [number, number, number] },
-  ): Edit => ({ type: "setAttribute", path, name, value: raw });
+  ): Edit => ({ type: "setValue", path: `${path}.${name}`, value: raw });
   async function updateSource() {
     if (busy || disposed) return;
     sourcePending = false;
     await action("Source parameters", async () => {
-      const edit = await stage.transaction(overrides, [
-        attribute("/World/PanelAsset", "primvars:example:width", {
-          type: "double",
-          value: Number(field<HTMLInputElement>("width").value),
-        }),
-        attribute("/World/PanelAsset", "primvars:example:depth", {
-          type: "double",
-          value: Number(field<HTMLInputElement>("depth").value),
-        }),
-      ]);
-      await retain(edit.receipt);
+      const receipt = stageCall(() =>
+        stage.apply(
+          [
+            attribute("/World/PanelAsset", "primvars:example:width", {
+              type: "double",
+              value: Number(field<HTMLInputElement>("width").value),
+            }),
+            attribute("/World/PanelAsset", "primvars:example:depth", {
+              type: "double",
+              value: Number(field<HTMLInputElement>("depth").value),
+            }),
+          ],
+          overrides,
+        ),
+      );
+      retain(receipt);
     });
   }
   for (const name of ["width", "depth"])
@@ -473,10 +491,11 @@ export async function mountScene({
     "change",
     () =>
       void action("Display quality", async () => {
-        extension({
-          type: "displayPolicy",
-          tolerance: Number(field("quality").value),
-        });
+        stageCall(() =>
+          stage.withNative("exedra.quality", () =>
+            kernel.set_display_tolerance(Number(field("quality").value)),
+          ),
+        );
       }),
   );
   listen(
@@ -484,9 +503,10 @@ export async function mountScene({
     "change",
     () =>
       void action("Layer mute", async () => {
-        await stage.mute(
-          overrides,
-          !field<HTMLInputElement>("overrides").checked,
+        stageCall(() =>
+          field<HTMLInputElement>("overrides").checked
+            ? stage.unmuteLayer(overrides)
+            : stage.muteLayer(overrides),
         );
         await refreshInputs();
       }),
@@ -530,9 +550,9 @@ export async function mountScene({
           void action("Undo", async () => {
             const receipt = receipts.at(-1);
             if (!receipt) return;
-            const inverse = await stage.undo(receipt);
+            const inverse = stageCall(() => receipt.undo());
             receipts.pop();
-            await stage.releaseReceipt(inverse.receipt);
+            inverse.release();
             await refreshInputs();
           });
           break;
@@ -543,33 +563,40 @@ export async function mountScene({
             const raw = ["x", "y", "z"].map((axis) =>
               Number(field(axis).value),
             ) as [number, number, number];
-            const edit = await stage.transaction(overrides, [
-              attribute(path, "xformOp:translate", {
-                type: "double3",
-                value: raw,
-              }),
-            ]);
-            await retain(edit.receipt);
+            const receipt = stageCall(() =>
+              stage.apply(
+                [
+                  attribute(path, "xformOp:translate", {
+                    type: "double3",
+                    value: raw,
+                  }),
+                ],
+                overrides,
+              ),
+            );
+            retain(receipt);
           });
           break;
         case "inspect":
         case "download":
           void action("Layer inspection", async () => {
             const layer = layers[Number(field("layer").value)];
-            const saved = await stage.layerText(layer);
+            const bytes = stageCall(() => stage.exportLayer(layer, "usda"));
+            const text = new TextDecoder().decode(bytes);
             if (button.dataset.action === "inspect") {
               const panel = value("layer-text"),
                 close = inspectedLayer === layer && !panel.hidden;
-              panel.textContent = saved.text;
+              panel.textContent = text;
               panel.hidden = close;
               inspectedLayer = layer;
             } else {
               const url = URL.createObjectURL(
-                new Blob([saved.text], { type: "text/plain" }),
+                new Blob([text], { type: "text/plain" }),
               );
               const link = document.createElement("a");
               link.href = url;
-              link.download = saved.name;
+              link.download =
+                layer.identifier?.split("/").at(-1) ?? "layer.usda";
               link.click();
               setTimeout(() => URL.revokeObjectURL(url), 1000);
             }
@@ -598,12 +625,16 @@ export async function mountScene({
     selected = hit.instanceId;
     field<HTMLInputElement>("instance").value = String(selected);
     try {
-      const picked = extension({
-        type: "pick",
-        instance: paths[selected],
-        triangle: hit.faceIndex,
-        sourceScope: info.sourceScope,
-      });
+      const picked = JSON.parse(
+        stage.withNative("exedra.pick", (native) =>
+          kernel.pick(
+            native,
+            paths[selected],
+            hit.faceIndex!,
+            info!.sourceScope,
+          ),
+        ),
+      );
       value("selection").textContent = JSON.stringify(picked, null, 2);
       void queryPlacement();
     } catch (error) {

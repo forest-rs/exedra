@@ -1,139 +1,155 @@
 // Copyright 2026 the Exedra Authors
 // SPDX-License-Identifier: Apache-2.0 OR MIT
 
-//! Lazy browser application combining a native stage with Exedra construction.
-//!
-//! The application owns one store and stage. The geometry adapter borrows them;
-//! no geometry handles cross independent Wasm memories. Host clocks measure
-//! transactions, synchronization and transfer separately.
+//! Exedra geometry over a caller-owned official Layerstack Stage in one Wasm memory.
+//! Layerstack owns composition, typed edits, undo, asset loading and persistence.
+//! This module owns geometry evaluation, display deltas and native correspondence.
 
 mod backend;
 mod correspondence;
+mod error;
 mod packet;
-mod protocol;
 #[cfg(test)]
 mod tests;
 pub use packet::ScenePacket;
 
-use backend::{Backend, Result};
+use backend::{Result, State};
 use exedra_scene::{Time, composition::*};
 use serde_json::json;
 use wasm_bindgen::prelude::*;
 
-fn js_error(error: impl std::fmt::Display) -> JsValue {
-    JsValue::from_str(&json!({"code":"scene.operation","message":error.to_string()}).to_string())
-}
 fn js_native_error(error: Box<dyn std::error::Error>) -> JsValue {
-    let code = error
-        .downcast_ref::<protocol::Refusal>()
-        .map_or("scene.operation", |r| r.code);
-    JsValue::from_str(&json!({"code":code,"message":error.to_string()}).to_string())
+    error::native(error).into()
 }
 
-/// Internal demo application backend; its stage transport is supplied separately.
+/// Root bytes for a fresh demo stage, opened by the official Layerstack binding.
+#[must_use]
+#[wasm_bindgen]
+pub fn scene_root() -> Vec<u8> {
+    backend::ROOT_BYTES.to_vec()
+}
+
+/// Retained geometry and extraction state, bound to one caller-owned official Stage.
+///
+/// Every operation borrows that Stage again. Freeing this object never frees the
+/// Stage, and passing another Stage refuses before either document is changed.
 #[derive(Debug)]
 #[wasm_bindgen]
 pub struct SceneKernel {
-    backend: Option<Backend>,
+    state: State,
     realm: String,
 }
 
 #[wasm_bindgen]
 impl SceneKernel {
-    /// Creates real native prototype references on a caller-owned application stage.
+    /// Authors a demo assembly into a fresh stage opened from [`scene_root`].
     ///
     /// # Errors
-    /// Rejects invalid instance budgets or native stage/schema authoring failures.
+    /// Rejects invalid counts, realms, seeds or native authoring failures.
     #[wasm_bindgen(constructor)]
-    pub fn new(instances: u32, realm: String) -> std::result::Result<Self, JsValue> {
+    pub fn new(
+        stage: &mut layerstack_wasm::Stage,
+        instances: u32,
+        realm: String,
+    ) -> std::result::Result<Self, JsValue> {
+        Self::new_inner(stage, instances, realm).map_err(js_native_error)
+    }
+
+    /// Evaluates changed source geometry and publishes into the official document.
+    ///
+    /// # Errors
+    /// Rejects foreign stages or invalid authored inputs, preserving retained output.
+    pub fn sync(
+        &mut self,
+        stage: &mut layerstack_wasm::Stage,
+    ) -> std::result::Result<String, JsValue> {
+        self.sync_inner(stage).map_err(js_native_error)
+    }
+
+    /// Extracts actual composed polygon and occurrence deltas.
+    /// No-op and placement-only edits transfer no polygon buffers.
+    ///
+    /// # Errors
+    /// Refuses foreign stages, unsupported topology or invalid composed values.
+    pub fn pack(
+        &mut self,
+        stage: &mut layerstack_wasm::Stage,
+    ) -> std::result::Result<ScenePacket, JsValue> {
+        let mut context = self.state.borrow(stage).map_err(js_native_error)?;
+        packet::pack(&mut context, &self.realm).map_err(js_native_error)
+    }
+
+    /// Sets source-local display tolerance without replacing retained native geometry.
+    ///
+    /// # Errors
+    /// Rejects nonfinite tolerances or values outside 1e-6 through 10 millimetres.
+    pub fn set_display_tolerance(&mut self, tolerance: f64) -> std::result::Result<(), JsValue> {
+        if !tolerance.is_finite() || !(1e-6..=10.0).contains(&tolerance) {
+            return Err(js_native_error(
+                "display tolerance must be finite between 1e-6 and 10 mm".into(),
+            ));
+        }
+        self.state.policy.native.tolerance = tolerance;
+        Ok(())
+    }
+
+    /// Explains a displayed triangle through its current native source and occurrence.
+    ///
+    /// # Errors
+    /// Rejects foreign stages, stale source scopes or overridden correspondence.
+    pub fn pick(
+        &mut self,
+        stage: &mut layerstack_wasm::Stage,
+        instance: &str,
+        triangle: u32,
+        source_scope: &str,
+    ) -> std::result::Result<String, JsValue> {
+        self.pick_inner(stage, instance, triangle, source_scope)
+            .map(|v| v.to_string())
+            .map_err(js_native_error)
+    }
+}
+
+impl SceneKernel {
+    fn new_inner(
+        stage: &mut layerstack_wasm::Stage,
+        instances: u32,
+        realm: String,
+    ) -> Result<Self> {
         if !(16..=128).contains(&realm.len())
             || !realm
                 .bytes()
                 .all(|b| b.is_ascii_alphanumeric() || b == b'-')
         {
-            return Err(js_error(
-                "supply a unique host-generated backend realm, such as crypto.randomUUID()",
-            ));
+            return Err("supply a unique host-generated realm, such as crypto.randomUUID()".into());
         }
-        Backend::new(instances)
-            .map(|backend| Self {
-                backend: Some(backend),
-                realm,
-            })
-            .map_err(js_native_error)
+        Ok(Self {
+            state: State::new(stage, instances)?,
+            realm,
+        })
     }
 
-    /// Extracts actual composed USD values and changed native instance transforms.
-    /// No-op and placement-only edits transfer no polygon buffers.
-    ///
-    /// # Errors
-    /// Refuses unsupported topology or invalid composed values explicitly.
-    pub fn pack(&mut self) -> std::result::Result<ScenePacket, JsValue> {
-        packet::pack(
-            self.backend
-                .as_mut()
-                .ok_or_else(|| js_error("stage is disposed"))?,
-            &self.realm,
-        )
-        .map_err(js_native_error)
-    }
-
-    /// Dispatches the versioned generic Layerstack transport on this same stage.
-    /// Errors are structured envelopes; no Rust or Wasm handles cross the boundary.
-    pub fn request(&mut self, raw: &str) -> String {
-        let request: Result<serde_json::Value> = if raw.len() > 1 << 20 {
-            Err(protocol::refusal(
-                "request.budget",
-                "stage request exceeds one MiB",
-            ))
-        } else {
-            serde_json::from_str(raw).map_err(Into::into)
-        };
-        let namespace = request
-            .as_ref()
-            .ok()
-            .and_then(|v| {
-                v.get("protocol")
-                    .and_then(serde_json::Value::as_str)
-                    .map(str::to_owned)
-            })
-            .unwrap_or_else(|| "layerstack".into());
-        let context=request.as_ref().ok().and_then(|v|v.get("op")).map(|op|json!({"operation":op.get("type"),"path":op.get("path"),"target":op.get("target")}));
-        let result = request.and_then(|request| self.request_inner(&request));
-        let mut response = json!({"protocol":namespace,"version":1,"stage":protocol::stage_id(&self.realm),"store":protocol::store_id(&self.realm),"ok":result.is_ok()});
-        match result {
-            Ok(value) => response["result"] = value,
-            Err(error) => {
-                let code = if let Some(refusal) = error.downcast_ref::<protocol::Refusal>() {
-                    refusal.code
-                } else if error.is::<serde_json::Error>() {
-                    "request.invalidJson"
-                } else {
-                    "stage.nativeRefused"
-                };
-                response["error"] =
-                    json!({"code":code,"message":error.to_string(),"context":context});
-            }
-        }
-        response.to_string()
-    }
-}
-
-impl SceneKernel {
-    fn sync_inner(&mut self) -> Result<String> {
-        let b = self.backend.as_mut().ok_or("stage is disposed")?;
+    fn sync_inner(&mut self, stage: &mut layerstack_wasm::Stage) -> Result<String> {
+        let mut context = self.state.borrow(stage)?;
+        let b = &mut context;
         let next_source = b
+            .state
             .source_revision
             .checked_add(1)
             .ok_or("source revision budget exhausted")?;
-        let snapshot = b.evaluator.sync(
-            &mut b.live,
-            &mut b.store,
-            &mut b.compiler,
-            Time::Default,
-            &b.policy,
-        )?;
+        let snapshot = b
+            .state
+            .evaluator
+            .sync(
+                b.live,
+                b.store,
+                &mut b.state.compiler,
+                Time::Default,
+                &b.state.policy,
+            )
+            .map_err(|error| error::refusal("scene.geometry", error.to_string()))?;
         let same_source = b
+            .state
             .snapshot
             .as_ref()
             .and_then(|s| s.sources.first())
@@ -158,10 +174,10 @@ impl SceneKernel {
         };
         let summary = fresh
             .as_ref()
-            .or(b.source_summary.as_ref())
+            .or(b.state.source_summary.as_ref())
             .ok_or("missing retained source summary")?;
         let revision = if same_source {
-            b.source_revision
+            b.state.source_revision
         } else {
             next_source
         };
@@ -184,123 +200,67 @@ impl SceneKernel {
             "units":"mm","accuracySpace":"source-local",
         }).to_string();
         if fresh.is_some() {
-            b.source_summary = fresh;
+            b.state.source_summary = fresh;
         }
-        b.source_revision = revision;
-        b.snapshot = Some(snapshot);
+        b.state.source_revision = revision;
+        b.state.snapshot = Some(snapshot);
+        // Evaluation has already observed input changes; generated publication
+        // cannot alter occurrence placements, so do not rediscover them next call.
+        b.state.cursor = b.live.change_cursor();
         Ok(response)
     }
 
-    fn request_inner(&mut self, request: &serde_json::Value) -> Result<serde_json::Value> {
-        let namespace = request
-            .get("protocol")
-            .and_then(serde_json::Value::as_str)
-            .ok_or("missing protocol namespace")?;
-        if !["layerstack", "exedra.scene"].contains(&namespace)
-            || request.get("version").and_then(serde_json::Value::as_u64) != Some(1)
-        {
-            return Err(protocol::refusal(
-                "protocol.unsupported",
-                "unsupported stage protocol/version",
+    fn pick_inner(
+        &mut self,
+        stage: &mut layerstack_wasm::Stage,
+        instance: &str,
+        triangle: u32,
+        source_scope: &str,
+    ) -> Result<serde_json::Value> {
+        let context = self.state.borrow(stage)?;
+        let b = &context;
+        if source_scope != format!("{}/source/{}", self.realm, b.state.source_revision) {
+            return Err(error::refusal(
+                "scene.stale_pick",
+                "display source is stale; extract current scene before picking",
             ));
         }
-        let op = request.get("op").ok_or("missing operation")?;
-        let kind = protocol::text(op, "type")?;
-        if (namespace != "layerstack" || kind != "describe")
-            && (protocol::text(request, "stage")? != protocol::stage_id(&self.realm)
-                || protocol::text(request, "store")? != protocol::store_id(&self.realm))
+        let path = b
+            .store
+            .paths()
+            .lookup(&Path::parse_absolute(instance, b.store.tokens())?)
+            .ok_or("unknown instance path")?;
+        if !b.state.placements.contains(&path)
+            || !b
+                .live
+                .stage()
+                .view(b.store)
+                .prim(path)
+                .is_some_and(|p| p.is_instance())
         {
-            return Err(protocol::refusal(
-                "stage.affinity",
-                "foreign stage/store affinity",
-            ));
+            return Err("pick requires a current native instance root".into());
         }
-        if namespace == "exedra.scene" {
-            return self.scene_operation(op);
+        correspondence::validate_pick(b, path)?;
+        let arrays = packet::composed_arrays(b)?;
+        if !packet::producer_output(b, &arrays) {
+            return Err(
+                "composed geometry overrides producer output; native picking is unavailable".into(),
+            );
         }
-        if kind == "dispose" {
-            self.backend
-                .take()
-                .ok_or_else(|| protocol::refusal("stage.disposed", "stage is disposed"))?;
-            return Ok(json!({}));
-        }
-        protocol::dispatch(
-            self.backend
-                .as_mut()
-                .ok_or_else(|| protocol::refusal("stage.disposed", "stage is disposed"))?,
-            &self.realm,
-            op,
+        let triangle = usize::try_from(triangle)?;
+        let source = b
+            .state
+            .snapshot
+            .as_ref()
+            .and_then(|s| s.sources.first())
+            .ok_or("sync before picking")?;
+        let selected = source
+            .published_native_face(triangle)
+            .ok_or("unknown generated triangle")?;
+        let native = source.native().ok_or("missing native source")?;
+        let face = selected.native_id();
+        Ok(
+            json!({"source":source.source,"sourceScope":source_scope,"instance":instance,"nativeFace":face.0,"tags":native.face_tags(face)?.map(|tag|tag.0).collect::<Vec<_>>(),"planarFrame":native.planar_frame(face).ok().map(|frame|frame.rows),"units":"mm","frameSpace":"source-local"}),
         )
-    }
-
-    fn scene_operation(&mut self, op: &serde_json::Value) -> Result<serde_json::Value> {
-        match protocol::text(op, "type")? {
-            "sync" => Ok(serde_json::from_str(&self.sync_inner()?)?),
-            "displayPolicy" => {
-                let tolerance = op
-                    .get("tolerance")
-                    .and_then(serde_json::Value::as_f64)
-                    .filter(|v| v.is_finite() && *v >= 1e-6 && *v <= 10.0)
-                    .ok_or("display tolerance must be finite between1e-6and10mm")?;
-                self.backend
-                    .as_mut()
-                    .ok_or("stage is disposed")?
-                    .policy
-                    .native
-                    .tolerance = tolerance;
-                Ok(json!({}))
-            }
-            "pick" => {
-                let b = self.backend.as_mut().ok_or("stage is disposed")?;
-                b.live.synchronize(&mut b.store);
-                if protocol::text(op, "sourceScope")?
-                    != format!("{}/source/{}", self.realm, b.source_revision)
-                {
-                    return Err(
-                        "display source is stale; extract current scene before picking".into(),
-                    );
-                }
-                let instance = protocol::text(op, "instance")?;
-                let path = b
-                    .store
-                    .paths
-                    .lookup(&Path::parse_absolute(instance, &b.store.tokens)?)
-                    .ok_or("unknown instance path")?;
-                if !b.placements.contains(&path)
-                    || !b
-                        .live
-                        .stage()
-                        .view(&b.store)
-                        .prim(path)
-                        .is_some_and(|p| p.is_instance())
-                {
-                    return Err("pick requires a current native instance root".into());
-                }
-                correspondence::validate_pick(b, path)?;
-                let arrays = packet::composed_arrays(b)?;
-                if !packet::producer_output(b, &arrays) {
-                    return Err("composed geometry overrides producer output; native picking is unavailable".into());
-                }
-                let triangle = usize::try_from(
-                    op.get("triangle")
-                        .and_then(serde_json::Value::as_u64)
-                        .ok_or("expected triangle ordinal")?,
-                )?;
-                let source = b
-                    .snapshot
-                    .as_ref()
-                    .and_then(|s| s.sources.first())
-                    .ok_or("sync before picking")?;
-                let selected = source
-                    .published_native_face(triangle)
-                    .ok_or("unknown generated triangle")?;
-                let native = source.native().ok_or("missing native source")?;
-                let face = selected.native_id();
-                Ok(
-                    json!({"source":source.source,"sourceScope":protocol::text(op,"sourceScope")?,"instance":instance,"nativeFace":face.0,"tags":native.face_tags(face)?.map(|tag|tag.0).collect::<Vec<_>>(),"planarFrame":native.planar_frame(face).ok().map(|frame|frame.rows),"units":"mm","frameSpace":"source-local"}),
-                )
-            }
-            unknown => Err(format!("unsupported Exedra scene operation {unknown}").into()),
-        }
     }
 }
