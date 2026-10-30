@@ -31,6 +31,7 @@ members = [
     "crates/exedra_profile",
     "crates/exedra_scene",
     "crates/exedra_step",
+    "crates/exedra_tetrahedralize",
     "crates/exedra_testkit",
     "crates/exedra_triangulate",
     "crates/joiner",
@@ -132,6 +133,7 @@ exedra_primitives = { default-features = false, path = "crates/exedra_primitives
 exedra_profile = { path = "crates/exedra_profile", version = "0.1.0" }
 exedra_scene = { default-features = false, path = "crates/exedra_scene", version = "0.1.0" }
 exedra_step = { default-features = false, path = "crates/exedra_step", version = "0.1.0" }
+exedra_tetrahedralize = { default-features = false, path = "crates/exedra_tetrahedralize", version = "0.1.0" }
 exedra_testkit = { default-features = false, path = "crates/exedra_testkit" }
 exedra_triangulate = { default-features = false, path = "crates/exedra_triangulate", version = "0.1.0" }
 fidget = { default-features = false, version = "0.5.0" }
