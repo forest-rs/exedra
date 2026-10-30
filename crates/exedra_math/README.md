@@ -22,8 +22,8 @@ Current scope:
   cursor authoring, sampling, recipe encoding and mesh evaluation stay in
   their consuming crates. `Path3::xy_circle` validates a radius independently
   of sampling policy. Owned paths use `alloc` and remain `no_std`,
-- `predicates`: exact-sign `orient2d`, `orient3d`, `incircle` and
-  `plane_side`, with floating-point filters and exact fallbacks,
+- `predicates`: exact-sign `orient2d`, `orient3d`, `incircle`, `insphere`
+  and `plane_side`, with floating-point filters and exact fallbacks,
 - `keyed`: stable, counter-based deterministic randomness (`hash`, `mix`,
   `tag`, `Key`), a frozen cross-repository contract
   ([ADR-0001](docs/adr-0001-keyed-hash-contract.md)).
@@ -87,6 +87,13 @@ Its ordinary path uses a floating-point error-bound filter; inconclusive
 queries expand the homogeneous degree-four determinant into 48 monomials and
 sum their exact binary64 values in fixed positive and negative limb arrays.
 `incircle_evaluated` reports `IncirclePath::Filter` or `IncirclePath::Dyadic`.
+
+`predicates::insphere` classifies a point against the circumsphere of a
+positively oriented tetrahedron, in Shewchuk's orientation convention. Its
+filter is Shewchuk's; inconclusive queries expand the lifted 5×5 determinant
+into 360 five-factor monomials over the original coordinates and sum them in
+the dyadic accumulator, so the sign is exact for every finite input.
+`insphere_evaluated` reports `InspherePath::Filter` or `InspherePath::Dyadic`.
 
 `predicates::plane_side` evaluates the exact sign of an authored plane equation
 without normalizing its coefficients. A conservative floating-point filter uses
