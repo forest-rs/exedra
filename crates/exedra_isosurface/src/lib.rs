@@ -15,7 +15,10 @@
 //! - lifting operators in [`lift`],
 //! - reusable transform wrappers in [`transform`],
 //! - opt-in semi-analytic primitive projection in [`semi_analytic`],
-//! - a first dual-contouring extraction path in [`mod@dual_contour`].
+//! - a first dual-contouring extraction path in [`mod@dual_contour`],
+//! - surface meshing of [`exedra_implicit`] fields by restricted Delaunay
+//!   refinement in [`delaunay`]: near-isotropic triangles, sharp creases
+//!   and corners, and a manifold around every vertex.
 //!
 //! This crate intentionally starts at the evaluation boundary. It does not yet
 //! define a full implicit scene/domain model.
@@ -62,6 +65,7 @@ pub mod analytic;
 pub mod analytic2d;
 pub mod bounds2;
 mod cell_topology;
+pub mod delaunay;
 pub mod dual_contour;
 pub mod hermite;
 pub mod lift;
@@ -75,6 +79,7 @@ pub use qef::QefParams;
 pub use spatial::Aabb;
 
 pub use bounds2::Aabb2;
+pub use delaunay::{DelaunayError, DelaunayParams, DelaunayReport, DelaunayResult, delaunay_mesh};
 pub use dual_contour::{
     DualContourError, DualContourErrorKind, DualContourParameter, DualContourParams,
     DualContourResult, DualContourStats, ExtractionCandidate, ExtractionCell, ExtractionCellIssue,

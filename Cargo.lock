@@ -446,8 +446,10 @@ dependencies = [
 name = "exedra_isosurface"
 version = "0.1.0"
 dependencies = [
+ "exedra_implicit",
  "exedra_math",
  "exedra_mesh",
+ "exedra_tetrahedralize",
  "hashbrown",
  "libm",
 ]
