@@ -22,8 +22,8 @@ Current scope:
   cursor authoring, sampling, recipe encoding and mesh evaluation stay in
   their consuming crates. `Path3::xy_circle` validates a radius independently
   of sampling policy. Owned paths use `alloc` and remain `no_std`,
-- `predicates`: exact-sign `orient2d`, `orient3d`, `incircle`, `insphere`
-  and `plane_side`, with floating-point filters and exact fallbacks,
+- `predicates`: exact-sign `orient2d`, `orient3d`, `incircle`, `insphere`,
+  the weighted power test `insphere_weighted`, and `plane_side`, with floating-point filters and exact fallbacks,
 - `keyed`: stable, counter-based deterministic randomness (`hash`, `mix`,
   `tag`, `Key`), a frozen cross-repository contract
   ([ADR-0001](docs/adr-0001-keyed-hash-contract.md)).
@@ -94,6 +94,12 @@ filter is Shewchuk's; inconclusive queries expand the lifted 5×5 determinant
 into 360 five-factor monomials over the original coordinates and sum them in
 the dyadic accumulator, so the sign is exact for every finite input.
 `insphere_evaluated` reports `InspherePath::Filter` or `InspherePath::Dyadic`.
+
+`predicates::insphere_weighted` is the power test of regular (weighted
+Delaunay) tetrahedralizations: points carry a squared radius, and the test
+asks whether the fifth has negative power distance to the sphere orthogonal
+to the other four. It shares `insphere`'s filter and exact path, with each
+weight subtracted from its point's lift.
 
 `predicates::plane_side` evaluates the exact sign of an authored plane equation
 without normalizing its coefficients. A conservative floating-point filter uses

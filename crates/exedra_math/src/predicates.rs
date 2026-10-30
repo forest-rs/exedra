@@ -44,7 +44,10 @@ use dyadic::Accumulator;
 pub use plane::plane_side;
 
 pub use incircle::{InCircle, IncircleEvaluation, IncirclePath, incircle, incircle_evaluated};
-pub use insphere::{InSphere, InsphereEvaluation, InspherePath, insphere, insphere_evaluated};
+pub use insphere::{
+    InSphere, InsphereEvaluation, InspherePath, insphere, insphere_evaluated, insphere_weighted,
+    insphere_weighted_evaluated,
+};
 
 /// Largest coordinate magnitude the predicates accept.
 ///
