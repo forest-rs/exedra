@@ -220,6 +220,9 @@ fn heavy_points_hide_light_ones() {
     // Unweighted points inside the heavy ball are refused, and walks that
     // would start at the hidden grid vertex still find their way.
     assert_eq!(tets.insert([0.95, 1.0, 1.0]), Err(TetError::Hidden));
+    // A hidden vertex is still the vertex at its position.
+    assert_eq!(tets.insert([1.05, 1.0, 0.95]), Ok(light));
+    assert_eq!(tets.insert([1.0, 1.0, 1.0]), Ok(center));
     tets.insert([1.3, 1.6, 1.0])
         .expect("outside the heavy ball");
     assert_eq!(tets.validate(), Ok(()));

@@ -66,6 +66,7 @@
 #![no_std]
 extern crate alloc;
 
+use alloc::collections::BTreeMap;
 use alloc::vec::Vec;
 use core::fmt;
 
@@ -236,6 +237,9 @@ pub struct Tetrahedralization {
     weighted: bool,
     /// A live tetrahedron at each vertex, where walks start.
     vertex_tets: Vec<u32>,
+    /// Hidden vertices by position, which no tetrahedron holds for a walk
+    /// to find.
+    hidden: BTreeMap<[u64; 3], u32>,
     /// The latest vertex inserted in each cell of a coarse grid over the
     /// hull, so walks can start near points the grid vertices are far from.
     buckets: Vec<u32>,
@@ -339,6 +343,7 @@ impl Tetrahedralization {
             weighted: false,
             points,
             vertex_tets,
+            hidden: BTreeMap::new(),
             marks: alloc::vec![0; live],
             tets,
             free: Vec::new(),
@@ -580,6 +585,10 @@ impl Tetrahedralization {
             }
             Location::Tetrahedron(tet) => tet.0,
         };
+        if let Some(&vertex) = self.hidden.get(&position_key(point)) {
+            self.stats.coincident += 1;
+            return Ok(VertexId(vertex));
+        }
         self.weighted |= weight != 0.0;
         if !self.conflicts(start, point, weight) {
             self.stats.hidden_points += 1;
@@ -927,6 +936,8 @@ impl Tetrahedralization {
                 let recorded = self.vertex_tets[vertex as usize];
                 if recorded != NONE && self.marks[recorded as usize] == self.epoch {
                     self.vertex_tets[vertex as usize] = NONE;
+                    self.hidden
+                        .insert(position_key(self.points[vertex as usize]), vertex);
                     self.stats.hidden_vertices += 1;
                 }
             }
@@ -983,6 +994,11 @@ fn link_faces(tets: &mut [Tet]) {
             k += 1;
         }
     }
+}
+
+/// A key equal for equal positions, the two zeros included.
+fn position_key(point: [f64; 3]) -> [u64; 3] {
+    point.map(|v| (v + 0.0).to_bits())
 }
 
 fn xorshift(state: &mut u64) -> u64 {
