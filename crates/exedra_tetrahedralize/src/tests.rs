@@ -181,3 +181,47 @@ fn tiny_and_huge_scales_stay_exact() {
         assert_eq!(tets.validate(), Ok(()));
     }
 }
+
+#[test]
+fn weighted_insertions_stay_regular() {
+    let axis = [0.0, 0.5, 1.0];
+    let mut tets = Tetrahedralization::grid(&axis, &axis, &axis).expect("valid grid");
+    let points = random_points(300, 23, 1.0);
+    let weights = random_points(300, 29, 0.002);
+    let mut hidden = 0;
+    for (point, weight) in points.into_iter().zip(weights) {
+        match tets.insert_weighted(point, weight[0]) {
+            Ok(vertex) => assert_eq!(tets.weight(vertex), weight[0]),
+            Err(TetError::Hidden) => hidden += 1,
+            Err(other) => panic!("unexpected {other:?}"),
+        }
+    }
+    assert_eq!(tets.validate(), Ok(()));
+    assert!((volume6(&tets) - 6.0).abs() < 1e-9);
+    assert_eq!(tets.stats().hidden_points, hidden);
+}
+
+#[test]
+fn heavy_points_hide_light_ones() {
+    let axis = [0.0, 1.0, 2.0];
+    let mut tets = Tetrahedralization::grid(&axis, &axis, &axis).expect("valid grid");
+    let light = tets.insert([1.05, 1.0, 0.95]).expect("inside");
+    // A heavy ball swallows the light point and the interior grid vertex;
+    // hull vertices keep unbounded power cells and are never hidden.
+    let heavy = tets.insert_weighted([1.0, 1.0, 0.95], 0.3).expect("inside");
+    let center = VertexId((3 + 1) * 3 + 1);
+    assert_eq!(tets.point(center), [1.0, 1.0, 1.0]);
+    assert!(tets.is_hidden(light));
+    assert!(tets.is_hidden(center));
+    assert!(!tets.is_hidden(heavy));
+    assert!(!tets.is_hidden(VertexId(0)));
+    assert_eq!(tets.stats().hidden_vertices, 2);
+    assert_eq!(tets.validate(), Ok(()));
+    // Unweighted points inside the heavy ball are refused, and walks that
+    // would start at the hidden grid vertex still find their way.
+    assert_eq!(tets.insert([0.95, 1.0, 1.0]), Err(TetError::Hidden));
+    tets.insert([1.3, 1.6, 1.0])
+        .expect("outside the heavy ball");
+    assert_eq!(tets.validate(), Ok(()));
+    assert!((volume6(&tets) - 6.0 * 8.0).abs() < 1e-9);
+}
