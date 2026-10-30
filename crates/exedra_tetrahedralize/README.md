@@ -77,8 +77,9 @@ feature stay connected.
 
 `new_tetrahedra` lists the tetrahedra the latest insertion created, which
 are exactly the new vertex's star; `star` lists the tetrahedra around any
-vertex. Refinement algorithms on top re-examine
-only those instead of rescanning the whole tetrahedralization.
+vertex, and `tetrahedron_at` gives one to start a walk of one's own.
+Refinement algorithms on top re-examine only those instead of rescanning the
+whole tetrahedralization.
 
 `VertexId`s are stable and dense: grid vertices first, numbered
 `(i * ny + j) * nz + k`, then inserted vertices in order. `TetId`s are valid
