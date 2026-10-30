@@ -23,4 +23,3 @@ exedra_math = { features = ["std"], workspace = true }
 exedra_mesh = { features = ["std"], workspace = true }
 exedra_mesh_ops = { features = ["libm", "std"], workspace = true }
 exedra_primitives = { features = ["std"], workspace = true }
-exedra_triangulate = { workspace = true }

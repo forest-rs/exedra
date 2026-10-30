@@ -1,21 +1,31 @@
 // Copyright 2026 the Exedra Authors
 // SPDX-License-Identifier: Apache-2.0 OR MIT
 
-//! Exact-sign planar predicates.
+//! Exact-sign geometric predicates.
+//!
+//! Each predicate returns the exact sign of a determinant over its `f64`
+//! inputs, so geometric decisions agree with each other and are
+//! bit-identical on every platform. No epsilons, no transcendentals.
 //!
 //! [`orient2d`] returns the exact sign of the 2×2 orientation determinant: a
 //! fast floating-point filter answers the overwhelming majority of queries,
 //! narrow exponent spans fall back to exact expansion arithmetic after a
 //! lossless common power-of-two scaling, and wider spans use fixed-size exact
-//! dyadic accumulation. No epsilons, no transcendentals, and the result is
-//! bit-identical on every platform.
+//! dyadic accumulation. [`orient3d`] filters the same way and falls back to
+//! exact expansion arithmetic over the original coordinates.
 //!
 //! [`incircle()`] uses the same shape: a fast error-bound filter followed by a
 //! fixed-size exact dyadic accumulator. The exact path expands the homogeneous
 //! degree-four determinant directly, avoiding rounded coordinate differences.
+//! [`plane_side`] classifies a point against an authored plane equation through
+//! the same accumulator, without normalizing its coefficients.
 //!
-//! [`crate::PolygonInput::validate`] enforces [`MAX_COORDINATE`] for the
-//! triangulation algorithms. [`orient2d_evaluated`] exposes which arithmetic
+//! The filters' error bounds and the expansion arithmetic follow Jonathan
+//! Richard Shewchuk, *Adaptive Precision Floating-Point Arithmetic and Fast
+//! Robust Geometric Predicates* (1997), and its public-domain `predicates.c`.
+//!
+//! Callers keep coordinates within [`MAX_COORDINATE`].
+//! [`orient2d_evaluated`] and [`incircle_evaluated`] expose which arithmetic
 //! path proved one query without introducing global mutable counters.
 
 mod incircle;
@@ -27,8 +37,8 @@ pub use incircle::{InCircle, IncircleEvaluation, IncirclePath, incircle, incircl
 /// Largest coordinate magnitude the predicates accept.
 ///
 /// The exponent-safe [`orient2d`] fallbacks preserve exact signs from the
-/// smallest subnormal through this bound. `PolygonInput` validation keeps
-/// triangulation inside the same reviewed coordinate envelope.
+/// smallest subnormal through this bound. Consumers that validate their input,
+/// such as polygon triangulation, check against the same envelope.
 pub const MAX_COORDINATE: f64 = 1e100;
 
 /// Orientation of an ordered point triple.

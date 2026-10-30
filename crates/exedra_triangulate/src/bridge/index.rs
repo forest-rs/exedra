@@ -8,7 +8,7 @@ use core::cmp::Ordering;
 use core::ops::Range;
 
 use super::blocks_bridge;
-use crate::predicates::{Orientation, orient2d};
+use exedra_math::predicates::{Orientation, orient2d};
 
 use crate::spatial::{Bounds, Index};
 

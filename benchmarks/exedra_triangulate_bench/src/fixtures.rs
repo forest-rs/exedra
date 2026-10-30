@@ -3,8 +3,8 @@
 
 //! Fixed benchmark fixtures and typed predicate scenarios.
 
+use exedra_math::predicates::{InCircle, IncirclePath, Orient2dPath, Orientation};
 use exedra_triangulate::PolygonInput;
-use exedra_triangulate::predicates::{InCircle, IncirclePath, Orient2dPath, Orientation};
 
 #[derive(Clone, Debug)]
 pub(crate) struct Fixture {

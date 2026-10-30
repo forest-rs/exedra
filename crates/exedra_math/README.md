@@ -22,6 +22,8 @@ Current scope:
   cursor authoring, sampling, recipe encoding and mesh evaluation stay in
   their consuming crates. `Path3::xy_circle` validates a radius independently
   of sampling policy. Owned paths use `alloc` and remain `no_std`,
+- `predicates`: exact-sign `orient2d`, `orient3d`, `incircle` and
+  `plane_side`, with floating-point filters and exact fallbacks,
 - `keyed`: stable, counter-based deterministic randomness (`hash`, `mix`,
   `tag`, `Key`), a frozen cross-repository contract
   ([ADR-0001](docs/adr-0001-keyed-hash-contract.md)).
@@ -60,6 +62,37 @@ order, so its bits never depend on the backend.
 
 The default `std` feature supplies square root. For a `no_std` build, disable
 defaults and enable `libm`.
+
+## Exact predicates
+
+`predicates::orient2d` keeps the ordinary floating-point filter for clear
+turns. Borderline narrow-span inputs are scaled by one lossless common power
+of two before exact expansion arithmetic; wider exponent spans use a
+fixed-size exact dyadic accumulator. This preserves the exact-sign contract
+for every finite coordinate accepted by `MAX_COORDINATE`, including uniformly
+tiny and subnormal geometry. `predicates::orient2d_evaluated` returns the same
+sign plus a typed `Orient2dPath` diagnostic (`Filter`, `NormalizedExpansion`,
+or `Dyadic`). A non-finite query instead reports `NonFiniteInput` alongside a
+deterministic `Collinear` sentinel, which is not a geometric classification.
+The diagnostic is per call; there are no global counters.
+
+`predicates::orient3d` uses the same filter shape with an exact expansion
+fallback over the original coordinates.
+
+`predicates::incircle` classifies a point against an oriented circumcircle.
+Its ordinary path uses a floating-point error-bound filter; inconclusive
+queries expand the homogeneous degree-four determinant into 48 monomials and
+sum their exact binary64 values in fixed positive and negative limb arrays.
+`incircle_evaluated` reports `IncirclePath::Filter` or `IncirclePath::Dyadic`.
+
+`predicates::plane_side` evaluates the exact sign of an authored plane equation
+without normalizing its coefficients. A conservative floating-point filter uses
+the shared dyadic accumulator when uncertain, including overflow and underflow.
+It accepts all finite f64 exponents and returns `None` for non-finite input.
+
+The filter error bounds and expansion arithmetic follow Jonathan Richard
+Shewchuk's *Adaptive Precision Floating-Point Arithmetic and Fast Robust
+Geometric Predicates* and its public-domain `predicates.c`.
 
 ## License
 

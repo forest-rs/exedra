@@ -5,9 +5,9 @@
 
 use alloc::collections::BTreeMap;
 use alloc::vec::Vec;
+use exedra_math::predicates::{Orientation, Orientation3d, orient2d, plane_side};
 use exedra_math::{Placement3, Plane3};
 use exedra_mesh::{FaceId, Mesh};
-use exedra_triangulate::predicates::{Orientation, Orientation3d, orient2d, plane_side};
 
 use super::inverse3;
 

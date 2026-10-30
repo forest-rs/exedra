@@ -10,7 +10,7 @@ use super::{
     valid_point,
 };
 use alloc::vec::Vec;
-use exedra_triangulate::predicates::{Orientation, orient2d};
+use exedra_math::predicates::{Orientation, orient2d};
 
 /// Limits for validating and measuring a simple filled polygon in patch units.
 #[derive(Clone, Copy, Debug, PartialEq)]

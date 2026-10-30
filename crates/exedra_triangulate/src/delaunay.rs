@@ -5,7 +5,7 @@
 
 use alloc::vec::Vec;
 
-use crate::predicates::{InCircle, Orientation, incircle, orient2d};
+use exedra_math::predicates::{InCircle, Orientation, incircle, orient2d};
 
 #[derive(Copy, Clone, Debug, Eq, PartialEq, Ord, PartialOrd)]
 struct Edge {

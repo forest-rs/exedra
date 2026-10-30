@@ -9,7 +9,7 @@
 //! bounded by cut edges. Classification floods faces across shared edges
 //! (never crossing a cut edge), then decides Inside/Outside per patch by
 //! exact ray parity against the other mesh — a segment-triangle test built
-//! entirely from [`exedra_triangulate::predicates::orient3d`] signs over
+//! entirely from [`exedra_math::predicates::orient3d`] signs over
 //! exactly promoted coordinates. Rays that graze anything retry with the
 //! next direction from a fixed, documented set; only if every direction
 //! degenerates does the patch classify as [`PatchSide::Suspect`]. A ray
@@ -42,7 +42,7 @@
 
 use alloc::vec::Vec;
 
-use exedra_triangulate::predicates::{Orientation, Orientation3d, orient2d, orient3d};
+use exedra_math::predicates::{Orientation, Orientation3d, orient2d, orient3d};
 use hashbrown::{HashMap, HashSet};
 
 use super::coplanar::{

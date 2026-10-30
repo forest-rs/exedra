@@ -1,7 +1,7 @@
 // Copyright 2026 the Exedra Authors
 // SPDX-License-Identifier: Apache-2.0 OR MIT
 
-use exedra_triangulate::predicates::{Orientation, orient2d};
+use exedra_math::predicates::{Orientation, orient2d};
 
 use super::TriMesh;
 

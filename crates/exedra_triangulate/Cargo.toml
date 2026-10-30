@@ -13,4 +13,10 @@ categories = ["algorithms", "graphics"]
 [lints]
 workspace = true
 
+[features]
+default = ["std"]
+libm = ["exedra_math/libm"]
+std = ["exedra_math/std"]
+
 [dependencies]
+exedra_math.workspace = true

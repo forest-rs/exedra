@@ -9,9 +9,7 @@ use std::time::{Duration, Instant};
 use crate::fixtures::{Fixture, IncircleScenario, PredicateScenario};
 use crate::metrics::{hash_u64, refine_params};
 use crate::{FNV_OFFSET, Profile, strategy_label, strategy_params};
-use exedra_triangulate::predicates::{
-    IncirclePath, Orient2dPath, incircle_evaluated, orient2d_evaluated,
-};
+use exedra_math::predicates::{IncirclePath, Orient2dPath, incircle_evaluated, orient2d_evaluated};
 use exedra_triangulate::{TriStrategy, Triangulation, refine, triangulate, triangulate_with_stats};
 pub(crate) const MIN_BATCH_VERTICES: usize = 256;
 pub(crate) const MAX_BATCH_SIZE: usize = 64;

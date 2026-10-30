@@ -16,8 +16,8 @@
 
 use alloc::vec::Vec;
 
-use crate::predicates::{Orientation, orient2d};
 use crate::{TriError, TriangulationStage};
+use exedra_math::predicates::{Orientation, orient2d};
 
 /// Narrows a validated count to `u32`.
 ///

@@ -10,7 +10,7 @@ use crate::fixtures::{
 use crate::metrics::*;
 use crate::strategy_params;
 use crate::timing::{MAX_BATCH_SIZE, MIN_BATCH_VERTICES, timing_batch_size};
-use exedra_triangulate::predicates::{incircle_evaluated, orient2d_evaluated};
+use exedra_math::predicates::{incircle_evaluated, orient2d_evaluated};
 use exedra_triangulate::{TriStrategy, refine, triangulate};
 
 const CORPUS_PINS: [(&str, FixtureRole, u64); 13] = [

@@ -24,8 +24,8 @@ use alloc::collections::{BTreeMap, BTreeSet};
 use alloc::vec::Vec;
 use core::cmp::Reverse;
 
-use crate::predicates::{InCircle, Orientation, incircle, orient2d};
 use crate::{BoundarySplits, RefineParams, RefineStats, SteinerOrigin};
+use exedra_math::predicates::{InCircle, Orientation, incircle, orient2d};
 
 /// Neighbor sentinel for a boundary edge.
 const NONE: u32 = u32::MAX;

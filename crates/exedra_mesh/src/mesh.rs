@@ -1867,8 +1867,8 @@ impl Mesh {
             twice_area += (a[0] - b[0]) * (a[1] + b[1]);
         }
         if twice_area <= 0.0
-            || exedra_triangulate::predicates::orient2d(projected[2], projected[0], projected[1])
-                != exedra_triangulate::predicates::Orientation::Ccw
+            || exedra_math::predicates::orient2d(projected[2], projected[0], projected[1])
+                != exedra_math::predicates::Orientation::Ccw
         {
             return None;
         }

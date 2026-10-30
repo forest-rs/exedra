@@ -15,7 +15,9 @@
 //! [`Placement3`] and [`Plane3`] provide shared affine and plane representations
 //! for geometry crates, independent of recipes and meshes. [`Quat`] represents
 //! rotations for interpolation and composition, and [`keyed`] provides the
-//! stable keyed randomness procedural generators share.
+//! stable keyed randomness procedural generators share. [`predicates`] holds
+//! the exact-sign orientation and incircle tests that triangulation, mesh
+//! surgery and Booleans decide topology with.
 //!
 //! Design rules:
 //!
@@ -62,6 +64,7 @@ mod frame;
 mod geometry;
 pub mod keyed;
 pub mod path;
+pub mod predicates;
 mod quat;
 pub mod surface;
 mod trig;

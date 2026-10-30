@@ -1,10 +1,10 @@
 // Copyright 2026 the Exedra Authors
 // SPDX-License-Identifier: Apache-2.0 OR MIT
 
-use crate::predicates::{Orientation, orient2d};
 use crate::spatial::{Bounds, Index};
 use crate::{PolygonInput, TriError};
 use alloc::vec::Vec;
+use exedra_math::predicates::{Orientation, orient2d};
 
 /// One original cyclic polygon edge, before pruning or hole bridging.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]

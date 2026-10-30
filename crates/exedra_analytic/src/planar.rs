@@ -884,7 +884,7 @@ fn triangulate_face_with_openings(
         .collect::<Vec<_>>();
 
     // Delegate bridging and ear clipping to the shared deterministic
-    // facility (exedra_triangulate): exact-sign predicates, the
+    // facility (exedra_triangulate): exact-sign decisions, the
     // lowest-stable-index tie-break, and typed failures. Emitted coordinates
     // are widened exactly after narrowing, so the checked arrangement is emitted.
     let outer_points: Vec<[f64; 2]> = merged.iter().map(|v| v.point).collect();

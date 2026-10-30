@@ -4,8 +4,8 @@ Deterministic 2D polygon triangulation for concave loops with holes.
 
 This crate owns triangulation of simple polygons with holes: deterministic ear
 clipping with deterministic hole bridging, plus opt-in constrained-Delaunay
-edge legalization. It also owns the exact-sign planar predicates those
-strategies rely on. Identical input bits produce identical output triangles
+edge legalization, deciding with the exact-sign predicates in
+`exedra_math::predicates`. Identical input bits produce identical output triangles
 on every platform and build mode: only f64 comparisons and exact-sign
 predicates, no transcendentals, no ambient epsilons. Every `triangulate`
 output vertex is an input vertex, so callers carry per-vertex provenance
@@ -13,8 +13,8 @@ through that operation unchanged. The separate `refine` entry point may add
 vertices and reports the origin of each one.
 
 Inputs are f64 coordinate slices; outputs are `u32` indices into their
-concatenation. The crate is `no_std` + `alloc` with zero dependencies and
-knows nothing about meshes, curves, or tolerances — adapters live with their
+concatenation. The crate is `no_std` + `alloc`, depends only on `exedra_math`,
+and knows nothing about meshes, curves, or tolerances — adapters live with their
 consumers (`exedra_mesh` render extraction, `exedra_analytic`, the constructive
 geometry head).
 
@@ -60,39 +60,6 @@ Migration: exhaustive error matches must handle `TriangulationFailed`.
 `NonSimple` now describes a loop that degenerates under collinear pruning,
 not failure to triangulate a synthesized bridge traversal. Constructive
 evaluation schema 40 invalidates cached geometry affected by this bridge fix.
-
-## Exact predicate exponent domain
-
-`predicates::orient2d` keeps the ordinary floating-point filter for clear
-turns. Borderline narrow-span inputs are scaled by one lossless common power
-of two before exact expansion arithmetic; wider exponent spans use a
-fixed-size exact dyadic accumulator. This preserves the exact-sign contract
-for every finite coordinate accepted by `MAX_COORDINATE`, including uniformly
-tiny and subnormal geometry.
-
-`predicates::orient2d_evaluated` returns the same sign plus a typed
-`Orient2dPath` diagnostic (`Filter`, `NormalizedExpansion`, or `Dyadic`). A
-non-finite query instead reports `NonFiniteInput` alongside `orient2d`'s
-deterministic `Collinear` sentinel; that sentinel is not an exact geometric
-classification. The diagnostic is per-call and has no global counters. The
-existing `orient2d` function keeps its source-compatible signature and all
-finite inputs in the documented domain retain their contract. Out-of-domain
-NaN and infinity behavior is now standardized and may differ from prior
-incidental results. Inputs whose nonzero determinant previously underflowed to
-zero now receive the mathematically correct orientation.
-
-`predicates::incircle` classifies a point against an oriented circumcircle.
-Its ordinary path uses a floating-point error-bound filter; inconclusive
-queries expand the homogeneous degree-four determinant into 48 monomials and
-sum their exact binary64 values in fixed positive and negative limb arrays.
-`incircle_evaluated` reports `IncirclePath::Filter` or
-`IncirclePath::Dyadic` without global counters. Ear clipping does not pay for
-the new predicate.
-
-`predicates::plane_side` evaluates the exact sign of an authored plane equation
-without normalizing its coefficients. A conservative floating-point filter uses
-the shared dyadic accumulator when uncertain, including overflow and underflow.
-It accepts all finite f64 exponents and returns `None` for non-finite input.
 
 ## Constrained-Delaunay legalization
 
@@ -168,7 +135,7 @@ The top-level `exedra_triangulate_bench` executable compares deterministic
 EarClip and ConstrainedDelaunay quality, work, and timing over fixtures typed
 as choice-quality, tie-control, or input-constraint probes. Those roles
 describe diagnostic intent rather than a proven cause of each result. The
-executable intentionally lives outside this zero-dependency core crate:
+executable intentionally lives outside this core crate:
 
 ```sh
 cargo run --release -p exedra_triangulate_bench -- --quick

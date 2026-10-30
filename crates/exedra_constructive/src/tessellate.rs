@@ -1550,8 +1550,8 @@ fn steiner_feature(d: &DiscretizedProfile, origin: SteinerOrigin, point: [f64; 2
         let a = ring.points[lo as usize];
         let b = ring.points[hi as usize];
         let next = ring.points[((lo + 1) % len) as usize];
-        let forward = exedra_triangulate::predicates::orient2d(a, b, next)
-            == exedra_triangulate::predicates::Orientation::Collinear
+        let forward = exedra_math::predicates::orient2d(a, b, next)
+            == exedra_math::predicates::Orientation::Collinear
             && (0..2).all(|axis| {
                 next[axis] >= a[axis].min(b[axis]) && next[axis] <= a[axis].max(b[axis])
             });

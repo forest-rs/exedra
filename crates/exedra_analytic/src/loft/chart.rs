@@ -10,8 +10,8 @@ use crate::{
     realize::{RealizationError, RealizationPolicy, RealizedBody, VertexSource},
 };
 use alloc::vec::Vec;
+use exedra_math::predicates::{MAX_COORDINATE, Orientation, orient2d};
 use exedra_profile::{LoopRef, SegmentRef};
-use exedra_triangulate::predicates::{MAX_COORDINATE, Orientation, orient2d};
 
 /// A native loft could not supply checked construction coordinates or mapped UVs.
 #[derive(Clone, Debug, PartialEq)]

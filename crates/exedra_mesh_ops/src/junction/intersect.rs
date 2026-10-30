@@ -9,7 +9,7 @@
 //! by identity. A triangle whose vertices are exactly collinear, or
 //! coincide, is treated as the union of its edges.
 
-use exedra_triangulate::predicates::{Orientation, Orientation3d, orient2d, orient3d};
+use exedra_math::predicates::{Orientation, Orientation3d, orient2d, orient3d};
 
 use super::{cross, sub};
 

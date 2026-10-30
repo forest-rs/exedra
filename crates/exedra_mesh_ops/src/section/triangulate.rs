@@ -2,8 +2,8 @@
 // SPDX-License-Identifier: Apache-2.0 OR MIT
 
 use super::*;
+use exedra_math::predicates::{Orientation, orient2d};
 use exedra_mesh::{CornerId, FaceId, Mesh};
-use exedra_triangulate::predicates::{Orientation, orient2d};
 
 /// Allowance, in f32 epsilons of coordinate magnitude, for a stored boundary
 /// sample to count as collinear with its neighbours. Narrowing one point

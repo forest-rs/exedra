@@ -3,8 +3,8 @@
 
 //! Flat, immutable bounding hierarchy for geometry broad phases.
 
-use crate::predicates::{Orientation, orient2d};
 use alloc::vec::Vec;
+use exedra_math::predicates::{Orientation, orient2d};
 
 #[derive(Copy, Clone, Debug)]
 pub(crate) struct Bounds {

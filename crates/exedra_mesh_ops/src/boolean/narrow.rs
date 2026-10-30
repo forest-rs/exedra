@@ -5,7 +5,7 @@
 //! candidate pairs.
 //!
 //! Classification is exact: plane-side signs come from
-//! [`exedra_triangulate::predicates::orient3d`] over positions promoted
+//! [`exedra_math::predicates::orient3d`] over positions promoted
 //! exactly from f32 to f64, so whether two triangles cross, touch, are
 //! coplanar, or miss is never a tolerance guess. Intersection *positions*
 //! are f64 constructions (rounded like all constructed geometry) and are
@@ -26,7 +26,7 @@
 
 use alloc::vec::Vec;
 
-use exedra_triangulate::predicates::{Orientation3d, orient3d};
+use exedra_math::predicates::{Orientation3d, orient3d};
 
 use super::diag::{BooleanDiagnostic, BooleanDiagnostics, BooleanFailureKind};
 use super::{BooleanCandidatePair, BooleanScratch, BooleanTriangleRef};

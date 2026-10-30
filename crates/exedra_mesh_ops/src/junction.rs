@@ -81,10 +81,10 @@ use core::num::NonZeroU32;
 
 use hashbrown::HashSet;
 
+use exedra_math::predicates::{Orientation, Orientation3d, orient2d, orient3d};
 use exedra_mesh::{
     BoundaryLoopError, ChangeSink, CornerId, EditSession, FaceId, HalfEdgeId, VertexId, op,
 };
-use exedra_triangulate::predicates::{Orientation, Orientation3d, orient2d, orient3d};
 
 /// Largest number of rings one junction accepts.
 ///

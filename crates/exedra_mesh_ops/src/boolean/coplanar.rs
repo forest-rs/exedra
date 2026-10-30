@@ -31,7 +31,7 @@
 
 use alloc::vec::Vec;
 
-use exedra_triangulate::predicates::{Orientation, Orientation3d, orient2d, orient3d};
+use exedra_math::predicates::{Orientation, Orientation3d, orient2d, orient3d};
 
 use super::diag::{BooleanDiagnostic, BooleanDiagnostics, BooleanFailureKind};
 use super::{BooleanCandidatePair, BooleanScratch, BooleanTriangleRef};
