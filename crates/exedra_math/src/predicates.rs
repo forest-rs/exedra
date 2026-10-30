@@ -19,19 +19,23 @@
 //! [`incircle()`] uses the same shape: a fast error-bound filter followed by a
 //! fixed-size exact dyadic accumulator. The exact path expands the homogeneous
 //! degree-four determinant directly, avoiding rounded coordinate differences.
-//! [`plane_side`] classifies a point against an authored plane equation through
-//! the same accumulator, without normalizing its coefficients.
+//! [`insphere()`] is its degree-five counterpart for circumspheres, summing 360
+//! five-factor monomials when the filter cannot decide. [`plane_side`]
+//! classifies a point against an authored plane equation through the same
+//! accumulator, without normalizing its coefficients.
 //!
 //! The filters' error bounds and the expansion arithmetic follow Jonathan
 //! Richard Shewchuk, *Adaptive Precision Floating-Point Arithmetic and Fast
 //! Robust Geometric Predicates* (1997), and its public-domain `predicates.c`.
 //!
 //! Callers keep coordinates within [`MAX_COORDINATE`].
-//! [`orient2d_evaluated`] and [`incircle_evaluated`] expose which arithmetic
-//! path proved one query without introducing global mutable counters.
+//! [`orient2d_evaluated`], [`incircle_evaluated`] and [`insphere_evaluated`]
+//! expose which arithmetic path proved one query without introducing global
+//! mutable counters.
 
 mod dyadic;
 mod incircle;
+mod insphere;
 mod plane;
 
 use core::cmp::Ordering;
@@ -40,6 +44,7 @@ use dyadic::Accumulator;
 pub use plane::plane_side;
 
 pub use incircle::{InCircle, IncircleEvaluation, IncirclePath, incircle, incircle_evaluated};
+pub use insphere::{InSphere, InsphereEvaluation, InspherePath, insphere, insphere_evaluated};
 
 /// Largest coordinate magnitude the predicates accept.
 ///

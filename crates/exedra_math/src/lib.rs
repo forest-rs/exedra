@@ -16,7 +16,7 @@
 //! for geometry crates, independent of recipes and meshes. [`Quat`] represents
 //! rotations for interpolation and composition, and [`keyed`] provides the
 //! stable keyed randomness procedural generators share. [`predicates`] holds
-//! the exact-sign orientation and incircle tests that triangulation, mesh
+//! the exact-sign orientation, incircle and insphere tests that triangulation, mesh
 //! surgery and Booleans decide topology with.
 //!
 //! Design rules:
