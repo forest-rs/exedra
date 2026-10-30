@@ -231,7 +231,8 @@ pub struct Tetrahedralization {
     axes: [Vec<f64>; 3],
     points: Vec<[f64; 3]>,
     weights: Vec<f64>,
-    /// Whether any weight is nonzero, which switches to the power test.
+    /// Whether any weight is nonzero, so tests involving one need the power
+    /// test.
     weighted: bool,
     /// A live tetrahedron at each vertex, where walks start.
     vertex_tets: Vec<u32>,
@@ -762,7 +763,10 @@ impl Tetrahedralization {
     /// circumsphere, or has negative power distance to its orthosphere.
     fn conflicts(&self, tet: u32, point: [f64; 3], weight: f64) -> bool {
         let vertices = self.tets[tet as usize].vertices;
-        let test = if self.weighted {
+        // Where all five weights are zero the power test is the plain one.
+        let weighted = self.weighted
+            && (weight != 0.0 || vertices.iter().any(|&v| self.weights[v as usize] != 0.0));
+        let test = if weighted {
             let [a, b, c, d] = vertices.map(|v| {
                 let [x, y, z] = self.points[v as usize];
                 [x, y, z, self.weights[v as usize]]
