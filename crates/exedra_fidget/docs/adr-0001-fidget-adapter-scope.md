@@ -15,14 +15,13 @@ of the generic field traits or the mesher.
 `exedra_fidget` owns:
 
 - dependency integration with `fidget`,
-- wrapper types that implement `exedra_isosurface::ScalarField` and extension
-  traits,
+- wrapper types that implement `exedra_implicit::ScalarField`,
 - optional JIT-backed aliases layered on top of the same adapter contract.
 
 It does not own:
 
 - `ScalarField` itself,
-- octree traversal or extraction,
+- surface extraction,
 - generic analytic/profile field construction,
 - a canonical implicit scene graph.
 
@@ -38,5 +37,5 @@ Positive:
 Tradeoffs:
 
 - the adapter may need to mirror some `fidget` naming or evaluator patterns,
-- provenance support may lag behind the base evaluation adapter if upstream
-  APIs stay narrow.
+- Fidget's shapes are opaque to the field model, so they report no creases
+  or regions unless upstream APIs expose which branch wins.

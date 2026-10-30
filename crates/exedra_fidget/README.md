@@ -1,11 +1,11 @@
 # `exedra_fidget`
 
 Adapts [Fidget](https://crates.io/crates/fidget) expression shapes to
-`exedra_isosurface::ScalarField`.
+`exedra_implicit::ScalarField`.
 
 ```rust
 use exedra_fidget::VmField;
-use exedra_isosurface::ScalarField;
+use exedra_implicit::ScalarField;
 use fidget::{context::Tree, vm::VmShape};
 
 let x = Tree::x();
@@ -23,12 +23,18 @@ assert_eq!(values, [-1.0, 1.0]);
 `JitField` alias on supported native targets. Both cache and reuse evaluator
 storage for interval queries, point batches, and gradient batches.
 
+Fidget evaluates in single precision: points are rounded to `f32`, and
+interval bounds are taken over the box rounded outward and widened by one
+`f32` step. The adapter claims nothing about distance and reports no
+creases, so extraction treats the shape as an opaque field.
+`FidgetField::specialize` prunes the branches of `min` and `max` that never
+win in a box, giving a smaller field for that region.
+
 ## Boundary
 
 The adapter accepts shapes that depend only on the `x`, `y`, and `z` axes;
-additional variables are rejected at construction. Surface extraction,
-octrees, and the generic implicit-field semantics remain in
-`exedra_isosurface` and its supporting crates.
+additional variables are rejected at construction. Field semantics live in
+`exedra_implicit` and surface extraction in `exedra_isosurface`.
 
 ## License
 

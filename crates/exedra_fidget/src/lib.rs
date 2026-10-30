@@ -4,20 +4,24 @@
 //! Adapts Fidget expression shapes to Exedra's implicit-field interface.
 //!
 //! Start with [`VmField`], which wraps a `fidget::vm::VmShape` and implements
-//! [`exedra_isosurface::ScalarField`]. The wrapper reuses interval, value, and
+//! [`exedra_implicit::ScalarField`]. The wrapper reuses interval, value, and
 //! gradient evaluator storage across calls. Enable the `jit` feature to obtain
 //! `JitField` on native targets.
+//!
+//! Fidget evaluates in single precision, so points are rounded to `f32` and
+//! interval bounds are rounded outward.
 //!
 //! Shapes may depend only on Fidget's `x`, `y`, and `z` axes. Construction
 //! rejects additional variables with [`FidgetFieldError::ExtraVariables`]. If
 //! Fidget later rejects an evaluation, the infallible scalar-field seam reports
-//! no interval or fills point output with NaN rather than inventing values.
+//! unbounded intervals or fills point output with NaN rather than inventing
+//! values.
 //!
 //! # Example
 //!
 //! ```
 //! use exedra_fidget::VmField;
-//! use exedra_isosurface::ScalarField;
+//! use exedra_implicit::ScalarField;
 //! use fidget::{context::Tree, vm::VmShape};
 //!
 //! let x = Tree::x();

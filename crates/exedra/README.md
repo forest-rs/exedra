@@ -24,8 +24,9 @@ exedra = "0.1"
 
 It enables `std`, `compile`, and `mesh_ops`; `compile` also enables
 `constructive`. `assembly` selects the same compilation service.
-`assembly`, `edit`, `analytic`, `isosurface`, `primitives`, `gltf`, `step`, `scene`, and `serde`
-interchange are opt-in. `gltf` and `serde` also select `std`. For a
+`assembly`, `edit`, `analytic`, `implicit`, `isosurface`, `primitives`, `gltf`, `step`, `scene`,
+and `serde` interchange are opt-in. `gltf` and `serde` also select `std`, and
+`isosurface` selects `implicit`. For a
 `no_std` application, disable defaults and select `libm` plus the needed heads:
 
 ```toml
@@ -47,12 +48,13 @@ their own operations and conversions directly.
 - `exedra::edit`: opt-in mesh command execution, preview and reporting.
 - `exedra::primitives`: deterministic primitive mesh generators and selections.
 - `exedra::analytic`: planar analytic topology and tessellation.
-- `exedra::isosurface`: implicit fields and surface extraction.
+- `exedra::implicit`: implicit fields written once as formulas.
+- `exedra::isosurface`: surface meshes extracted from implicit fields.
 - `exedra::gltf`: glTF and GLB export.
 - `exedra::step`: exact native analytic STEP exchange with explicit units and reports.
 - `exedra::scene`: caller-owned native Layerstack composition, generation and publication.
 
-The primitive, analytic, isosurface, and export namespaces are opt-in. Use the
+The primitive, analytic, implicit, isosurface, and export namespaces are opt-in. Use the
 namespace that owns an operation instead of expecting the facade to add
 behavior between domains.
 

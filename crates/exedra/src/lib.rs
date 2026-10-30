@@ -17,7 +17,9 @@
 //! - `mesh_ops` contains direct mesh modeling and geometric queries.
 //! - `edit` contains opt-in command execution, preview and reports for editors.
 //! - `primitives` contains deterministic primitive mesh generators (opt-in).
-//! - `analytic` and `isosurface` contain alternative geometry heads (opt-in).
+//! - `analytic` contains planar analytic topology (opt-in).
+//! - `implicit` contains implicit fields written as formulas, and
+//!   `isosurface` meshes them (opt-in; `isosurface` selects `implicit`).
 //! - `profile` contains the line and arc profiles both `constructive` and
 //!   `analytic` accept; either feature enables it.
 //! - `step` exchanges supported retained analytic boundaries (opt-in).
@@ -36,7 +38,8 @@
 //! set is `std`, `compile`, and `mesh_ops`; `compile` also selects
 //! `constructive`. Assembly is an optional structural surface above the same
 //! geometry service, so `assembly` selects `compile`.
-//! `edit`, `analytic`, `isosurface`, `primitives`, and `gltf` remain opt-in.
+//! `edit`, `analytic`, `implicit`, `isosurface`, `primitives`, and `gltf`
+//! remain opt-in.
 //! `gltf` selects `compile` and `std`; `serde` selects `constructive` and `std`.
 //! Neither selects `assembly`. Select `assembly,gltf` for the optional Assembly
 //! export adapter, or `assembly,serde` for Assembly interchange. Standalone
@@ -148,7 +151,11 @@ pub use exedra_analytic as analytic;
 #[cfg(any(feature = "analytic", feature = "constructive"))]
 pub use exedra_profile as profile;
 
-/// Implicit fields, field composition, and isosurface extraction.
+/// Implicit fields written once as formulas, and their composition.
+#[cfg(feature = "implicit")]
+pub use exedra_implicit as implicit;
+
+/// Surface meshes extracted from implicit fields.
 #[cfg(feature = "isosurface")]
 pub use exedra_isosurface as isosurface;
 

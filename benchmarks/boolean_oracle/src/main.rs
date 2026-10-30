@@ -5,14 +5,14 @@
 //!
 //! Seeded scenario classes (see [`scenario`]) are evaluated three
 //! independent ways — the `exedra_mesh` boolean pipeline, the
-//! `exedra_isosurface` field combinators, and a closed-form union-of-convex
+//! `exedra_implicit` field combinators, and a closed-form union-of-convex
 //! half-space referee — and every sampled point's membership is
 //! cross-checked. The referee is exact for the polyhedral solid the mesh
 //! pipeline consumes, so it attributes each disagreement to the responsible
 //! witness instead of guessing.
 //!
-//! A fixed typed suite also validates opt-in semi-analytic box/cylinder
-//! extraction across CSG operators and coordinate scales. Pass
+//! A fixed suite also validates sharp, region-tagged meshing of box/cylinder
+//! combinations across CSG operators and coordinate scales. Pass
 //! `--feature-obj` to emit its region-grouped reference mesh under
 //! `target/boolean_oracle`.
 //!
@@ -37,15 +37,15 @@ use scenario::ScenarioClass;
 fn main() {
     let config = Config::from_args(std::env::args().skip(1));
 
-    let feature_reports = feature::run_suite();
+    let feature_reports = feature::run_suite(&feature::SCALES);
     feature::assert_suite(&feature_reports);
     feature::print_suite(&feature_reports);
     if config.feature_obj {
         let path = feature::write_reference_obj().unwrap_or_else(|error| {
-            eprintln!("failed to write semi-analytic OBJ: {error}");
+            eprintln!("failed to write feature OBJ: {error}");
             std::process::exit(1);
         });
-        println!("semi_analytic.obj={}", path.display());
+        println!("feature.obj={}", path.display());
     }
 
     // Determinism oracle before anything else: the same seed must produce

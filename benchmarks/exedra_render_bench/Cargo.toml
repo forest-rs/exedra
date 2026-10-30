@@ -15,6 +15,7 @@ workspace = true
 
 [dependencies]
 exedra_fidget = { features = ["std"], workspace = true }
+exedra_implicit = { features = ["std"], workspace = true }
 exedra_isosurface = { features = ["std"], workspace = true }
 exedra_mesh = { features = ["std"], workspace = true }
 exedra_primitives = { features = ["std"], workspace = true }

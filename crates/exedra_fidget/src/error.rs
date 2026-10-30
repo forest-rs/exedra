@@ -9,7 +9,7 @@ use core::fmt;
 #[derive(Copy, Clone, Debug, Eq, PartialEq)]
 pub enum FidgetFieldError {
     /// The wrapped shape depends on non-axis variables that cannot be supplied
-    /// through the `ScalarField` seam.
+    /// through `ScalarField`.
     ExtraVariables {
         /// Number of unsupported extra variables.
         count: usize,

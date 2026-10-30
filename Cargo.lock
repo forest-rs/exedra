@@ -96,6 +96,7 @@ checksum = "b588b76d00fde79687d7646a9b5bdf3cc0f655e0bbd080335a95d7e96f3587da"
 name = "boolean_oracle"
 version = "0.0.0"
 dependencies = [
+ "exedra_implicit",
  "exedra_isosurface",
  "exedra_math",
  "exedra_mesh",
@@ -300,6 +301,7 @@ dependencies = [
  "exedra_constructive",
  "exedra_edit",
  "exedra_gltf",
+ "exedra_implicit",
  "exedra_isosurface",
  "exedra_mesh",
  "exedra_mesh_ops",
@@ -410,8 +412,8 @@ dependencies = [
 name = "exedra_fidget"
 version = "0.1.0"
 dependencies = [
+ "exedra_implicit",
  "exedra_isosurface",
- "exedra_mesh",
  "fidget",
 ]
 
@@ -420,6 +422,7 @@ name = "exedra_fidget_bench"
 version = "0.0.0"
 dependencies = [
  "exedra_fidget",
+ "exedra_implicit",
  "exedra_isosurface",
  "fidget",
 ]
@@ -526,6 +529,7 @@ name = "exedra_render_bench"
 version = "0.0.0"
 dependencies = [
  "exedra_fidget",
+ "exedra_implicit",
  "exedra_isosurface",
  "exedra_mesh",
  "exedra_primitives",

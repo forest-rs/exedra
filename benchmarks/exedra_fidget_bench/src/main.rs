@@ -6,14 +6,12 @@
 //! Run with:
 //! `cargo run --release -p exedra_fidget_bench`
 
-use exedra_isosurface::ExtractionLimits;
 use std::hint::black_box;
 use std::time::{Duration, Instant};
 
 use exedra_fidget::VmField;
-use exedra_isosurface::qef::QefParams;
-use exedra_isosurface::spatial::Aabb;
-use exedra_isosurface::{DualContourParams, EdgeSearchParams, ScalarField, dual_contour};
+use exedra_implicit::{Aabb, Dual, ScalarField};
+use exedra_isosurface::{DelaunayParams, delaunay_mesh};
 use fidget::{context::Tree, vm::VmShape};
 
 fn main() {
@@ -51,22 +49,13 @@ fn main() {
     }
 
     run_extract_scenario(&ExtractScenario {
-        label: "vm_toothed_torus_dual_contour",
+        label: "vm_toothed_torus_delaunay",
         field: &toothed_torus,
-        params: DualContourParams {
-            root_bounds: Aabb::new([-1.15, -1.15, -0.55], [1.15, 1.15, 0.55])
-                .expect("valid bounds"),
-            max_depth: 6,
-            cell_budget: None,
-            limits: ExtractionLimits::default(),
-            witness_limit: 16,
-            vertex_merge_tolerance: 0.0,
-            edge_search: EdgeSearchParams {
-                bisection_steps: 10,
-            },
-            qef: QefParams::default(),
-        },
-        iterations: 8,
+        params: DelaunayParams::new(
+            Aabb::new([-1.15, -1.15, -0.55], [1.15, 1.15, 0.55]).expect("valid bounds"),
+            2.30 / 64.0,
+        ),
+        iterations: 4,
     });
 }
 
@@ -79,7 +68,7 @@ enum EvalMode {
 struct EvalScenario<'a> {
     label: &'static str,
     field: &'a VmField,
-    points: &'a [[f32; 3]],
+    points: &'a [[f64; 3]],
     mode: EvalMode,
     iterations: usize,
 }
@@ -87,7 +76,7 @@ struct EvalScenario<'a> {
 struct ExtractScenario<'a> {
     label: &'static str,
     field: &'a VmField,
-    params: DualContourParams,
+    params: DelaunayParams,
     iterations: usize,
 }
 
@@ -99,33 +88,33 @@ fn run_eval_scenario(scenario: &EvalScenario<'_>) {
 
     match scenario.mode {
         EvalMode::Points => {
-            let mut warm = vec![0.0_f32; sample_count];
+            let mut warm = vec![0.0; sample_count];
             scenario.field.eval_points(scenario.points, &mut warm);
-            checksum ^= fold_f32_slice(&warm);
+            checksum ^= fold_values(&warm);
             for _ in 0..scenario.iterations {
-                let mut out = vec![0.0_f32; sample_count];
+                let mut out = vec![0.0; sample_count];
                 let start = Instant::now();
                 scenario.field.eval_points(scenario.points, &mut out);
                 black_box(());
                 let elapsed = start.elapsed();
                 elapsed_total += elapsed;
                 best = best.min(elapsed);
-                checksum ^= fold_f32_slice(&out);
+                checksum ^= fold_values(&out);
             }
         }
         EvalMode::Gradients => {
-            let mut warm = vec![[0.0_f32; 4]; sample_count];
+            let mut warm = vec![Dual::default(); sample_count];
             scenario.field.eval_gradients(scenario.points, &mut warm);
-            checksum ^= fold_grad_slice(&warm);
+            checksum ^= fold_gradients(&warm);
             for _ in 0..scenario.iterations {
-                let mut out = vec![[0.0_f32; 4]; sample_count];
+                let mut out = vec![Dual::default(); sample_count];
                 let start = Instant::now();
                 scenario.field.eval_gradients(scenario.points, &mut out);
                 black_box(());
                 let elapsed = start.elapsed();
                 elapsed_total += elapsed;
                 best = best.min(elapsed);
-                checksum ^= fold_grad_slice(&out);
+                checksum ^= fold_gradients(&out);
             }
         }
     }
@@ -143,8 +132,8 @@ fn run_eval_scenario(scenario: &EvalScenario<'_>) {
 }
 
 fn run_extract_scenario(scenario: &ExtractScenario<'_>) {
-    let warm =
-        dual_contour(scenario.field, &scenario.params).expect("warm extraction should succeed");
+    let warm = delaunay_mesh(scenario.field, &scenario.params).expect("parameters should be valid");
+    assert!(warm.report.is_complete(), "{:?}", warm.report);
     let mut elapsed_total = Duration::ZERO;
     let mut best = Duration::MAX;
     let mut checksum = 0_u64;
@@ -152,28 +141,29 @@ fn run_extract_scenario(scenario: &ExtractScenario<'_>) {
     for _ in 0..scenario.iterations {
         let start = Instant::now();
         let result = black_box(
-            dual_contour(scenario.field, &scenario.params)
-                .expect("benchmark extraction should succeed"),
+            delaunay_mesh(scenario.field, &scenario.params).expect("parameters should be valid"),
         );
         let elapsed = start.elapsed();
         elapsed_total += elapsed;
         best = best.min(elapsed);
         checksum = checksum
-            .wrapping_add(result.stats.vertices as u64)
-            .wrapping_add(result.stats.faces as u64)
-            .wrapping_add(result.stats.active_cells as u64);
+            .wrapping_add(result.positions.len() as u64)
+            .wrapping_add(result.triangles.len() as u64);
     }
 
     let avg = elapsed_total / u32::try_from(scenario.iterations).expect("iterations fit in u32");
+    let work = warm.report.work;
     println!(
-        "{}: active_cells={} mesh_faces={} mesh_vertices={} best={:?} avg={:?} checksum={}",
+        "{}: mesh_faces={} mesh_vertices={} values={} gradients={} intervals={} best={:?} avg={:?} checksum={}",
         scenario.label,
-        warm.stats.active_cells,
-        warm.stats.faces,
-        warm.stats.vertices,
+        warm.triangles.len(),
+        warm.positions.len(),
+        work.values,
+        work.gradients,
+        work.intervals,
         best,
         avg,
-        checksum ^ warm.stats.octree_cells as u64,
+        checksum,
     );
 }
 
@@ -186,14 +176,14 @@ impl EvalMode {
     }
 }
 
-fn sample_points(count: usize) -> Vec<[f32; 3]> {
+fn sample_points(count: usize) -> Vec<[f64; 3]> {
     let mut out = Vec::with_capacity(count);
     for index in 0..count {
-        let t = index as f32 / count as f32;
+        let t = index as f64 / count as f64;
         out.push([
             -1.15 + 2.30 * t,
-            ((index * 37) % 1024) as f32 / 1024.0 * 2.30 - 1.15,
-            ((index * 91) % 1024) as f32 / 1024.0 * 1.10 - 0.55,
+            ((index * 37) % 1024) as f64 / 1024.0 * 2.30 - 1.15,
+            ((index * 91) % 1024) as f64 / 1024.0 * 1.10 - 0.55,
         ]);
     }
     out
@@ -227,25 +217,26 @@ fn toothed_torus_field() -> VmField {
     .expect("shape should be axis-only")
 }
 
-fn fold_f32_slice(values: &[f32]) -> u64 {
+fn fold_values(values: &[f64]) -> u64 {
     values
         .iter()
-        .fold(0_u64, |acc, value| acc.wrapping_add(value.to_bits() as u64))
+        .fold(0_u64, |acc, value| acc.wrapping_add(value.to_bits()))
 }
 
-fn fold_grad_slice(values: &[[f32; 4]]) -> u64 {
-    values.iter().fold(0_u64, |acc, grad| {
-        acc.wrapping_add(grad[0].to_bits() as u64)
-            .wrapping_add(grad[1].to_bits() as u64)
-            .wrapping_add(grad[2].to_bits() as u64)
-            .wrapping_add(grad[3].to_bits() as u64)
+fn fold_gradients(values: &[Dual]) -> u64 {
+    values.iter().fold(0_u64, |acc, row| {
+        row.gradient
+            .iter()
+            .fold(acc.wrapping_add(row.value.to_bits()), |acc, g| {
+                acc.wrapping_add(g.to_bits())
+            })
     })
 }
 
 #[cfg(test)]
 mod tests {
     use super::{sample_points, sphere_field, toothed_torus_field};
-    use exedra_isosurface::ScalarField;
+    use exedra_implicit::{Dual, ScalarField};
 
     #[test]
     fn sample_points_are_deterministic_and_non_empty() {
@@ -258,18 +249,16 @@ mod tests {
     #[test]
     fn benchmark_fields_evaluate_finite_values() {
         let samples = sample_points(128);
-        let mut point_values = vec![0.0_f32; samples.len()];
-        let mut gradients = vec![[0.0_f32; 4]; samples.len()];
+        let mut point_values = vec![0.0; samples.len()];
+        let mut gradients = vec![Dual::default(); samples.len()];
 
         for field in [sphere_field(), toothed_torus_field()] {
             field.eval_points(&samples, &mut point_values);
             field.eval_gradients(&samples, &mut gradients);
             assert!(point_values.iter().all(|value| value.is_finite()));
-            assert!(
-                gradients
-                    .iter()
-                    .all(|grad| grad.iter().all(|value| value.is_finite()))
-            );
+            assert!(gradients.iter().all(|row| {
+                row.value.is_finite() && row.gradient.iter().all(|g| g.is_finite())
+            }));
         }
     }
 }

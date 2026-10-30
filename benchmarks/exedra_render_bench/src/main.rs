@@ -6,14 +6,12 @@
 //! Run with:
 //! `cargo run --release -p exedra_render_bench`
 
-use exedra_isosurface::ExtractionLimits;
 use std::hint::black_box;
 use std::time::{Duration, Instant};
 
 use exedra_fidget::VmField;
-use exedra_isosurface::qef::QefParams;
-use exedra_isosurface::spatial::Aabb;
-use exedra_isosurface::{DualContourParams, EdgeSearchParams, dual_contour};
+use exedra_implicit::Aabb;
+use exedra_isosurface::{DelaunayParams, delaunay_mesh};
 use exedra_mesh::{ExtractParams, Mesh, NormalsSource, op};
 use exedra_primitives::{TorusParams, UvSphereParams, torus, uv_sphere};
 use fidget::{context::Tree, vm::VmShape};
@@ -132,18 +130,10 @@ fn uv_split_sphere_mesh() -> Mesh {
 }
 
 fn implicit_toothed_torus_mesh() -> Mesh {
-    let params = DualContourParams {
-        root_bounds: Aabb::new([-1.15, -1.15, -0.55], [1.15, 1.15, 0.55]).expect("valid bounds"),
-        max_depth: 6,
-        cell_budget: None,
-        limits: ExtractionLimits::default(),
-        witness_limit: 16,
-        vertex_merge_tolerance: 0.0,
-        edge_search: EdgeSearchParams {
-            bisection_steps: 10,
-        },
-        qef: QefParams::default(),
-    };
+    let params = DelaunayParams::new(
+        Aabb::new([-1.15, -1.15, -0.55], [1.15, 1.15, 0.55]).expect("valid bounds"),
+        2.30 / 64.0,
+    );
 
     let x = Tree::x();
     let y = Tree::y();
@@ -161,9 +151,10 @@ fn implicit_toothed_torus_mesh() -> Mesh {
     ))
     .expect("shape should be axis-only");
 
-    dual_contour(&field, &params)
-        .expect("implicit toothed torus extraction should succeed")
-        .mesh
+    delaunay_mesh(&field, &params)
+        .expect("parameters should be valid")
+        .mesh()
+        .expect("implicit toothed torus should mesh")
 }
 
 #[cfg(test)]
