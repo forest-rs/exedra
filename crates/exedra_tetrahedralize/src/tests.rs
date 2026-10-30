@@ -1,0 +1,183 @@
+// Copyright 2026 the Exedra Authors
+// SPDX-License-Identifier: Apache-2.0 OR MIT
+
+use alloc::vec;
+use alloc::vec::Vec;
+
+use super::*;
+
+/// Six times the volume of every live tetrahedron, summed.
+fn volume6(tets: &Tetrahedralization) -> f64 {
+    tets.tetrahedra()
+        .map(|tet| {
+            let [a, b, c, d] = tets.vertices(tet).map(|v| tets.point(v));
+            let [u, v, w] = [b, c, d].map(|p| [p[0] - a[0], p[1] - a[1], p[2] - a[2]]);
+            -(u[0] * (v[1] * w[2] - v[2] * w[1]) - u[1] * (v[0] * w[2] - v[2] * w[0])
+                + u[2] * (v[0] * w[1] - v[1] * w[0]))
+        })
+        .sum()
+}
+
+fn random_points(count: usize, seed: u64, scale: f64) -> Vec<[f64; 3]> {
+    let mut state = seed;
+    (0..count)
+        .map(|_| {
+            [0, 1, 2].map(|_| {
+                state = state
+                    .wrapping_mul(6_364_136_223_846_793_005)
+                    .wrapping_add(1_442_695_040_888_963_407);
+                (state >> 11) as f64 / (1_u64 << 53) as f64 * scale
+            })
+        })
+        .collect()
+}
+
+#[test]
+fn grids_split_every_cell_into_six_delaunay_tetrahedra() {
+    // Uneven spacing still gives exact boxes, so the split stays Delaunay.
+    let x = [0.0, 0.1, 0.35, 1.0];
+    let y = [-2.0, 0.3, 0.7];
+    let z = [5.0, 5.5];
+    let tets = Tetrahedralization::grid(&x, &y, &z).expect("valid grid");
+    assert_eq!(tets.tetrahedron_count(), 3 * 2 * 6);
+    assert_eq!(tets.points().len(), 4 * 3 * 2);
+    assert_eq!(tets.validate(), Ok(()));
+    let expected = 6.0 * 1.0 * 2.7 * 0.5;
+    assert!((volume6(&tets) - expected).abs() < 1e-12);
+    let hull = tets
+        .tetrahedra()
+        .flat_map(|tet| tets.neighbors(tet))
+        .filter(Option::is_none)
+        .count();
+    // Two triangles per boundary rectangle.
+    assert_eq!(hull, 2 * 2 * (3 * 2 + 3 + 2));
+}
+
+#[test]
+fn rejects_malformed_axes() {
+    let good = [0.0, 1.0];
+    for (axis, bad) in [
+        (0, &[0.0][..]),
+        (1, &[0.0, 0.0][..]),
+        (2, &[1.0, 0.0][..]),
+        (0, &[0.0, f64::NAN][..]),
+    ] {
+        let mut axes = [&good[..], &good[..], &good[..]];
+        axes[axis] = bad;
+        assert_eq!(
+            Tetrahedralization::grid(axes[0], axes[1], axes[2]).unwrap_err(),
+            TetError::InvalidAxis { axis }
+        );
+    }
+}
+
+#[test]
+fn random_insertions_stay_delaunay_and_fill_the_box() {
+    let axis = [0.0, 0.5, 1.0];
+    let mut tets = Tetrahedralization::grid(&axis, &axis, &axis).expect("valid grid");
+    for (n, point) in random_points(400, 7, 1.0).into_iter().enumerate() {
+        let vertex = tets.insert(point).expect("inside the box");
+        assert_eq!(tets.point(vertex), point);
+        if n % 50 == 0 {
+            assert_eq!(tets.validate(), Ok(()));
+        }
+    }
+    assert_eq!(tets.validate(), Ok(()));
+    assert!((volume6(&tets) - 6.0).abs() < 1e-9);
+    assert_eq!(tets.stats().insertions, 400);
+    // Every vertex belongs to some tetrahedron.
+    let mut used = vec![false; tets.points().len()];
+    for tet in tets.tetrahedra() {
+        for vertex in tets.vertices(tet) {
+            used[vertex.index()] = true;
+        }
+    }
+    assert!(used.into_iter().all(|u| u));
+}
+
+#[test]
+fn cospherical_and_coplanar_insertions_stay_valid() {
+    // Lattice-aligned points sit on many circumspheres and planes at once.
+    let axis = [0.0, 1.0, 2.0, 3.0];
+    let mut tets = Tetrahedralization::grid(&axis, &axis, &axis).expect("valid grid");
+    for i in 0..6 {
+        for j in 0..6 {
+            for k in 0..6 {
+                let point = [i, j, k].map(|v| f64::from(v) * 0.5);
+                tets.insert(point).expect("inside the box");
+            }
+        }
+    }
+    assert_eq!(tets.validate(), Ok(()));
+    assert!((volume6(&tets) - 6.0 * 27.0).abs() < 1e-9);
+}
+
+#[test]
+fn hull_points_split_hull_faces_and_vertices_coincide() {
+    let axis = [0.0, 1.0];
+    let mut tets = Tetrahedralization::grid(&axis, &axis, &axis).expect("valid grid");
+    let corner = tets.insert([1.0, 1.0, 1.0]).expect("existing vertex");
+    assert_eq!(tets.point(corner), [1.0, 1.0, 1.0]);
+    assert_eq!(tets.stats().coincident, 1);
+    assert_eq!(tets.points().len(), 8);
+
+    for point in [
+        [0.5, 0.25, 0.0],
+        [0.0, 0.5, 0.5],
+        [1.0, 0.0, 0.5],
+        [0.3, 1.0, 0.9],
+    ] {
+        tets.insert(point).expect("on the hull");
+        assert_eq!(tets.validate(), Ok(()));
+    }
+    assert!((volume6(&tets) - 6.0).abs() < 1e-12);
+
+    assert_eq!(tets.insert([1.5, 0.5, 0.5]), Err(TetError::OutsideHull));
+    assert_eq!(tets.insert([0.5, f64::NAN, 0.5]), Err(TetError::NonFinite));
+    assert_eq!(tets.locate([2.0, 0.0, 0.0]), Location::Outside);
+    assert!(matches!(
+        tets.locate([0.5, 0.5, 0.5]),
+        Location::Tetrahedron(_)
+    ));
+}
+
+#[test]
+fn faces_wind_outward() {
+    let axis = [0.0, 1.0];
+    let mut tets = Tetrahedralization::grid(&axis, &axis, &axis).expect("valid grid");
+    tets.insert([0.4, 0.6, 0.5]).expect("inside");
+    for tet in tets.tetrahedra() {
+        for (i, vertex) in tets.vertices(tet).into_iter().enumerate() {
+            let [a, b, c] = tets.face(tet, i).map(|v| tets.point(v));
+            assert_eq!(orient3d(a, b, c, tets.point(vertex)), Orientation3d::Below);
+        }
+    }
+}
+
+#[test]
+fn identical_input_gives_identical_tetrahedra() {
+    let build = || {
+        let axis = [0.0, 0.25, 1.0];
+        let mut tets = Tetrahedralization::grid(&axis, &axis, &axis).expect("valid grid");
+        for point in random_points(200, 11, 1.0) {
+            tets.insert(point).expect("inside the box");
+        }
+        tets.tetrahedra()
+            .map(|tet| (tets.vertices(tet), tets.neighbors(tet)))
+            .collect::<Vec<_>>()
+    };
+    assert_eq!(build(), build());
+}
+
+#[test]
+fn tiny_and_huge_scales_stay_exact() {
+    for scale in [f64::from_bits(1) * 1024.0, 1e-200, 1e200] {
+        let axis = [0.0, scale];
+        let mut tets = Tetrahedralization::grid(&axis, &axis, &axis).expect("valid grid");
+        for point in random_points(50, 3, 1.0) {
+            tets.insert(point.map(|v| v * scale))
+                .expect("inside the box");
+        }
+        assert_eq!(tets.validate(), Ok(()));
+    }
+}

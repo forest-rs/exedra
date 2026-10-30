@@ -566,6 +566,13 @@ dependencies = [
 ]
 
 [[package]]
+name = "exedra_tetrahedralize"
+version = "0.1.0"
+dependencies = [
+ "exedra_math",
+]
+
+[[package]]
 name = "exedra_triangulate"
 version = "0.1.0"
 dependencies = [
