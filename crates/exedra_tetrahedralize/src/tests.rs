@@ -251,3 +251,23 @@ fn near_walks_and_new_tetrahedra_follow_each_insertion() {
     }
     assert_eq!(tets.validate(), Ok(()));
 }
+
+#[test]
+fn stars_hold_exactly_the_tetrahedra_around_a_vertex() {
+    let axis = [0.0, 0.5, 1.0];
+    let mut tets = Tetrahedralization::grid(&axis, &axis, &axis).expect("valid grid");
+    for point in random_points(150, 53, 1.0) {
+        tets.insert(point).expect("inside");
+    }
+    for index in 0..tets.points().len() {
+        let vertex = VertexId(index_u32(index));
+        let mut star = tets.star(vertex);
+        star.sort_unstable();
+        let mut expected: Vec<TetId> = tets
+            .tetrahedra()
+            .filter(|&t| tets.vertices(t).contains(&vertex))
+            .collect();
+        expected.sort_unstable();
+        assert_eq!(star, expected, "vertex {index}");
+    }
+}

@@ -72,7 +72,8 @@ weight keeps refinement points out of it while its neighbors along the
 feature stay connected.
 
 `new_tetrahedra` lists the tetrahedra the latest insertion created, which
-are exactly the new vertex's star. Refinement algorithms on top re-examine
+are exactly the new vertex's star; `star` lists the tetrahedra around any
+vertex. Refinement algorithms on top re-examine
 only those instead of rescanning the whole tetrahedralization.
 
 `VertexId`s are stable and dense: grid vertices first, numbered
