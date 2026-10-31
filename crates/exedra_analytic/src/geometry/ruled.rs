@@ -96,6 +96,7 @@ impl CurveSpan {
     }
 
     /// Evaluates the bounded curve, with derivatives in normalized parameter units.
+    /// At an endpoint knot, derivatives come from inside this bounded span.
     #[must_use]
     pub fn evaluate(&self, fraction: f64) -> Option<CurveEvaluation> {
         let t = if self.reversed {
@@ -103,7 +104,25 @@ impl CurveSpan {
         } else {
             fraction
         };
-        let mut e = self.curve.evaluate(self.range.at(t)?)?;
+        let parameter = self.range.at(t)?;
+        let mut e = if let Curve::Nurbs(n) = &self.curve
+            && parameter == self.range.bounds()[1]
+            && parameter < n.curve().domain()[1]
+            && n.curve()
+                .knots()
+                .get(n.curve().knots().partition_point(|&k| k < parameter))
+                == Some(&parameter)
+        {
+            // The untrimmed evaluator is right-continuous at a knot. At this
+            // bounded piece's upper endpoint, its left-hand span instead owns
+            // the tangent/curvature used by our interval bounds and surface.
+            // Only this exact interior-knot endpoint needs prepared evaluation.
+            let prepared = n.curve().view().prepare();
+            let left = prepared.span_at(parameter).checked_sub(1)?;
+            prepared.evaluation_in(left, parameter)?
+        } else {
+            self.curve.evaluate(parameter)?
+        };
         let step = self.range.span() * if self.reversed { -1.0 } else { 1.0 };
         e.first = scale(e.first, step);
         e.second = scale(scale(e.second, step), step);
@@ -583,6 +602,42 @@ mod tests {
         assert_eq!(span.evaluate(0.5).unwrap().first, [-4.0, 0.0, 0.0]);
         assert!(span.evaluate(f64::NAN).is_none());
     }
+    #[test]
+    fn bounded_knot_endpoint_uses_the_inside_derivative() {
+        for reversed in [false, true] {
+            for first_piece in [false, true] {
+                let make = |z| {
+                    let x = if first_piece {
+                        [0.0, 1.0, 1.0]
+                    } else {
+                        [0.0, 0.0, 1.0]
+                    };
+                    let c = NurbsCurve::new(
+                        2,
+                        alloc::vec![0.0, 0.0, 0.5, 1.0, 1.0],
+                        x.map(|x| [x, 0.0, z]).into(),
+                        None,
+                    )
+                    .unwrap();
+                    let range = if first_piece {
+                        ParameterRange::new(0.0, 0.5)
+                    } else {
+                        ParameterRange::new(0.5, 1.0)
+                    }
+                    .unwrap();
+                    CurveSpan::new(Curve::nurbs(c).unwrap(), range, reversed).unwrap()
+                };
+                let surface = Surface::ruled(make(0.0), make(1.0)).unwrap();
+                for u in [0.0, 0.5, 1.0] {
+                    let e = surface
+                        .evaluate([u, 0.5])
+                        .expect("bounded regular patch includes both endpoints");
+                    assert_eq!(e.du, [if reversed { -1.0 } else { 1.0 }, 0.0, 0.0]);
+                }
+            }
+        }
+    }
+
     #[test]
     fn mixed_derivative_bounds_cover_unequal_arc_schedules_and_remove_translated_circle_error() {
         let a = CurveSpan::new(
