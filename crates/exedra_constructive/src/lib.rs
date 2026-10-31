@@ -138,10 +138,13 @@ pub(crate) fn len_u32(n: usize) -> u32 {
 /// encoding change. Caches and goldens keyed on hashes then invalidate
 /// explicitly instead of silently drifting.
 ///
-/// Schema 41 splits every shaped sweep wall quad into two planar triangles and
-/// keeps complete turns separate from the base twist angle. Sweeps with a
-/// nonidentity section law change topology; constant sweeps are unchanged.
-pub const EVAL_SCHEMA_VERSION: u32 = 41;
+/// Schema 42 samples curves through `exedra_curves`: profile cubics and
+/// smooth-loft trajectories evaluate as its cubic spans and count their
+/// edges by its chord bound, sweep-path cubics take its adaptive intervals,
+/// and sweeps frame through its rotation-minimizing frames and the shared
+/// double reflection. Cubic points, path stations and sweep frames may
+/// change; lines and arcs are unchanged.
+pub const EVAL_SCHEMA_VERSION: u32 = 42;
 
 #[cfg(test)]
 mod diagonal_boolean_tests;

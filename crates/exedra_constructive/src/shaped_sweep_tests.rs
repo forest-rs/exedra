@@ -759,9 +759,9 @@ fn laws_that_fold_a_controlled_wall_are_refused() {
 #[test]
 fn constant_sweep_fingerprints_are_unchanged() {
     let expected = [
-        0x7c89_59ab_abec_ce1f_75b5_a6e7_0e20_6f3e_u128,
-        0xcfdb_8e5b_d5fb_11ee_7d50_3570_f45c_877c,
-        0x48c4_7e23_22ec_0524_2b30_da1c_34ac_2c63,
+        0xde0d_52ee_6ce3_4d22_d03b_779a_7fb6_0818_u128,
+        0x06ff_2264_e210_3e03_2b73_87dc_9049_10da,
+        0xe052_0831_f2cb_ddb7_ff37_9f28_7f05_78e9,
     ];
     let paths = [
         straight_polyline(),
