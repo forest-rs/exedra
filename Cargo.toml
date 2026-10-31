@@ -56,7 +56,7 @@ members = [
 
 [workspace.package]
 edition = "2024"
-rust-version = "1.92"
+rust-version = "1.89"
 license = "Apache-2.0 OR MIT"
 repository = "https://github.com/forest-rs/exedra"
 

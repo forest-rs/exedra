@@ -2,7 +2,7 @@
 name = "exedra_fidget_bench"
 version = "0.0.0"
 edition.workspace = true
-rust-version.workspace = true
+rust-version = "1.92"
 license.workspace = true
 repository.workspace = true
 publish = false
