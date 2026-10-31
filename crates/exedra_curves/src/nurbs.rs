@@ -12,8 +12,8 @@ use crate::{CurveEvaluation, Workspace};
 /// curve for `N = 2`, a space curve for the default `N = 3`.
 ///
 /// A curve of `points.len()` controls and `order` (degree + 1) has
-/// `points.len() + order` nondecreasing knots, and is defined over the
-/// domain `[knots[order - 1], knots[points.len()]]`. Without weights every
+/// `points.len() + order` nondecreasing knots, none repeated more than
+/// `order` times, and is defined over the domain `[knots[order - 1], knots[points.len()]]`. Without weights every
 /// control weighs 1 (a polynomial B-spline).
 ///
 /// [`Self::validate`] checks the description once and returns a
@@ -30,7 +30,8 @@ use crate::{CurveEvaluation, Workspace};
 pub struct Nurbs<'a, const N: usize = 3> {
     /// Degree + 1, at least 2.
     pub order: u32,
-    /// The knot vector, `points.len() + order` long, nondecreasing.
+    /// The knot vector, `points.len() + order` long, nondecreasing, no
+    /// value more than `order` times.
     pub knots: &'a [f64],
     /// The controls.
     pub points: &'a [[f64; N]],
@@ -66,8 +67,9 @@ pub enum NurbsError {
         expected: usize,
     },
     /// A knot is smaller than the one before it, or not finite, or the
-    /// whole knot vector spans more than an `f64` holds (then `index` is
-    /// the last knot's).
+    /// last of more than `order` equal knots, where a control would shape
+    /// no part of the curve, or the whole knot vector spans more than an
+    /// `f64` holds (then `index` is the last knot's).
     Knots {
         /// The knot's index.
         index: usize,
@@ -109,7 +111,10 @@ impl core::fmt::Display for NurbsError {
             Self::KnotCount { knots, expected } => {
                 write!(f, "{knots} knots where {expected} are needed")
             }
-            Self::Knots { index } => write!(f, "knot {index} decreases or is not finite"),
+            Self::Knots { index } => write!(
+                f,
+                "knot {index} decreases, repeats past the order, or is not finite"
+            ),
             Self::WeightCount { weights, points } => {
                 write!(f, "{weights} weights for {points} controls")
             }
@@ -209,8 +214,12 @@ impl<'a, const N: usize> Nurbs<'a, N> {
                 expected,
             });
         }
+        let span = order as usize;
         for (index, knot) in self.knots.iter().enumerate() {
-            if !knot.is_finite() || (index > 0 && *knot < self.knots[index - 1]) {
+            if !knot.is_finite()
+                || (index > 0 && *knot < self.knots[index - 1])
+                || (index >= span && *knot == self.knots[index - span])
+            {
                 return Err(NurbsError::Knots { index });
             }
         }
@@ -258,8 +267,9 @@ impl<'a, const N: usize> Nurbs<'a, N> {
 /// It guarantees:
 /// - an order of at least 2, at least `order` controls, and
 ///   `points + order` knots;
-/// - finite, nondecreasing knots whose whole span (last minus first) is
-///   finite, and a domain of positive length;
+/// - finite, nondecreasing knots, none repeated more than `order` times,
+///   so every control shapes some span, whose whole span (last minus
+///   first) is finite, and a domain of positive length;
 /// - weights, when given, one per control, in `[2^-256, 2^256]`;
 /// - finite weighted controls `w P`.
 ///
@@ -584,10 +594,10 @@ impl<'a, const N: usize> ValidNurbs<'a, N> {
 /// evaluates, samples and prepares it, with no checks repeated.
 #[derive(Clone, Debug, PartialEq)]
 pub struct NurbsCurve<const N: usize = 3> {
-    order: u32,
-    knots: Vec<f64>,
-    points: Vec<[f64; N]>,
-    weights: Option<Vec<f64>>,
+    pub(crate) order: u32,
+    pub(crate) knots: Vec<f64>,
+    pub(crate) points: Vec<[f64; N]>,
+    pub(crate) weights: Option<Vec<f64>>,
 }
 
 impl<const N: usize> NurbsCurve<N> {
