@@ -527,3 +527,69 @@ fn numerical_trim_budget_has_no_partial_result() {
     assert_eq!(result.work.trim_steps, 0);
     assert!(result.trims.is_empty());
 }
+
+#[test]
+fn trimmed_offsets_keep_their_bits() {
+    /// FNV-1a over values' bits.
+    fn digest(hash: u64, bits: u64) -> u64 {
+        bits.to_le_bytes().iter().fold(hash, |h, &b| {
+            (h ^ u64::from(b)).wrapping_mul(0x0100_0000_01B3)
+        })
+    }
+    fn hash_kind(hash: u64, kind: &SegKind) -> u64 {
+        match kind {
+            SegKind::Line => digest(hash, 0),
+            SegKind::Arc { bulge } => digest(digest(hash, 1), bulge.to_bits()),
+            SegKind::Cubic { c1, c2 } => [c1.x, c1.y, c2.x, c2.y]
+                .iter()
+                .fold(digest(hash, 2), |h, v| digest(h, v.to_bits())),
+            SegKind::PolicyTo { realized, .. } => hash_kind(digest(hash, 3), realized),
+        }
+    }
+    let corner = |top: Seg2| {
+        Profile2::simple(
+            Loop2::new(vec![
+                Seg2::line((10.0, 0.0)),
+                Seg2::cubic((10.0, 10.0), (12.0, 3.0), (12.0, 7.0)),
+                top,
+                Seg2::line((0.0, 0.0)),
+            ])
+            .expect("loop"),
+        )
+        .expect("profile")
+    };
+    let cases = [
+        (cubic_profile(), -1.0),
+        (corner(Seg2::arc((0.0, 10.0), 0.2)), -0.5),
+        (
+            corner(Seg2::cubic((0.0, 10.0), (7.0, 12.0), (3.0, 12.0))),
+            -0.5,
+        ),
+    ];
+    let mut hash = 0xCBF2_9CE4_8422_2325_u64;
+    for (source, distance) in cases {
+        let result = source
+            .offset_with_policy(distance, CornerPolicy::Round, &OffsetPolicy::default())
+            .expect("trimmed offset");
+        assert!(!result.trims.is_empty());
+        hash = digest(hash, result.work.trim_steps);
+        for trim in &result.trims {
+            hash = digest(hash, u64::from(trim.corner));
+            for value in trim
+                .parameters
+                .iter()
+                .chain(trim.parameter_bounds.iter().flatten())
+                .chain(&trim.point)
+                .chain([&trim.position_bound, &trim.endpoint_adjustment])
+            {
+                hash = digest(hash, value.to_bits());
+            }
+        }
+        for seg in result.profile.outer().segs() {
+            hash = digest(digest(hash, seg.to.x.to_bits()), seg.to.y.to_bits());
+            hash = hash_kind(hash, &seg.kind);
+        }
+    }
+    // Recorded from the solver before it moved to `exedra_curves`.
+    assert_eq!(hash, 13_215_170_809_849_350_498, "trimmed offsets changed");
+}
