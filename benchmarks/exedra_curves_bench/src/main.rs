@@ -3,10 +3,12 @@
 
 //! Timing benchmark for `exedra_curves`.
 //!
-//! Three workloads matter to its callers: one long NURBS curve, many short
+//! Four workloads matter to its callers: one long NURBS curve, many short
 //! curves taken all the way to tube meshes (where per-curve setup and
-//! allocation can outweigh the arithmetic), and measuring. Each scenario
-//! reports the median of several runs.
+//! allocation can outweigh the arithmetic), measuring, and realization
+//! plans kept across updates (building one, moving one control or all of
+//! them, and realizing a tube or GPU data). Each scenario reports the
+//! median of several runs.
 //!
 //! Run with:
 //! `cargo run --release -p exedra_curves_bench`
@@ -17,6 +19,9 @@
 use std::hint::black_box;
 use std::time::{Duration, Instant};
 
+use exedra_curves::realize::{
+    Attribute, Centerline, CurveDescription, GpuCurve, PlanOptions, RealizationPlan,
+};
 use exedra_curves::{
     CubicBasis, Frame, Nurbs, NurbsSamples, Station, SweptMesh, Tolerance, Workspace,
     adaptive_stations, chain_lengths, rotation_minimizing_frames, rotation_minimizing_frames_into,
@@ -118,6 +123,102 @@ fn main() {
             u32::MAX,
         )
         .map(|(at, _)| at.len())
+    });
+
+    realization(&long, &short);
+}
+
+/// Realization plans: one long NURBS curve planned, updated and realized,
+/// and many short curves updated and swept as an animating caller does.
+fn realization(long: &LongNurbs, short: &ShortCurves) {
+    let curve = long
+        .curve()
+        .validate()
+        .expect("the benchmark curve is valid")
+        .to_curve();
+    let controls = curve.points().len();
+    let description = CurveDescription {
+        centerline: Centerline::Nurbs(curve),
+        widths: Attribute::Constant(0.05),
+        normals: None,
+        closed: false,
+    };
+    let mut workspace = Workspace::new();
+    report("realize_plan_nurbs", controls, || {
+        RealizationPlan::new(description.clone(), PlanOptions::new(8), &mut workspace)
+            .map(|plan| plan.stations().len())
+    });
+    let mut plan = RealizationPlan::new(description, PlanOptions::new(8), &mut workspace)
+        .expect("the benchmark curve plans");
+    let original = long.points.clone();
+    let mut nudged = original.clone();
+    nudged[controls / 2][1] += 0.5;
+    let shifted: Vec<[f64; 3]> = original.iter().map(|p| [p[0], p[1] + 0.5, p[2]]).collect();
+    let work = plan
+        .set_points(&nudged, &mut workspace)
+        .expect("the points are valid");
+    println!("  one control moved: {work:?}");
+    let mut flip = false;
+    report("realize_move_one_control", 1, || {
+        flip = !flip;
+        let points = if flip { &original } else { &nudged };
+        plan.set_points(points, &mut workspace)
+            .map(|work| work.evaluated_stations)
+    });
+    report("realize_move_all_controls", controls, || {
+        flip = !flip;
+        let points = if flip { &original } else { &shifted };
+        plan.set_points(points, &mut workspace)
+            .map(|work| work.evaluated_stations)
+    });
+    let mut mesh = SweptMesh::default();
+    report("realize_tube_into", plan.stations().len(), || {
+        plan.tube_into(8, &mut workspace, &mut mesh)
+            .map(|()| mesh.positions.len())
+    });
+    let mut gpu = GpuCurve::default();
+    plan.gpu_into([0.0; 3], &mut gpu).unwrap();
+    report("realize_gpu_into_unchanged", plan.spans(), || {
+        plan.gpu_into([0.0; 3], &mut gpu).unwrap().is_unchanged()
+    });
+
+    // Many short Catmull-Rom curves, each kept as a plan: every update
+    // moves all their controls, then sweeps them.
+    let mut plans: Vec<RealizationPlan> = short
+        .controls
+        .iter()
+        .map(|controls| {
+            let description = CurveDescription {
+                centerline: Centerline::Cubic {
+                    basis: CubicBasis::CatmullRom,
+                    points: controls.clone(),
+                    spans: short.spans.clone(),
+                },
+                widths: Attribute::Constant(0.1),
+                normals: None,
+                closed: false,
+            };
+            RealizationPlan::new(description, PlanOptions::new(4), &mut workspace)
+                .expect("the short curves plan")
+        })
+        .collect();
+    let lifted: Vec<Vec<[f64; 3]>> = short
+        .controls
+        .iter()
+        .map(|controls| controls.iter().map(|p| [p[0], p[1], p[2] + 0.1]).collect())
+        .collect();
+    report("short_plans_update_and_tube", plans.len(), || {
+        flip = !flip;
+        let mut vertices = 0;
+        for (i, plan) in plans.iter_mut().enumerate() {
+            let points = if flip { &lifted[i] } else { &short.controls[i] };
+            plan.set_points(points, &mut workspace)
+                .expect("the points are valid");
+            plan.tube_into(8, &mut workspace, &mut mesh)
+                .expect("the tube fits");
+            vertices += mesh.positions.len();
+        }
+        vertices
     });
 }
 
