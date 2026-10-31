@@ -16,7 +16,7 @@ use exedra_math::{add, cross, dot, scale, sub};
 mod cursor;
 pub use cursor::PathCursor3;
 
-pub use exedra_math::path::{PathClosure, PathJoin, PathSegment3};
+pub use exedra_curves::path::{PathClosure, PathJoin, PathSegment3};
 
 /// Accuracy and finite work budgets for a curved sweep path.
 #[derive(Copy, Clone, Debug, PartialEq)]

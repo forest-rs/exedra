@@ -8,7 +8,7 @@ use super::{
 };
 use crate::path::{DiscretizedPath, PathClosure, PathJoin, PathStation, same_tangent};
 use alloc::vec::Vec;
-use exedra_math::path::double_reflection;
+use exedra_curves::path::double_reflection;
 use exedra_math::{add, cross, dot, scale, sub};
 
 fn station_frame(

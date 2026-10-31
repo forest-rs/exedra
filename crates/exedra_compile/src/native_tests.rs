@@ -267,16 +267,16 @@ fn loft_measure_unavailability_is_typed_and_all_families_install() {
     .unwrap()
     .into();
     assert_eq!(revolution.family(), NativeFamily::Revolution);
-    let spans = [exedra_math::path::PathSegment3::Line {
+    let spans = [exedra_curves::path::PathSegment3::Line {
         to: [0.0, 0.0, 5.0],
     }];
-    let path = exedra_math::path::CurvePathView {
+    let path = exedra_curves::path::CurvePathView {
         start: [0.0; 3],
         segments: &spans,
         section_x: [1.0, 0.0, 0.0],
         section_origin: [0.0; 2],
-        closure: exedra_math::path::PathClosure::Open,
-        joins: exedra_math::path::PathJoin::Smooth,
+        closure: exedra_curves::path::PathClosure::Open,
+        joins: exedra_curves::path::PathJoin::Smooth,
     };
     let sweep: NativeSource =
         exedra_analytic::sweep::Sweep::new(profile, &path, Placement3::IDENTITY)

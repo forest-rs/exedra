@@ -21,11 +21,9 @@ use exedra_analytic::{
     revolve::Revolution,
     sweep::Sweep,
 };
+use exedra_curves::path::{PathClosure, PathJoin, PathSegment3};
 use exedra_curves::profile::{Profile, SegTag};
-use exedra_math::{
-    Placement3,
-    path::{PathClosure, PathJoin, PathSegment3},
-};
+use exedra_math::Placement3;
 
 /// Supported retained construction family, independent of display tolerance.
 #[derive(Copy, Clone, Debug, PartialEq, Eq)]

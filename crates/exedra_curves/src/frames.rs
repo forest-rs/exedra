@@ -78,7 +78,7 @@ impl core::fmt::Display for TangentCount {
 impl core::error::Error for TangentCount {}
 
 /// Frames along `points`, transported without spin by
-/// [`exedra_math::path::double_reflection`] (Wang, Juttler, Zheng and Liu,
+/// [`crate::path::double_reflection`] (Wang, Juttler, Zheng and Liu,
 /// "Computation of Rotation Minimizing Frames", ACM Transactions on
 /// Graphics 27(1), 2008, section 4).
 ///
@@ -272,7 +272,7 @@ fn frame(
     for i in 1..n {
         let previous = frames[i - 1];
         let tangent = tangent_at(i, &mut report);
-        let moved = exedra_math::path::double_reflection(
+        let moved = crate::path::double_reflection(
             previous.point,
             previous.normal,
             previous.tangent,
@@ -292,13 +292,8 @@ fn frame(
     }
     if closed && n > 1 {
         let last = frames[n - 1];
-        let around = exedra_math::path::double_reflection(
-            last.point,
-            last.normal,
-            last.tangent,
-            points[0],
-            t0,
-        );
+        let around =
+            crate::path::double_reflection(last.point, last.normal, last.tangent, points[0], t0);
         let around = perpendicular(around, t0).unwrap_or(normal);
         // Both are unit and perpendicular to `t0`, so their cross product
         // is `sin(angle) t0`.
@@ -480,7 +475,7 @@ mod tests {
         // The angle turns the first normal onto the transported one.
         let last = frames[47];
         let first = frames[0];
-        let around = exedra_math::path::double_reflection(
+        let around = crate::path::double_reflection(
             last.point,
             last.normal,
             last.tangent,

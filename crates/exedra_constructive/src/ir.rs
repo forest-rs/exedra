@@ -149,7 +149,7 @@ impl LoftSection {
 }
 
 /// Shared mathematical sweep paths and framing intent.
-pub use exedra_math::path::{FramePolicy, Path3, PathClosure, PathJoin};
+pub use exedra_curves::path::{FramePolicy, Path3, PathClosure, PathJoin};
 
 /// Section scale and twist along a sweep path.
 pub use crate::section_law::{Law, SectionLaw, SectionLawError};
