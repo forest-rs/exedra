@@ -25,7 +25,9 @@
 //!   de Boor's algorithm over homogeneous controls, sampled a stated number
 //!   of times per nonempty knot span with the jumps at full-multiplicity
 //!   knots sampled on both sides and marked, and prepared as per-span
-//!   Bezier controls for repeated evaluation.
+//!   Bezier controls for repeated evaluation. A [`Nurbs`] borrows its
+//!   caller's buffers, so rebuilding curves allocates nothing; a
+//!   [`NurbsCurve`] owns its own, for curves kept as values.
 //! - **Frames** ([`rotation_minimizing_frames`],
 //!   [`rotation_minimizing_frames_along`]): the double-reflection transport
 //!   shared with Exedra's sweeps (`exedra_math::path::double_reflection`),
@@ -163,7 +165,7 @@ pub use measure::{
     AdaptiveReport, Tolerance, adaptive_stations, adaptive_stations_into, chain_lengths,
     chain_lengths_into, chain_station_at_length,
 };
-pub use nurbs::{Nurbs, NurbsError, NurbsSamples, PreparedNurbs, ValidNurbs};
+pub use nurbs::{Nurbs, NurbsCurve, NurbsError, NurbsSamples, PreparedNurbs, ValidNurbs};
 pub use sample::{
     ControlOutOfRange, Span, Station, sample, sample_derivative, sample_derivative_into,
     sample_into, sample_linear, sample_linear_into, stations, stations_into,
