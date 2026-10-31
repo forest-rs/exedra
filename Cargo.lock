@@ -386,6 +386,13 @@ dependencies = [
 ]
 
 [[package]]
+name = "exedra_curves"
+version = "0.1.0"
+dependencies = [
+ "exedra_math",
+]
+
+[[package]]
 name = "exedra_edit"
 version = "0.1.0"
 dependencies = [

@@ -62,6 +62,9 @@ Construction and extraction crates:
   flattening.
 - **[exedra_triangulate](crates/exedra_triangulate/)** - Deterministic,
   dependency-free planar polygon triangulation and exact predicate seams.
+- **[exedra_curves](crates/exedra_curves/)** - Deterministic cubic (Bezier,
+  B-spline, Catmull-Rom, Hermite) curve evaluation with derivatives and
+  explicit per-span sampling into caller-owned buffers.
 - **[exedra_primitives](crates/exedra_primitives/)** - Deterministic mesh
   primitive generators such as quads, boxes, grids, cylinders, cones, torus,
   UV spheres, and icospheres.
