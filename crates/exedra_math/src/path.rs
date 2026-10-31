@@ -244,8 +244,11 @@ impl Path3 {
 /// reflection carries the reflected tangent onto `next_tangent`; the second
 /// is skipped when they already agree (`|next_tangent - reflected|^2 <=
 /// 1e-24`). Only additions, multiplications and divisions are used, in a
-/// fixed order, so equal inputs give equal bits on every platform. When
-/// `from == to` there is no chord, nothing moves, and `x` is returned.
+/// fixed order, so equal inputs give equal bits on every platform. A chord
+/// longer than `2^500` or shorter than `2^-500` is first scaled by a power
+/// of two, which moves no bit of the result, so its squared length neither
+/// overflows nor underflows. When `from == to` there is no chord, nothing
+/// moves, and `x` is returned.
 ///
 /// Reference: W. Wang, B. Juttler, D. Zheng, Y. Liu, "Computation of Rotation
 /// Minimizing Frames", ACM Transactions on Graphics 27(1), 2008, section 4
@@ -259,6 +262,22 @@ pub fn double_reflection(
     next_tangent: [f64; 3],
 ) -> [f64; 3] {
     let v1 = crate::sub(to, from);
+    let largest = v1.iter().fold(0.0_f64, |m, c| m.max(c.abs()));
+    let wide = f64::from_bits((1023 + 500) << 52); // 2^500
+    let narrow = f64::from_bits((1023 - 500) << 52); // 2^-500
+    let v1 = if largest > wide && largest.is_finite() {
+        // `2^-e` for `largest`'s exponent `e`.
+        let biased = (largest.to_bits() >> 52) & 0x7FF;
+        crate::scale(v1, f64::from_bits((2046 - biased) << 52))
+    } else if 0.0 < largest && largest < narrow {
+        // A subnormal chord is scaled the same way from `2^1000` up.
+        let up = crate::scale(v1, f64::from_bits((1023 + 1000) << 52));
+        let largest = largest * f64::from_bits((1023 + 1000) << 52);
+        let biased = (largest.to_bits() >> 52) & 0x7FF;
+        crate::scale(up, f64::from_bits((2046 - biased) << 52))
+    } else {
+        v1
+    };
     let c1 = crate::dot(v1, v1);
     if c1 == 0.0 {
         return x;
@@ -359,5 +378,29 @@ mod tests {
             ),
             [0.0, 1.0, 0.0]
         );
+    }
+
+    #[test]
+    fn double_reflection_moves_alike_at_every_scale() {
+        // A spatial step: the chord's length only scales what it reflects,
+        // so tiny, subnormal and huge chords give the unit chord's bits.
+        let step = |chord: f64| {
+            double_reflection(
+                [0.0; 3],
+                [0.0, 0.6, 0.8],
+                [1.0, 0.0, 0.0],
+                [chord, 0.5 * chord, 0.25 * chord],
+                [0.6, 0.8, 0.0],
+            )
+        };
+        let unit = step(1.0);
+        assert!((crate::norm(unit) - 1.0).abs() < 1e-15, "{unit:?}");
+        for chord in [
+            0.5_f64.powi(600),
+            f64::from_bits(1 << 40),
+            2.0_f64.powi(700),
+        ] {
+            assert_eq!(step(chord), unit, "{chord:e}");
+        }
     }
 }
