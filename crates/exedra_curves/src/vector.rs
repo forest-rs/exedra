@@ -102,3 +102,23 @@ pub(crate) fn dot<const N: usize>(a: [f64; N], b: [f64; N]) -> f64 {
 pub(crate) fn norm<const N: usize>(a: [f64; N]) -> f64 {
     Real::sqrt(dot(a, a))
 }
+
+/// `|a|`, as [`norm`] gives it when the sum of squares is a finite normal
+/// number, and otherwise rescaled by the largest coordinate first, so it
+/// neither overflows nor underflows where the length itself does not.
+/// NaN in, NaN out.
+pub(crate) fn magnitude<const N: usize>(a: [f64; N]) -> f64 {
+    let sum = dot(a, a);
+    if sum.is_finite() && sum >= f64::MIN_POSITIVE {
+        return Real::sqrt(sum);
+    }
+    if a.iter().any(|c| c.is_nan()) {
+        return f64::NAN;
+    }
+    let largest = a.iter().fold(0.0_f64, |m, c| m.max(c.abs()));
+    if largest == 0.0 || largest.is_infinite() {
+        return largest;
+    }
+    let unit = a.map(|c| c / largest);
+    largest * Real::sqrt(dot(unit, unit))
+}
