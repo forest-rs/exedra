@@ -21,7 +21,9 @@ Current scope:
   plus an allocation-free borrowed curve view shared by geometry heads;
   cursor authoring, sampling, recipe encoding and mesh evaluation stay in
   their consuming crates. `Path3::xy_circle` validates a radius independently
-  of sampling policy. Owned paths use `alloc` and remain `no_std`,
+  of sampling policy. `path::double_reflection` is the one rotation-minimizing
+  frame transport step that sampled sweeps and curve tubes share. Owned paths
+  use `alloc` and remain `no_std`,
 - `predicates`: exact-sign `orient2d`, `orient3d`, `incircle`, `insphere`,
   the weighted power test `insphere_weighted`, and `plane_side`, with floating-point filters and exact fallbacks,
 - `keyed`: stable, counter-based deterministic randomness (`hash`, `mix`,

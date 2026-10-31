@@ -3136,17 +3136,8 @@ fn sweep_frames(points: &[[f64; 3]]) -> Result<Vec<SweepFrame>, TessellateError>
         // Double reflection (Wang et al.): transport (u, t) from point
         // i-1 to point i without spin.
         let (p_prev, u_prev, _, t_prev) = frames[i - 1];
-        let v1 = sub(points[i], p_prev);
-        let c1 = dot(v1, v1);
-        let u_l = sub(u_prev, scale(v1, 2.0 / c1 * dot(v1, u_prev)));
-        let t_l = sub(t_prev, scale(v1, 2.0 / c1 * dot(v1, t_prev)));
-        let v2 = sub(tangents[i], t_l);
-        let c2 = dot(v2, v2);
-        let u_i = if c2 <= 1e-24 {
-            u_l
-        } else {
-            sub(u_l, scale(v2, 2.0 / c2 * dot(v2, u_l)))
-        };
+        let u_i =
+            exedra_math::path::double_reflection(p_prev, u_prev, t_prev, points[i], tangents[i]);
         let v_i = cross(tangents[i], u_i);
         frames.push((points[i], u_i, v_i, tangents[i]));
     }
