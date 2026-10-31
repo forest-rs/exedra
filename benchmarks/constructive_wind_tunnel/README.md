@@ -616,3 +616,35 @@ sharing immutable source validation across parallel tools, fixed exit/normal
 storage and one pattern reservation reduce the 31-hole cut's allocated traffic
 by 52.6%. Its original-role median falls from 1.500 to 0.836 ms. Rendering remains
 unchanged; the measured single nonparallel cut costs an additional 0.58 µs.
+
+### Native spline-wall bounds
+
+`native_spline_wall` measures complete body construction, ruled-surface regularity
+with owned span clones, and mesh realization separately. Three solids share a
+cubic spline closed by its chord: a polynomial prism, a rational prism and a
+rational tapered loft. Geometry remains retained and exact; tolerances govern
+only realization. The output includes per-face triangle counts, shared-edge
+sampling, deviation bounds and retained type sizes. Timings include output drop;
+validation and optional triangle JSON export run outside timing windows.
+
+```sh
+cargo run --release -p constructive_wind_tunnel --bin native_spline_wall -- 51 /tmp/spline-walls
+# Retain at least 102 samples on the curved boundaries for matched-error studies.
+EXEDRA_SPLINE_MIN_SEGMENTS=102 cargo run --release -p constructive_wind_tunnel --bin native_spline_wall -- 51 /tmp/spline-walls-fixed
+# Request triangle shape separately from geometric accuracy.
+EXEDRA_SPLINE_BOUNDARY_SPACING=0.1 cargo run --release -p constructive_wind_tunnel --bin native_spline_wall -- 51 /tmp/spline-walls-quality
+# Prints a PID; repeats only the selected phase for macOS sample.
+cargo run --release -p constructive_wind_tunnel --bin native_spline_wall -- --profile proof 1000000
+EXEDRA_SPLINE_PHASE=proof python3 benchmarks/constructive_wind_tunnel/profile_authoring.py --workload native_spline_wall --output /tmp/spline-wall-heap
+```
+
+Allocation phases are `construct`, `proof` or `realize`. Source preparation,
+warmup and profiler setup are excluded. The `retained` and `released` checkpoints
+separate owned result storage from temporary allocation traffic. Minimum sample
+counts apply to curved boundaries; realization can add further samples when
+needed. These are accuracy-driven meshes. Triangle shape is a separate policy
+and should be compared per surface rather than through density-weighted whole
+mesh statistics.
+General ruled grids still use accuracy-driven scheduling. A requested shape
+ratio can remain unmet there; the optional `quality` report records the actual
+remaining violations instead of implying that denser sampling met the target.
