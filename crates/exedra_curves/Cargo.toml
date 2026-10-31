@@ -1,0 +1,25 @@
+[package]
+name = "exedra_curves"
+version = "0.1.0"
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+description = "Deterministic cubic Bezier, B-spline, Catmull-Rom and Hermite curve evaluation and sampling"
+readme = "README.md"
+keywords = ["curves", "nurbs", "spline", "no_std", "geometry"]
+categories = ["graphics", "mathematics", "no-std"]
+
+[lints]
+workspace = true
+
+[features]
+default = ["std"]
+# The arithmetic backend of `exedra_math`: square roots through the
+# standard library, or through `libm` for `no_std` builds. Ring angles use
+# `exedra_math`'s trigonometry, which prefers `libm` when it is enabled.
+libm = ["exedra_math/libm"]
+std = ["exedra_math/std"]
+
+[dependencies]
+exedra_math.workspace = true

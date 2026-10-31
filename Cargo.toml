@@ -17,6 +17,7 @@ members = [
     "crates/exedra_assembly",
     "crates/exedra_compile",
     "crates/exedra_constructive",
+    "crates/exedra_curves",
     "crates/exedra_edit",
     "crates/exedra_fidget",
     "crates/exedra_gltf",
@@ -120,6 +121,7 @@ exedra_analytic = { default-features = false, path = "crates/exedra_analytic", v
 exedra_assembly = { default-features = false, path = "crates/exedra_assembly", version = "0.1.0" }
 exedra_compile = { default-features = false, path = "crates/exedra_compile", version = "0.1.0" }
 exedra_constructive = { default-features = false, path = "crates/exedra_constructive", version = "0.1.0" }
+exedra_curves = { default-features = false, path = "crates/exedra_curves", version = "0.1.0" }
 exedra_edit = { default-features = false, path = "crates/exedra_edit", version = "0.1.0" }
 exedra_fidget = { default-features = false, path = "crates/exedra_fidget", version = "0.1.0" }
 exedra_gltf = { default-features = false, path = "crates/exedra_gltf", version = "0.1.0" }

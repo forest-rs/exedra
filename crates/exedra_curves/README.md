@@ -1,0 +1,39 @@
+# `exedra_curves`
+
+Deterministic curve geometry for the Exedra workspace and its consumers.
+
+Current scope:
+
+- `CubicBasis`: Bezier, uniform B-spline, Catmull-Rom and Hermite as
+  explicit basis matrices (the `RenderMan` table that OpenUSD's
+  `UsdGeomBasisCurves` documents), evaluated, with first and second
+  derivatives, for controls of any dimension, so positions, widths and
+  colors follow a span alike;
+- spans as four control indices chosen by the caller, `stations` at an
+  explicit count per span, and `sample`, `sample_derivative` and
+  `sample_linear` at those stations;
+- an `_into` form of every allocating function, filling a caller's buffers,
+  so a retained caller allocates nothing in steady state.
+
+The crate is format-free: which controls form which span (stepping,
+wrapping, end conditions), how a format lays out per-control data, and how
+finely to sample are the caller's. The crate documentation states its
+contracts: explicit counts, and which results are bitwise deterministic
+across platforms.
+
+```rust
+use exedra_curves::{CubicBasis, sample, stations};
+
+// One Bezier span sampled at its ends and middle.
+let controls = [[0.0, 0.0, 0.0], [0.0, 1.0, 0.0], [1.0, 1.0, 0.0], [1.0, 0.0, 0.0]];
+let points = sample(CubicBasis::Bezier, &controls, &[[0, 1, 2, 3]], &stations(1, 2, false)).unwrap();
+assert_eq!(points[1], [0.5, 0.75, 0.0]);
+```
+
+`no_std` + `alloc`; depends only on `exedra_math`. Features `std` (default)
+and `libm` select `exedra_math`'s backend.
+
+## License
+
+Licensed under either of Apache License, Version 2.0 or MIT license at your
+option.
