@@ -7,7 +7,7 @@
 //! enables libm explicitly to keep recipe arithmetic stable.
 
 #[cfg(feature = "libm")]
-pub(crate) use libm::{acos, acosf, cos, sin, sincos, sincosf};
+pub(crate) use libm::{acos, acosf, asin, asinf, cos, sin, sincos, sincosf};
 
 #[cfg(all(feature = "std", not(feature = "libm")))]
 mod std_backend {
@@ -36,7 +36,15 @@ mod std_backend {
     pub(crate) fn acosf(value: f32) -> f32 {
         value.acos()
     }
+
+    pub(crate) fn asin(value: f64) -> f64 {
+        value.asin()
+    }
+
+    pub(crate) fn asinf(value: f32) -> f32 {
+        value.asin()
+    }
 }
 
 #[cfg(all(feature = "std", not(feature = "libm")))]
-pub(crate) use std_backend::{acos, acosf, cos, sin, sincos, sincosf};
+pub(crate) use std_backend::{acos, acosf, asin, asinf, cos, sin, sincos, sincosf};
