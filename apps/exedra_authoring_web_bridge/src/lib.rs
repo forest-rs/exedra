@@ -1168,29 +1168,26 @@ mod tests {
             let metadata = session.build(request).unwrap();
             assert_eq!(value(&metadata)["parts"][0]["chartKind"], kind);
             let support = &value(&metadata)["parts"][0]["stepSupport"]["status"];
-            assert_eq!(
-                support,
-                if kind == "loft" {
-                    "unsupported"
-                } else {
-                    "supported"
-                }
-            );
-            if kind != "loft" {
-                let file = session
-                    .step(
-                        1,
-                        0,
-                        ExchangeOptions {
-                            name: None,
-                            timestamp: "2026-10-28T00:00:00Z".into(),
-                            tolerance: None,
-                        },
-                    )
-                    .unwrap();
-                assert!(file.text.contains("TOROIDAL_SURFACE"));
-                assert_eq!(value(&file.report)["parameterRoundoffBound"], 0.0);
-            }
+            assert_eq!(support, "supported");
+            let file = session
+                .step(
+                    1,
+                    0,
+                    ExchangeOptions {
+                        name: None,
+                        timestamp: "2026-10-28T00:00:00Z".into(),
+                        tolerance: None,
+                    },
+                )
+                .unwrap();
+            // The loft's walls are ruled between equal circles.
+            let surface = if kind == "loft" {
+                "B_SPLINE_SURFACE_WITH_KNOTS"
+            } else {
+                "TOROIDAL_SURFACE"
+            };
+            assert!(file.text.contains(surface), "{kind}");
+            assert_eq!(value(&file.report)["parameterRoundoffBound"], 0.0);
             let chart_value = match kind {
                 "revolve" => {
                     serde_json::json!({"kind":kind,"referenceRadius":20,"wall":transform,"caps":transform})
