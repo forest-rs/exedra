@@ -2,6 +2,26 @@
 
 Run the existing compiled-surface example with `cargo run -p geometry_queries --bin geometry_queries`.
 
+The native mesh sample compares 80 × 40 × 6 plates with zero, one and four R2
+holes, a blind cylindrical pocket and a tall cylinder. It times native body
+construction and `Body::realize` separately, then writes shape/accuracy/closure
+and independent volume/membership evidence as JSON/CSV, per-triangle native-face
+provenance CSV, and four-view SVG wireframes from the emitted triangles.
+Measurements, checks and drawing run outside the timing windows. The normalized
+aspect measure is `sqrt(3) * longest_edge² / (4 * area)`, with one for equilateral.
+
+```sh
+cargo run -p geometry_queries --bin native_mesh_quality --release -- 31 /tmp/exedra-native-quality current default
+cargo run -p geometry_queries --bin native_mesh_quality --release -- 31 /tmp/exedra-native-quality current quality
+```
+
+The opt-in quality run requests native boundary spacing at most 4 model units,
+a circumradius/shortest-edge bound of 2.5 and at most 4,096 interior Steiner
+points. Final emitted shape measurements remain separate from chord accuracy;
+the request does not imply that every triangle reaches the shape target.
+For CPU sampling, `native_mesh_quality --profile 10000 quality` repeats only the
+four-hole plate realization, with the retained body and warmup prepared first.
+
 The native solid example builds a 60 × 40 × 20 block with two joined R4 through
 passages and a blind stepped bore: R5 to depth 6, then R2 to depth 12. It prepares
 one retained-body query and prints point inputs, material/void/boundary results,

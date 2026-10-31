@@ -114,6 +114,13 @@ fn expected_triangles(
 }
 #[test]
 fn charted_compilation_retains_source_identity_geometry_and_triangle_correspondence() {
+    check_charted_compilation(None);
+}
+#[test]
+fn quality_charted_compilation_retains_geometry_correspondence_and_cache_identity() {
+    check_charted_compilation(Some(exedra_analytic::realize::TriangleQuality::new(0.5)));
+}
+fn check_charted_compilation(quality: Option<exedra_analytic::realize::TriangleQuality>) {
     let wall = ChartTransform {
         matrix: [[0.2, 0.0], [0.0, 0.2]],
         offset: [0.0; 2],
@@ -145,6 +152,7 @@ fn charted_compilation_retains_source_identity_geometry_and_triangle_corresponde
         let prepared = PreparedSource::new(PartSource::Native(source.clone()));
         let mut compiler = PartCompiler::new();
         let mut policy = CompilePolicy::default();
+        policy.native.quality = quality;
         let uncharted = compiler
             .compile_snapshot(&[PartInput::prepared("part", &prepared)], &policy)
             .unwrap();

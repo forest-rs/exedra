@@ -1077,6 +1077,7 @@ mod tests {
             tolerance: 1.0,
             min_arc_segments: 46_000,
             max_edge_segments: 46_000,
+            quality: None,
             max_vertices: u32::MAX,
             max_boundary_samples: u32::MAX,
             geometry_gap: 1e-9,

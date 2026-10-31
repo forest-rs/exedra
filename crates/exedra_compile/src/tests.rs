@@ -323,3 +323,23 @@ fn render_vertex_limit_covers_recipe_and_baked_sources_per_body() {
         assert_eq!(compiler.cached_entries(), entries);
     }
 }
+
+#[test]
+fn each_native_triangle_quality_setting_changes_compilation_identity() {
+    use exedra_analytic::realize::TriangleQuality;
+    let base = CompilePolicy::default();
+    let mut quality = base.clone();
+    quality.native.quality = Some(TriangleQuality::new(4.0));
+    let identity = policy_fingerprint(&quality);
+    assert_ne!(identity, policy_fingerprint(&base));
+    for settings in [
+        TriangleQuality::new(2.0),
+        TriangleQuality::new(4.0).with_max_radius_edge_ratio(1.5),
+        TriangleQuality::new(4.0).with_max_steiner_points(17),
+        TriangleQuality::new(4.0).with_max_candidate_insertions(23),
+    ] {
+        let mut changed = quality.clone();
+        changed.native.quality = Some(settings);
+        assert_ne!(identity, policy_fingerprint(&changed));
+    }
+}

@@ -154,6 +154,16 @@ pub fn policy_fingerprint(policy: &CompilePolicy) -> PolicyFingerprint {
     ] {
         bytes.extend_from_slice(&limit.to_le_bytes());
     }
+    match policy.native.quality {
+        None => bytes.push(0),
+        Some(quality) => {
+            bytes.push(1);
+            bytes.extend_from_slice(&quality.max_boundary_spacing.to_bits().to_le_bytes());
+            bytes.extend_from_slice(&quality.max_radius_edge_ratio.to_bits().to_le_bytes());
+            bytes.extend_from_slice(&quality.max_steiner_points.to_le_bytes());
+            bytes.extend_from_slice(&quality.max_candidate_insertions.to_le_bytes());
+        }
+    }
     bytes.extend_from_slice(
         &exedra_constructive::cache::policy_fingerprint(&policy.evaluation).to_le_bytes(),
     );

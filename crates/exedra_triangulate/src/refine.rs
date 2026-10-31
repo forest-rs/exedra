@@ -109,6 +109,7 @@ struct Refiner<'a> {
     origins: Vec<SteinerOrigin>,
     ratio2_bound: f64,
     max_steiner: usize,
+    max_candidates: u32,
     split_boundary: bool,
     stats: RefineStats,
 }
@@ -128,6 +129,7 @@ impl<'a> Refiner<'a> {
             origins: Vec::new(),
             ratio2_bound: params.max_radius_edge_ratio * params.max_radius_edge_ratio,
             max_steiner: params.max_steiner_points as usize,
+            max_candidates: params.max_candidate_insertions,
             split_boundary: params.boundary_splits == BoundarySplits::Allowed,
             stats: RefineStats::default(),
         };
@@ -189,6 +191,7 @@ impl<'a> Refiner<'a> {
                     self.stats.budget_exhausted = true;
                     return;
                 }
+                self.stats.candidate_insertions += 1;
                 self.split_segment_midpoint(edge);
                 continue;
             }
@@ -205,6 +208,7 @@ impl<'a> Refiner<'a> {
                 self.stats.budget_exhausted = true;
                 return;
             }
+            self.stats.candidate_insertions += 1;
             self.insert_circumcenter(tri);
         }
     }
@@ -236,6 +240,10 @@ impl<'a> Refiner<'a> {
     }
 
     fn budget_exhausted(&self) -> bool {
+        if self.stats.candidate_insertions >= self.max_candidates {
+            return true;
+        }
+
         self.origins.len() >= self.max_steiner
             || !can_append_u32_ids(self.points.len(), 1)
             || !can_append_triangle_ids(self.tris.len(), 1)
@@ -1166,6 +1174,40 @@ mod tests {
         if let Ok(full_len) = usize::try_from(u64::from(u32::MAX) + 1) {
             assert!(can_append_u32_ids(full_len, 0));
             assert!(!can_append_u32_ids(full_len, 1));
+        }
+    }
+}
+
+#[cfg(test)]
+mod candidate_budget_tests {
+    use crate::{PolygonInput, RefineParams, refine};
+    #[test]
+    fn candidate_limit_bounds_attempts_independently_of_generated_vertices() {
+        let ring = [[0.0, 0.0], [20.0, 0.0], [20.0, 1.0], [0.0, 1.0]];
+        let input = PolygonInput {
+            outer: &ring,
+            holes: &[],
+        };
+        for limit in [0, 1, 2] {
+            let out = refine(
+                &input,
+                &RefineParams::new(1.5).with_max_candidate_insertions(limit),
+            )
+            .unwrap();
+            assert_eq!(out.stats.candidate_insertions, limit);
+            assert!(out.stats.budget_exhausted);
+            assert!(out.stats.remaining_bad_triangles > 0);
+            let area: f64 = out
+                .triangles
+                .iter()
+                .map(|t| {
+                    let [a, b, c] = t.map(|i| out.points[i as usize]);
+                    let twice = (b[0] - a[0]) * (c[1] - a[1]) - (b[1] - a[1]) * (c[0] - a[0]);
+                    assert!(twice > 0.0);
+                    twice * 0.5
+                })
+                .sum();
+            assert!((area - 20.0).abs() < 1e-12);
         }
     }
 }

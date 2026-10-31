@@ -72,7 +72,9 @@ struct Metric {
 }
 #[derive(Copy, Clone)]
 struct RestPoint {
-    profile: usize,
+    // One-based index leaves a niche for interior vertices' absent rest record
+    // without enlarging the existing per-vertex boundary scratch allocation.
+    profile: core::num::NonZeroUsize,
     profile_fraction: f64,
     station: usize,
     path_fraction: f64,
@@ -152,69 +154,40 @@ impl Sweep {
         let rest: Vec<_> = result
             .mesh_vertices
             .iter()
-            .map(|(_, source)| {
-                Ok(match *source {
-                    VertexSource::Face { face, uv } => {
-                        let record = &self.body.faces()[face.index()];
-                        let FaceRole::Wall {
+            .map(|(_, source)| match *source {
+                VertexSource::Vertex(id) => Some(RestPoint {
+                    profile: core::num::NonZeroUsize::new(id.index() % count + 1)
+                        .expect("profile vertex"),
+                    profile_fraction: 0.0,
+                    station: id.index() / count,
+                    path_fraction: 0.0,
+                }),
+                VertexSource::Edge { edge, parameter } => {
+                    Some(match self.body.edges()[edge.index()].role {
+                        EdgeRole::Section { station, segment } => RestPoint {
+                            profile: core::num::NonZeroUsize::new(index(segment) + 1)
+                                .expect("profile segment"),
+                            profile_fraction: parameter,
+                            station,
+                            path_fraction: 0.0,
+                        },
+                        EdgeRole::Rail {
                             path_segment,
-                            segment,
-                            ..
-                        } = record.role
-                        else {
-                            return Err(SweepUvError::Coordinates { face });
-                        };
-                        let ring = match segment.loop_ref {
-                            LoopRef::Outer => self.profile.outer(),
-                            LoopRef::Hole(i) => &self.profile.holes()[i],
-                        };
-                        let arc = ring
-                            .arc(segment.segment)
-                            .ok_or(SweepUvError::Coordinates { face })?;
-                        let start = record.domain.v.bounds()[usize::from(arc.sweep > 0.0)];
-                        let profile_fraction = (uv[1] - start) / (-arc.sweep);
-                        let path_fraction =
-                            (uv[0] - record.domain.u.bounds()[0]) / record.domain.u.span();
-                        if !(0.0..=1.0).contains(&profile_fraction)
-                            || !(0.0..=1.0).contains(&path_fraction)
-                        {
-                            return Err(SweepUvError::Coordinates { face });
-                        }
-                        RestPoint {
-                            profile: index(segment),
-                            profile_fraction,
+                            vertex,
+                        } => RestPoint {
+                            profile: core::num::NonZeroUsize::new(index(vertex) + 1)
+                                .expect("profile vertex"),
+                            profile_fraction: 0.0,
                             station: path_segment,
-                            path_fraction,
-                        }
-                    }
-                    VertexSource::Vertex(id) => RestPoint {
-                        profile: id.index() % count,
-                        profile_fraction: 0.0,
-                        station: id.index() / count,
-                        path_fraction: 0.0,
-                    },
-                    VertexSource::Edge { edge, parameter } => {
-                        match self.body.edges()[edge.index()].role {
-                            EdgeRole::Section { station, segment } => RestPoint {
-                                profile: index(segment),
-                                profile_fraction: parameter,
-                                station,
-                                path_fraction: 0.0,
-                            },
-                            EdgeRole::Rail {
-                                path_segment,
-                                vertex,
-                            } => RestPoint {
-                                profile: index(vertex),
-                                profile_fraction: 0.0,
-                                station: path_segment,
-                                path_fraction: parameter,
-                            },
-                        }
-                    }
-                })
+                            path_fraction: parameter,
+                        },
+                    })
+                }
+                // Supporting-surface interior coordinates are converted per face,
+                // without inventing a source profile vertex or path station.
+                VertexSource::Face { .. } => None,
             })
-            .collect::<Result<_, _>>()?;
+            .collect();
         let mut mapped = Vec::with_capacity(result.mesh.half_edge_count());
         for &(mesh_face, face) in &result.mesh_faces {
             let role = self.body.faces()[face.index()].role;
@@ -223,8 +196,22 @@ impl Sweep {
                 core::array::from_fn::<_, 3, _>(|_| corners.next().expect("triangle realization"));
             let mut coords = [[0.0; 2]; 3];
             for (i, corner) in corners.iter().enumerate() {
-                let point =
-                    rest[result.mesh.to_vertex(*corner).expect("live corner").index() as usize];
+                let vertex = result.mesh.to_vertex(*corner).expect("live corner").index() as usize;
+                if let VertexSource::Face {
+                    face: source_face,
+                    uv,
+                } = result.mesh_vertices[vertex].1
+                {
+                    if source_face != face {
+                        return Err(SweepUvError::Coordinates { face });
+                    }
+                    coords[i] = self
+                        .face_coordinates(face, uv, &metrics, &offsets)
+                        .ok_or(SweepUvError::Coordinates { face })?;
+                    continue;
+                }
+                let point = rest[vertex].expect("boundary source has rest coordinates");
+                let profile = point.profile.get() - 1;
                 coords[i] = match role {
                     FaceRole::Wall {
                         path_segment,
@@ -233,9 +220,9 @@ impl Sweep {
                     } => {
                         let segment = index(segment);
                         let metric = &metrics[segment];
-                        let u = if point.profile == segment {
+                        let u = if profile == segment {
                             metric.start + (metric.end - metric.start) * point.profile_fraction
-                        } else if point.profile == metric.next && point.profile_fraction == 0.0 {
+                        } else if profile == metric.next && point.profile_fraction == 0.0 {
                             metric.end
                         } else {
                             return Err(SweepUvError::Coordinates { face });
@@ -260,7 +247,7 @@ impl Sweep {
                         if point.station != station || point.path_fraction != 0.0 {
                             return Err(SweepUvError::Coordinates { face });
                         }
-                        let metric = &metrics[point.profile];
+                        let metric = &metrics[profile];
                         metric.arc.map_or_else(
                             || {
                                 core::array::from_fn(|j| {
@@ -305,6 +292,123 @@ impl Sweep {
         let _: () = edit.finish();
         Ok(result)
     }
+
+    fn face_coordinates(
+        &self,
+        face: FaceId,
+        uv: [f64; 2],
+        metrics: &[Metric],
+        offsets: &[usize],
+    ) -> Option<[f64; 2]> {
+        use crate::geometry::Curve;
+        use exedra_math::{dot, scale, sub};
+        let record = self.body.face(face)?;
+        let FaceRole::Wall {
+            path_segment,
+            segment,
+            ..
+        } = record.role
+        else {
+            // Cap supports are the authored moving-section frames.
+            return Some(uv);
+        };
+        let metric = &metrics[offsets[match segment.loop_ref {
+            LoopRef::Outer => 0,
+            LoopRef::Hole(i) => i + 1,
+        }] + segment.segment];
+        let (mut section, mut rail) = (None, None);
+        for &ring in &record.loops {
+            for coedge in &self.body.boundary_loop(ring)?.coedges {
+                let edge = self.body.edge(coedge.edge)?;
+                match edge.role {
+                    EdgeRole::Section {
+                        station,
+                        segment: source,
+                    } if station == path_segment && source == segment => section = edge.regular(),
+                    EdgeRole::Rail {
+                        path_segment: span,
+                        vertex,
+                    } if span == path_segment && vertex == segment => rail = edge.regular(),
+                    _ => {}
+                }
+            }
+        }
+        let (section, section_range) = section?;
+        let (rail, rail_range) = rail?;
+        let point = self.body.evaluate_support(face, uv)?.point;
+        let parameter = curve_parameter(rail, rail_range, point)?;
+        let angle = parameter - rail_range.bounds()[0];
+        let path_fraction = angle / rail_range.span();
+        let rest = match rail {
+            Curve::Line(line) => sub(point, scale(line.direction(), angle)),
+            Curve::Circle(circle) => {
+                // Undo only this span's rotation about its authoritative rail
+                // axis. Axial profile offsets do not affect the rail angle.
+                let frame = circle.frame();
+                let delta = sub(point, frame.rows.map(|r| r[3]));
+                let local =
+                    core::array::from_fn::<_, 3, _>(|i| dot(delta, frame.rows.map(|r| r[i])));
+                let (s, c) = (libm::sin(angle), libm::cos(angle));
+                frame.transform_point([
+                    c * local[0] + s * local[1],
+                    -s * local[0] + c * local[1],
+                    local[2],
+                ])
+            }
+            _ => return None,
+        };
+        let profile_fraction = (curve_parameter(section, section_range, rest)?
+            - section_range.bounds()[0])
+            / section_range.span();
+        Some([
+            metric.start + (metric.end - metric.start) * profile_fraction,
+            self.path_distances[path_segment]
+                + (self.path_distances[path_segment + 1] - self.path_distances[path_segment])
+                    * path_fraction,
+        ])
+    }
+}
+
+fn curve_parameter(
+    curve: &crate::geometry::Curve,
+    range: crate::geometry::ParameterRange,
+    point: [f64; 3],
+) -> Option<f64> {
+    use crate::geometry::Curve;
+    use exedra_math::{dot, sub};
+    let (value, periodic) = match curve {
+        Curve::Line(line) => {
+            let direction = line.direction();
+            (
+                dot(sub(point, line.origin()), direction) / dot(direction, direction),
+                false,
+            )
+        }
+        Curve::Circle(circle) => {
+            let frame = circle.frame();
+            let delta = sub(point, frame.rows.map(|r| r[3]));
+            (
+                libm::atan2(
+                    dot(delta, frame.rows.map(|r| r[1])),
+                    dot(delta, frame.rows.map(|r| r[0])),
+                ),
+                true,
+            )
+        }
+        _ => return None,
+    };
+    let [start, end] = range.bounds();
+    interval_coordinate(value, start, end, periodic)
+}
+
+fn interval_coordinate(mut value: f64, start: f64, end: f64, periodic: bool) -> Option<f64> {
+    let (lo, hi) = (start.min(end), start.max(end));
+    if periodic && !(lo..=hi).contains(&value) {
+        let period = core::f64::consts::TAU;
+        value += period * libm::round((0.5 * start + 0.5 * end - value) / period);
+    }
+    let slack = 64.0 * f64::EPSILON * (1.0 + lo.abs() + hi.abs());
+    (value.is_finite() && value >= lo - slack && value <= hi + slack).then(|| value.clamp(lo, hi))
 }
 
 #[cfg(test)]
@@ -361,5 +465,152 @@ mod tests {
             ),
             Err(SweepUvError::NonFiniteUv { .. })
         ));
+    }
+
+    #[test]
+    fn quality_face_interiors_preserve_straight_and_curved_sweep_charts() {
+        use alloc::vec;
+        use exedra_math::path::PathSegment3;
+        use exedra_profile::{Loop, Profile, ProfilePolicy, Segment};
+        let profiles = [
+            Loop::new(vec![
+                Segment::line([2.0, -2.0]),
+                Segment::line([2.0, 2.0]),
+                Segment::line([-2.0, 2.0]),
+                Segment::line([-2.0, -2.0]),
+            ])
+            .unwrap(),
+            Loop::new(vec![
+                Segment::arc([2.0, 0.0], 1.0),
+                Segment::arc([-2.0, 0.0], 1.0),
+            ])
+            .unwrap(),
+            Loop::new(vec![
+                Segment::line([2.0, -2.0]),
+                Segment::line([3.0, 2.0]),
+                Segment::line([-2.0, 2.0]),
+                Segment::line([-3.0, -2.0]),
+            ])
+            .unwrap(),
+        ];
+        let mut face_interiors = 0;
+        for ring in profiles {
+            for path in [
+                vec![PathSegment3::Line {
+                    to: [0.0, 0.0, 8.0],
+                }],
+                vec![PathSegment3::Arc {
+                    axis_origin: [-40.0, 0.0, 0.0],
+                    axis: [0.0, 0.0, 1.0],
+                    sweep: 4.5,
+                }],
+                vec![PathSegment3::Arc {
+                    axis_origin: [-40.0, 0.0, 0.0],
+                    axis: [0.0, 0.0, 1.0],
+                    sweep: -core::f64::consts::PI,
+                }],
+                rail().to_vec(),
+            ] {
+                let profile =
+                    Profile::new(ring.clone(), vec![], &ProfilePolicy::new(1e-9)).unwrap();
+                let solid = Sweep::new(
+                    profile,
+                    &view(&path),
+                    Placement3::rotate_y_then_translate(0.37, 3.0, -2.0, 4.0),
+                )
+                .unwrap();
+                let policy = RealizationPolicy {
+                    tolerance: 0.02,
+                    quality: Some(crate::realize::TriangleQuality::new(1.0)),
+                    ..Default::default()
+                };
+                let plain = solid.realize(&policy).unwrap();
+                let mut calls = 0;
+                let mapped = solid.realize_with_uvs(&policy, |id, _| id.0,
+                    |role, points| -> Result<_, core::convert::Infallible> {
+                        let (triangle, face) = plain.mesh_faces[calls];
+                        calls += 1;
+                        assert_eq!(solid.body.faces()[face.index()].role, role);
+                        // Independent closed forms cover the straight and first
+                        // circular span; the multi-span case also checks mapping.
+                        if path.len() == 1 {
+                            for (corner, coordinate) in plain.mesh.face_loop(triangle).zip(points) {
+                                let (profile, station) = match role {
+                                    FaceRole::Cap { end } => (coordinate, if end == End::Start { 0.0 } else { solid.path_length() }),
+                                    FaceRole::Wall { segment, .. } => (profile_point(&solid.profile, segment, coordinate[0]), coordinate[1]),
+                                };
+                                let local = if matches!(path[0], PathSegment3::Line { .. }) {
+                                    [profile[0], profile[1], station]
+                                } else {
+                                    let PathSegment3::Arc { sweep, .. } = path[0] else { unreachable!() };
+                                    let sign = sweep.signum();
+                                    let theta = sign*station/40.0;
+                                    [-40.0+(40.0+profile[0])*libm::cos(theta), (40.0+profile[0])*libm::sin(theta), -sign*profile[1]]
+                                };
+                                let expected = solid.frame.transform_point(local);
+                                let actual = plain.mesh.vertex_position(plain.mesh.to_vertex(corner).unwrap()).unwrap().map(f64::from);
+                                assert!(exedra_math::norm(exedra_math::sub(expected, actual)) <= plain.report.max_vertex_displacement + 1e-10,
+                                    "construction coordinates must reconstruct the emitted geometry");
+                            }
+                        }
+                        Ok(points.map(|p| { let p = exedra_math::narrow([p[0],p[1],0.0]); [p[0],p[1]] }))
+                    }).unwrap();
+                assert_eq!(calls, plain.mesh_faces.len());
+                assert_eq!(mapped.mesh_vertices, plain.mesh_vertices);
+                assert_eq!(mapped.mesh_faces, plain.mesh_faces);
+                assert_eq!(mapped.report, plain.report);
+                face_interiors += mapped
+                    .mesh_vertices
+                    .iter()
+                    .filter(|(_, s)| matches!(s, VertexSource::Face { .. }))
+                    .count();
+                let uvs = mapped
+                    .mesh
+                    .attrs()
+                    .sparse(exedra_mesh::attr::CORNER_UV)
+                    .unwrap();
+                assert!(
+                    mapped.mesh.half_edges().all(|c| uvs
+                        .get(c.as_id())
+                        .is_some_and(|p| p.iter().all(|v| v.is_finite()))),
+                    "every triangle corner must have finite UVs"
+                );
+            }
+        }
+        assert!(
+            face_interiors > 0,
+            "quality cases must exercise face-interior coordinates"
+        );
+    }
+    fn profile_point(
+        profile: &exedra_profile::Profile,
+        source: SegmentRef,
+        distance: f64,
+    ) -> [f64; 2] {
+        let ring = match source.loop_ref {
+            LoopRef::Outer => profile.outer(),
+            LoopRef::Hole(i) => &profile.holes()[i],
+        };
+        let mut start = 0.0;
+        for (i, (from, segment)) in ring.iter_with_starts().enumerate() {
+            let arc = ring.arc(i);
+            let length = arc.map_or_else(
+                || libm::hypot(segment.to[0] - from[0], segment.to[1] - from[1]),
+                |a| a.length(),
+            );
+            if i == source.segment {
+                let fraction = (distance - start) / length;
+                assert!(
+                    (-1e-10..=1.0 + 1e-10).contains(&fraction),
+                    "profile distance must belong to its owning segment"
+                );
+                return arc.map_or_else(
+                    || core::array::from_fn(|k| from[k] + fraction * (segment.to[k] - from[k])),
+                    |a| a.point_at(fraction),
+                );
+            }
+            start += length;
+        }
+        panic!("live source segment");
     }
 }

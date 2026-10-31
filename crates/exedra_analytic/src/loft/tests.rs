@@ -359,3 +359,50 @@ fn construction_charts_preserve_geometry_exact_distances_and_both_seam_coordinat
         Err(LoftUvError::Metric)
     ));
 }
+
+#[test]
+fn quality_cap_interiors_keep_native_section_coordinates_in_charts() {
+    let loft = Loft::from_profiles(
+        [
+            (
+                Placement3::rotate_y_then_translate(0.2, 3.0, -2.0, 1.0),
+                rectangle(4.0),
+            ),
+            (
+                Placement3::rotate_y_then_translate(0.2, 3.0, -2.0, 9.0),
+                rectangle(3.0),
+            ),
+        ],
+        Placement3::rotate_y_then_translate(-0.3, 9.0, 7.0, -4.0),
+        &policy(),
+    )
+    .unwrap();
+    let quality = RealizationPolicy {
+        quality: Some(crate::realize::TriangleQuality::new(0.5)),
+        ..Default::default()
+    };
+    let plain = loft.realize(&quality).unwrap();
+    assert!(plain.mesh_vertices.iter().any(|(_,source)| matches!(source, VertexSource::Face {face,..} if matches!(loft.body.faces()[face.index()].role, FaceRole::Cap {..}))));
+    let charted = loft
+        .realize_with_uvs(
+            &quality,
+            0,
+            &[0.0, 8.0],
+            |_, _| 0,
+            |role, coords| {
+                if let FaceRole::Cap { end } = role {
+                    let half = if end == End::Start { 4.0 } else { 3.0 };
+                    assert!(coords.iter().flatten().all(|v| v.abs() <= half + 1e-8));
+                }
+                Ok::<_, ()>(coords.map(|[u, v]| {
+                    let [u, v, _] = exedra_math::narrow([u, v, 0.0]);
+                    [u, v]
+                }))
+            },
+        )
+        .unwrap();
+    assert_eq!(plain.mesh_faces, charted.mesh_faces);
+    assert_eq!(plain.mesh_vertices, charted.mesh_vertices);
+    assert_eq!(plain.report, charted.report);
+    assert!(charted.mesh.boundary_loops().unwrap().is_empty());
+}
