@@ -32,7 +32,7 @@
 //!   [`NurbsCurve`] owns its own, for curves kept as values.
 //! - **Frames** ([`rotation_minimizing_frames`],
 //!   [`rotation_minimizing_frames_along`]): the double-reflection transport
-//!   shared with Exedra's sweeps (`exedra_math::path::double_reflection`),
+//!   shared with Exedra's sweeps ([`path::double_reflection`]),
 //!   along estimated or supplied tangents, with repeated points, cusps and
 //!   a closed loop's signed seam twist reported.
 //! - **Sweeps** ([`tube`], [`ribbon`]): triangles around or along the
@@ -44,6 +44,9 @@
 //!   [`PreparedNurbs::adaptive_sample`]): arc length by stated
 //!   Gauss-Legendre quadrature with the parameter at a length, and sampling
 //!   refined to a chord or angle [`Tolerance`] under a cap, reported.
+//! - **Paths** ([`path`]): the owned and borrowed sweep paths of lines,
+//!   arcs and cubics that Exedra's heads share, and the double-reflection
+//!   step that frames them.
 //! - **Profiles** ([`profile`]): exact 2D loops of lines and circular
 //!   arcs, validated against an explicit separation, combined as regions,
 //!   finished at their corners, and sampled with deterministic arc counts,
@@ -160,6 +163,7 @@ mod frames;
 mod knots;
 mod measure;
 mod nurbs;
+pub mod path;
 pub mod profile;
 mod query;
 mod sample;

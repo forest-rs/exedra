@@ -470,8 +470,8 @@ mod tests {
     #[test]
     fn quality_face_interiors_preserve_straight_and_curved_sweep_charts() {
         use alloc::vec;
+        use exedra_curves::path::PathSegment3;
         use exedra_curves::profile::{Loop, Profile, ProfilePolicy, Segment};
-        use exedra_math::path::PathSegment3;
         let profiles = [
             Loop::new(vec![
                 Segment::line([2.0, -2.0]),

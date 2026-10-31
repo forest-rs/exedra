@@ -261,38 +261,44 @@ pub fn double_reflection(
     to: [f64; 3],
     next_tangent: [f64; 3],
 ) -> [f64; 3] {
-    let v1 = crate::sub(to, from);
+    let v1 = exedra_math::sub(to, from);
     let largest = v1.iter().fold(0.0_f64, |m, c| m.max(c.abs()));
     let wide = f64::from_bits((1023 + 500) << 52); // 2^500
     let narrow = f64::from_bits((1023 - 500) << 52); // 2^-500
     let v1 = if largest > wide && largest.is_finite() {
         // `2^-e` for `largest`'s exponent `e`.
         let biased = (largest.to_bits() >> 52) & 0x7FF;
-        crate::scale(v1, f64::from_bits((2046 - biased) << 52))
+        exedra_math::scale(v1, f64::from_bits((2046 - biased) << 52))
     } else if 0.0 < largest && largest < narrow {
         // A subnormal chord is scaled the same way from `2^1000` up.
-        let up = crate::scale(v1, f64::from_bits((1023 + 1000) << 52));
+        let up = exedra_math::scale(v1, f64::from_bits((1023 + 1000) << 52));
         let largest = largest * f64::from_bits((1023 + 1000) << 52);
         let biased = (largest.to_bits() >> 52) & 0x7FF;
-        crate::scale(up, f64::from_bits((2046 - biased) << 52))
+        exedra_math::scale(up, f64::from_bits((2046 - biased) << 52))
     } else {
         v1
     };
-    let c1 = crate::dot(v1, v1);
+    let c1 = exedra_math::dot(v1, v1);
     if c1 == 0.0 {
         return x;
     }
-    let x_l = crate::sub(x, crate::scale(v1, 2.0 / c1 * crate::dot(v1, x)));
-    let t_l = crate::sub(
-        tangent,
-        crate::scale(v1, 2.0 / c1 * crate::dot(v1, tangent)),
+    let x_l = exedra_math::sub(
+        x,
+        exedra_math::scale(v1, 2.0 / c1 * exedra_math::dot(v1, x)),
     );
-    let v2 = crate::sub(next_tangent, t_l);
-    let c2 = crate::dot(v2, v2);
+    let t_l = exedra_math::sub(
+        tangent,
+        exedra_math::scale(v1, 2.0 / c1 * exedra_math::dot(v1, tangent)),
+    );
+    let v2 = exedra_math::sub(next_tangent, t_l);
+    let c2 = exedra_math::dot(v2, v2);
     if c2 <= 1e-24 {
         x_l
     } else {
-        crate::sub(x_l, crate::scale(v2, 2.0 / c2 * crate::dot(v2, x_l)))
+        exedra_math::sub(
+            x_l,
+            exedra_math::scale(v2, 2.0 / c2 * exedra_math::dot(v2, x_l)),
+        )
     }
 }
 
@@ -394,7 +400,7 @@ mod tests {
             )
         };
         let unit = step(1.0);
-        assert!((crate::norm(unit) - 1.0).abs() < 1e-15, "{unit:?}");
+        assert!((exedra_math::norm(unit) - 1.0).abs() < 1e-15, "{unit:?}");
         for chord in [
             0.5_f64.powi(600),
             f64::from_bits(1 << 40),

@@ -11,8 +11,8 @@ use crate::body::{
 };
 use crate::geometry::{Curve, ParameterDomain, ParameterRange, Surface};
 use alloc::{vec, vec::Vec};
+use exedra_curves::path::{CurvePathSource, PathClosure, PathJoin, PathSegment3};
 use exedra_curves::profile::{Arc, LoopRef, Profile, SegmentRef};
-use exedra_math::path::{CurvePathSource, PathClosure, PathJoin, PathSegment3};
 use exedra_math::{Placement3, add, cross, dot, scale, sub};
 
 #[derive(Clone, Debug, PartialEq)]

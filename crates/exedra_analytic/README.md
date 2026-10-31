@@ -133,7 +133,7 @@ UVs are refused before any UV mutation.
 `sweep::Sweep` transports a checked line/arc section along a smooth open path
 of lines and circular arcs. It accepts the same borrowed curve path authored by
 constructive `PathCursor3`; shared mathematical descriptors live in
-`exedra_math::path`, without coupling either geometry head to the other.
+`exedra_curves::path`, without coupling either geometry head to the other.
 Section boundaries and rails are shared native edges. Planar, cylindrical and
 conical/toroidal walls retain path-span and profile-segment identity, feature tags,
 exact enclosed volume and surface area, independently of sampling density.

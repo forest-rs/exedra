@@ -63,7 +63,6 @@ extern crate alloc;
 mod frame;
 mod geometry;
 pub mod keyed;
-pub mod path;
 pub mod predicates;
 mod quat;
 pub mod surface;

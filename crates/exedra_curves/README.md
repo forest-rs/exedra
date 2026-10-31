@@ -21,7 +21,7 @@ Current scope:
   repeated evaluation; `Nurbs` borrows a caller's buffers, and `NurbsCurve`
   owns its own, for curves kept as values;
 - `rotation_minimizing_frames` and `rotation_minimizing_frames_along`: the
-  double-reflection transport `exedra_math::path::double_reflection` that
+  double-reflection transport `path::double_reflection` that
   the constructive sweeps use too, along estimated or supplied tangents,
   with repeated points, cusps and a closed loop's signed seam twist
   reported;
@@ -34,6 +34,9 @@ Current scope:
   allowed for and reported (`PreparedNurbs::adaptive_intervals`);
 - `ChordBound`: the fewest uniform steps keeping every chord of a NURBS
   range or a cubic span within a tolerance;
+- `path`: the owned `Path3` and borrowed `CurvePathView` sweep paths of
+  lines, arcs and cubics that Exedra's geometry heads share, with their
+  closure and join intent;
 - `profile`: exact 2D profiles of lines and circular arcs, below;
 - an `_into` form of every allocating function, filling a caller's buffers
   with a reusable `Workspace` for scratch, so a retained caller allocates
