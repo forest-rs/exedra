@@ -42,11 +42,15 @@
 //!    last looked. Nothing is cached anywhere else and nothing is computed
 //!    lazily: a plan's derived state is current when the update returns.
 //! 3. A realization reads a plan into a caller's buffers:
-//!    [`RealizationPlan::tube_into`] and
-//!    [`RealizationPlan::ribbon_into`] sweep the plan's frames with the
-//!    crate's [`tube_into`](crate::tube_into) and
-//!    [`ribbon_into`](crate::ribbon_into), piece by piece, into one
-//!    [`SweptMesh`](crate::SweptMesh).
+//!    - **CPU meshes**: [`RealizationPlan::tube_into`] and
+//!      [`RealizationPlan::ribbon_into`] sweep the plan's frames with the
+//!      crate's [`tube_into`](crate::tube_into) and
+//!      [`ribbon_into`](crate::ribbon_into), piece by piece, into one
+//!      [`SweptMesh`](crate::SweptMesh);
+//!    - **GPU data**: [`RealizationPlan::gpu_into`] writes a [`GpuCurve`],
+//!      plain `f32` and `u32` arrays a shader tessellates (the layout is
+//!      documented there), and reports which element ranges it changed
+//!      ([`GpuReport`]), so a renderer uploads only those.
 //!
 //! # Stations
 //!
@@ -83,8 +87,9 @@
 //!   the curve may jump. Each side is its own piece, framed and swept
 //!   separately.
 //!
-//! Creases and gaps are counted ([`PlanReport`]), never repaired:
-//! stations do not move and the frames carry across them, as
+//! Creases and gaps are counted ([`PlanReport`]) and flagged per span in
+//! the GPU data, never repaired: stations do not move and the frames
+//! carry across them, as
 //! [`rotation_minimizing_frames`](crate::rotation_minimizing_frames)
 //! carries them across any station.
 //!
@@ -93,7 +98,7 @@
 //! An [`Attribute::Vertex`] value per control follows the curve's own
 //! basis: a cubic chain's [`CubicBasis`], or a NURBS curve's B-spline
 //! basis functions without its weights, so weights shape positions only
-//! and a width stays a polynomial. A
+//! and a width stays a polynomial a shader evaluates directly. A
 //! [`Attribute::Varying`] value per joint is linear across each span, as
 //! [`sample_linear`](crate::sample_linear) interpolates it. Widths are
 //! full widths, a tube's diameter (`OpenUSD`'s `widths`): a tube's radius
@@ -130,10 +135,12 @@
 //! assert_eq!(work.evaluated_stations, 9);
 //! ```
 
+mod gpu;
 mod plan;
 
 use alloc::vec::Vec;
 
+pub use gpu::{GpuCurve, GpuReport, GpuSpan};
 pub use plan::{Piece, RealizationPlan};
 
 use crate::{CubicBasis, FrameReport, NurbsCurve, Span, SweepError};
@@ -314,6 +321,14 @@ pub enum RealizeError {
     /// A sweep failed, as its [`SweepError`] says; a station index there
     /// counts the plan's stations, across pieces.
     Sweep(SweepError),
+    /// A span's GPU data is outside what a shader evaluates safely in
+    /// `f32` ([`GpuCurve`]'s layout): a point relative to the origin, a
+    /// width or a normal coefficient beyond `2^64` in magnitude, or
+    /// weights differing by more than `2^32` within the span.
+    F32Range {
+        /// The span.
+        span: usize,
+    },
 }
 
 impl core::fmt::Display for RealizeError {
@@ -335,6 +350,7 @@ impl core::fmt::Display for RealizeError {
             }
             Self::TooLarge => f.write_str("the plan is too large to count or hold"),
             Self::Sweep(error) => write!(f, "{error}"),
+            Self::F32Range { span } => write!(f, "span {span}'s GPU data does not fit f32"),
         }
     }
 }
