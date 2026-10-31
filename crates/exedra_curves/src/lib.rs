@@ -1,8 +1,8 @@
 // Copyright 2026 the Exedra Authors
 // SPDX-License-Identifier: Apache-2.0 OR MIT
 
-//! Deterministic curve geometry: cubic curve evaluation and explicit
-//! sampling.
+//! Deterministic curve geometry: cubic and rational B-spline evaluation and
+//! explicit sampling.
 //!
 //! The crate knows curves as mathematics and nothing of any scene format: a
 //! caller (a USD reader, a procedural generator) decides which controls
@@ -19,9 +19,16 @@
 //!   indices; a chain of spans is sampled a stated number of times per
 //!   span, at stations a caller can list before evaluating, so every value
 //!   sampled at the same stations lines up.
+//! - **NURBS** ([`Nurbs`], [`ValidNurbs`], [`PreparedNurbs`]): rational
+//!   B-splines of any order, validated once, evaluated with derivatives by
+//!   de Boor's algorithm over homogeneous controls, sampled a stated number
+//!   of times per nonempty knot span with the jumps at full-multiplicity
+//!   knots sampled on both sides and marked, and prepared as per-span
+//!   Bezier controls for repeated evaluation.
 //! - **Reusable buffers**: every allocating function has an `_into` form
-//!   that fills a caller's buffers, so a caller that keeps them allocates
-//!   nothing once they have grown.
+//!   that fills a caller's buffers, and those that need scratch take a
+//!   [`Workspace`], so a caller that keeps them allocates nothing once they
+//!   have grown.
 //!
 //! ```
 //! use exedra_curves::{CubicBasis, sample, stations};
@@ -49,10 +56,17 @@
 //! - **Explicit counts.** Samples per span are inputs. Nothing adapts them
 //!   to curvature or screen size.
 //! - **Stated parameters.** Every derivative is with respect to the
-//!   parameter its function names: a cubic span's `u`.
-//! - **Inputs are checked where they enter.** Sampling propagates a
-//!   non-finite value to the samples that use it rather than scanning on
-//!   every call; a reader checks authored data once, where it reads it.
+//!   parameter its function names: a cubic span's `u`, or a NURBS curve's
+//!   `t`.
+//! - **Inputs are checked where they enter.** [`Nurbs::validate`] checks a
+//!   curve's knots, weights and controls once; sampling propagates a
+//!   non-finite value rather than scanning on every call.
+//! - **NURBS are validated once.** [`Nurbs::validate`] returns the
+//!   [`ValidNurbs`] that evaluates and samples, with finite knots, weights
+//!   and weighted controls; an interior knot of multiplicity `order` or
+//!   more is valid and leaves the curve discontinuous, and sampling takes
+//!   both sides of it and lists the break ([`NurbsSamples::breaks`]), so no
+//!   caller joins across a jump unknowingly.
 //!
 //! Not provided: adaptive or tolerance-driven sampling and arc length. Each
 //! would be a new, explicit option rather than a change of these functions'
@@ -81,10 +95,14 @@
 extern crate alloc;
 
 mod basis;
+mod nurbs;
 mod sample;
+mod workspace;
 
 pub use basis::{CubicBasis, CurveEvaluation};
+pub use nurbs::{Nurbs, NurbsError, NurbsSamples, PreparedNurbs, ValidNurbs};
 pub use sample::{
     ControlOutOfRange, Span, Station, sample, sample_derivative, sample_derivative_into,
     sample_into, sample_linear, sample_linear_into, stations, stations_into,
 };
+pub use workspace::Workspace;
