@@ -89,7 +89,9 @@ pub enum NurbsError {
         index: usize,
     },
     /// A control has a coordinate that is not finite, or that overflows
-    /// when multiplied by its weight.
+    /// when multiplied by its weight, or that its weight takes below the
+    /// smallest normal `f64`, where it would lose the digits projection
+    /// then magnifies.
     Point {
         /// The control's index.
         index: usize,
@@ -122,7 +124,7 @@ impl core::fmt::Display for NurbsError {
             Self::Point { index } => {
                 write!(
                     f,
-                    "control {index} is not finite, or overflows with its weight"
+                    "control {index} is not finite, or overflows or underflows with its weight"
                 )
             }
             Self::EmptyDomain => f.write_str("the domain is empty"),
@@ -248,7 +250,12 @@ impl<'a, const N: usize> Nurbs<'a, N> {
         let mut weights = self.weights.unwrap_or(&[]).iter();
         for (index, point) in self.points.iter().enumerate() {
             let w = weights.next().copied().unwrap_or(1.0);
-            if !point.iter().all(|c| (w * c).is_finite()) {
+            let representable = |c: f64| {
+                let weighted = (w * c).abs();
+                weighted.is_finite()
+                    && (weighted >= f64::MIN_POSITIVE || c.abs() < f64::MIN_POSITIVE)
+            };
+            if !point.iter().all(|&c| representable(c)) {
                 return Err(NurbsError::Point { index });
             }
         }
@@ -271,7 +278,8 @@ impl<'a, const N: usize> Nurbs<'a, N> {
 ///   so every control shapes some span, whose whole span (last minus
 ///   first) is finite, and a domain of positive length;
 /// - weights, when given, one per control, in `[2^-256, 2^256]`;
-/// - finite weighted controls `w P`.
+/// - finite weighted controls `w P`, none of whose normal coordinates
+///   its weight takes below the smallest normal `f64`.
 ///
 /// De Boor's scheme and blossoming then combine finite values with ratios
 /// in `[0, 1]`, so the homogeneous results are finite, and the weight an
@@ -378,9 +386,9 @@ impl<'a, const N: usize> ValidNurbs<'a, N> {
 
     /// Loads span `k`'s `order` weighted controls into `d`.
     pub(crate) fn load(&self, k: usize, d: &mut [WeightedPoint<N>]) {
-        let p = self.curve.order as usize - 1;
+        let first = k + 1 - self.curve.order as usize;
         for (j, slot) in d.iter_mut().enumerate() {
-            let index = j + k - p;
+            let index = first + j;
             let w = self.curve.weights.map_or(1.0, |weights| weights[index]);
             *slot = WeightedPoint::new(self.curve.points[index], w);
         }

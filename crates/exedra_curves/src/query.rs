@@ -364,7 +364,16 @@ fn derivative_bounds<const N: usize>(
         .fold(f64::INFINITY, |m, w| m.min(w[0]));
     // What rounding the coefficients above may have lost, absolutely, so a
     // derivative near zero is not bounded by less than its error.
+    // The span's controls themselves carry rounding at their absolute
+    // scale, which measuring from the range's start does not remove; each
+    // coefficient sums at most `2p` products of them.
+    let absolute = controls
+        .iter()
+        .map(|h| magnitude(h.weighted) + h.weight * magnitude(origin))
+        .fold(0.0, upper);
+    let control_error = factor * 8.0 * controls.len() as f64 * f64::EPSILON * absolute;
     let noise = 16.0 * pf * pf * f64::EPSILON * largest(&a) * largest(&w).max(1.0)
+        + 4.0 * pf * pf * control_error * largest(&w).max(1.0)
         + 16.0 * f64::from_bits(1);
     let first = (largest(&restrict(&numerator, u0, u1)) + noise) / (w_min * w_min);
     let reach = piece
@@ -427,7 +436,7 @@ fn upper(a: f64, b: f64) -> f64 {
 /// The power of two `2^-e` for the exponent `e` of a positive normal `x`
 /// below `2^1023`, as weights are, so `x 2^-e` lies in `[1, 2)`: its
 /// biased exponent `1023 - e` is `2046` less `x`'s.
-fn reciprocal_power_of_two(x: f64) -> f64 {
+pub(crate) fn reciprocal_power_of_two(x: f64) -> f64 {
     let biased = (x.to_bits() >> 52) & 0x7FF;
     f64::from_bits((2046 - biased) << 52)
 }
@@ -699,6 +708,61 @@ mod tests {
         // With no pieces to split, the answer is uncertain but bounded.
         let rushed = circle.closest([-3.0, 3.0, 0.0], 1e-12, 0);
         assert!(!rushed.certain && rushed.lower <= outside.distance);
+    }
+
+    #[test]
+    fn weights_that_would_lose_coordinates_are_refused_and_others_kept() {
+        use crate::NurbsError;
+        // Weights of 2^-256 that push a control's coordinates below the
+        // smallest normal `f64` lose the digits projection magnifies.
+        let w = f64::from_bits(0x2FF0_0000_0000_0000);
+        let r = f64::from_bits(1) / w;
+        let slight = NurbsCurve::<1>::new(
+            2,
+            vec![0.0, 0.0, 1.0, 1.0],
+            vec![[0.0], [2.0 * r / 3.0]],
+            Some(vec![w, 3.0 * w]),
+        );
+        assert_eq!(slight.err(), Some(NurbsError::Point { index: 1 }));
+        let tiny = 2.0_f64.powi(-900);
+        let mixed = NurbsCurve::<1>::new(
+            2,
+            vec![0.0, 0.0, 1.0, 2.0, 2.0],
+            vec![[0.0], [tiny], [0.0]],
+            Some(vec![w, w, 1.0]),
+        );
+        assert_eq!(mixed.err(), Some(NurbsError::Point { index: 1 }));
+        // Representable ones are evaluated as given: no overflow near the
+        // largest `f64`, and spans sharing a tiny control agree on it.
+        let large = NurbsCurve::<1>::new(
+            2,
+            vec![0.0, 0.0, 1.0, 1.0],
+            vec![[f64::MAX], [f64::MAX]],
+            Some(vec![0.75, 0.75]),
+        )
+        .unwrap();
+        assert_eq!(large.view().evaluate(0.5), [f64::MAX]);
+        assert_eq!(large.view().prepare().evaluate(0.5), [f64::MAX]);
+        let shared = NurbsCurve::<1>::new(
+            2,
+            vec![0.0, 0.0, 1.0, 2.0, 2.0],
+            vec![[0.0], [tiny], [0.0]],
+            Some(vec![1.0, 1.0, 2.0_f64.powi(256)]),
+        )
+        .unwrap();
+        let prepared = shared.view().prepare();
+        assert_eq!(prepared.evaluation_in(0, 1.0).unwrap().point, [tiny]);
+        assert_eq!(prepared.evaluation_in(1, 1.0).unwrap().point, [tiny]);
+        // A constant curve over a short span far from the origin stays
+        // still, with no overflow in its rational derivative.
+        let still = NurbsCurve::<1>::new(
+            2,
+            vec![0.0, 0.0, 2.0_f64.powi(-27), 2.0_f64.powi(-27)],
+            vec![[2.0_f64.powi(998)]; 2],
+            Some(vec![0.5, 0.75]),
+        )
+        .unwrap();
+        assert_eq!(still.view().prepare().lengths(1), [0.0, 0.0]);
     }
 
     #[test]
