@@ -107,8 +107,8 @@ pub use policy::{
 
 use crate::ir::PolicyId;
 use crate::profile::{
-    Loop2, Profile2, ProfileError, Seg2, SegKind, SegTag, bulge_arc_center_radius,
-    distance_to_ring, flattened_ring, ring_self_intersects, rings_intersect,
+    Loop2, Profile2, ProfileError, Seg2, SegKind, SegTag, bulge_arc, distance_to_ring,
+    flattened_ring, ring_self_intersects, rings_intersect,
 };
 
 /// Relative tolerance for fitting the offset of a cubic segment.
@@ -704,10 +704,11 @@ fn build_piece(
             })
         }
         SegKind::Arc { bulge } => {
-            let (center, radius) = bulge_arc_center_radius(from, to, *bulge);
-            if !positive_finite(radius) {
+            let Some(arc) = bulge_arc(from, to, *bulge).filter(|arc| positive_finite(arc.radius))
+            else {
                 return Err(ProfileError::OffsetArcCollapsed { hole, seg: index });
-            }
+            };
+            let (center, radius) = (Point::new(arc.center[0], arc.center[1]), arc.radius);
             // A positive bulge sweeps counter-clockwise, which puts the
             // right normal on the far side of the center: offsetting grows
             // such an arc and shrinks a clockwise one.
@@ -1246,12 +1247,15 @@ mod tests {
             };
             // Same sweep, bit for bit: no corner touched this arc.
             assert_eq!(bulge.to_bits(), source_bulge.to_bits());
-            let (center, radius) = bulge_arc_center_radius(from, seg.to, bulge);
-            let (source_center, source_radius) =
-                bulge_arc_center_radius(source_from, source_seg.to, source_bulge);
-            assert!((center - source_center).hypot() < 1e-12, "concentric");
+            let arc = bulge_arc(from, seg.to, bulge).unwrap();
+            let source = bulge_arc(source_from, source_seg.to, source_bulge).unwrap();
+            let gap = [
+                arc.center[0] - source.center[0],
+                arc.center[1] - source.center[1],
+            ];
+            assert!(gap[0].hypot(gap[1]) < 1e-12, "concentric");
             assert!(
-                (radius - (source_radius + 0.5)).abs() < 1e-12,
+                (arc.radius - (source.radius + 0.5)).abs() < 1e-12,
                 "radius grew"
             );
             assert_eq!(seg.tag, source_seg.tag);

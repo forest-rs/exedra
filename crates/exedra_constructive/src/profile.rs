@@ -19,8 +19,8 @@
 //! errors.
 //!
 //! All curve mathematics routes through [`kurbo`]: conversion to
-//! [`kurbo::BezPath`] powers areas, bounding boxes, and interop. The only
-//! curve math owned here is the bulge parameterization itself. Note that
+//! [`kurbo::BezPath`] powers areas, bounding boxes, and interop; a bulge
+//! arc's circle is `exedra_curves`' [`Arc::from_bulge`]. Note that
 //! arcs render into a `BezPath` as cubic approximations — exact for lines
 //! and cubics, documented-approximate for arcs — which is fine for winding
 //! signs and bounds, while the deterministic evaluation path discretizes
@@ -28,6 +28,7 @@
 
 use alloc::vec::Vec;
 
+use exedra_curves::profile::Arc;
 use kurbo::{BezPath, PathEl, Point, Shape};
 
 mod cursor;
@@ -163,7 +164,8 @@ impl Loop2 {
     ///
     /// Requirements: at least two segments; every coordinate finite (with
     /// `-0.0` normalized to `0.0`); consecutive endpoints distinct (no
-    /// zero-length chords); arc bulges finite and nonzero.
+    /// zero-length chords); arc bulges finite and nonzero, with a circle
+    /// whose radius and center `f64` holds.
     ///
     /// # Errors
     ///
@@ -221,6 +223,17 @@ impl Loop2 {
             let start = segs[(index + segs.len() - 1) % segs.len()].to;
             if start == segs[index].to {
                 return Err(ProfileError::ZeroLengthChord { seg: index });
+            }
+            // Every arc's circle must resolve in `f64`: one whose radius or
+            // center overflows has no geometry to render, offset or bound.
+            let mut kind = &segs[index].kind;
+            while let SegKind::PolicyTo { realized, .. } = kind {
+                kind = realized;
+            }
+            if let SegKind::Arc { bulge } = kind
+                && bulge_arc(start, segs[index].to, *bulge).is_none()
+            {
+                return Err(ProfileError::InvalidBulge { seg: index });
             }
         }
         Ok(Self { segs })
@@ -440,17 +453,22 @@ fn reverse_kind(kind: &SegKind) -> SegKind {
 
 /// Appends the bulge arc `from -> to` to `path` as kurbo cubics.
 ///
-/// The center and radius derive from the chord and bulge with only
-/// arithmetic and one square root; the cubic rendering goes through
+/// The circle comes from [`bulge_arc`]; the cubic rendering goes through
 /// [`kurbo::Arc`] and is approximate (interop only — the deterministic
-/// discretization path never uses it).
+/// discretization path never uses it). [`Loop2::new`] refuses an arc whose
+/// circle does not resolve, so every arc here has one.
 fn append_bulge_arc(path: &mut BezPath, from: Point, to: Point, bulge: f64) {
-    let (center, radius, start_angle, sweep) = bulge_arc_parts(from, to, bulge);
+    let Some(resolved) = bulge_arc(from, to, bulge) else {
+        debug_assert!(false, "validated loops resolve every arc");
+        path.line_to(to);
+        return;
+    };
+    let radius = resolved.radius;
     let arc = kurbo::Arc {
-        center,
+        center: Point::new(resolved.center[0], resolved.center[1]),
         radii: kurbo::Vec2::new(radius, radius),
-        start_angle,
-        sweep_angle: sweep,
+        start_angle: resolved.start_angle,
+        sweep_angle: resolved.sweep,
         x_rotation: 0.0,
     };
     // Radius-relative tolerance: this rendering only feeds areas, bounds,
@@ -463,41 +481,11 @@ fn append_bulge_arc(path: &mut BezPath, from: Point, to: Point, bulge: f64) {
     });
 }
 
-/// Derives `(center, radius)` for a bulge arc with libm-only math.
-///
-/// Arithmetic plus one [`libm::sqrt`] — no `hypot`, no trig — so the result
-/// is bit-identical on every platform and safe on paths that feed content
-/// hashes. The signed radius from the intersecting-chords theorem carries
-/// the bulge sign, which places the center on the correct side for both
-/// sweep directions and for major as well as minor arcs.
-pub(crate) fn bulge_arc_center_radius(from: Point, to: Point, bulge: f64) -> (Point, f64) {
-    let dx = to.x - from.x;
-    let dy = to.y - from.y;
-    let half_chord = 0.5 * libm::sqrt(dx * dx + dy * dy);
-    // sagitta = bulge * half chord; radius from the intersecting chords
-    // theorem: r = (h² + s²) / (2 s).
-    let sagitta = bulge * half_chord;
-    let signed_radius = (half_chord * half_chord + sagitta * sagitta) / (2.0 * sagitta);
-    let inv_chord = 0.5 / half_chord;
-    let offset = signed_radius - sagitta;
-    let center = Point::new(
-        (from.x + to.x) * 0.5 + (-dy * inv_chord) * offset,
-        (from.y + to.y) * 0.5 + (dx * inv_chord) * offset,
-    );
-    (center, signed_radius.abs())
-}
-
-/// Derives `(center, radius, start_angle, sweep)` for a bulge arc.
-///
-/// Arithmetic plus libm `sqrt`, `atan2`, and `atan`; used for interop
-/// rendering. The deterministic discretization path re-derives what it needs
-/// with its own libm-only calls.
-pub(crate) fn bulge_arc_parts(from: Point, to: Point, bulge: f64) -> (Point, f64, f64, f64) {
-    let (center, radius) = bulge_arc_center_radius(from, to, bulge);
-    let start_angle = libm::atan2(from.y - center.y, from.x - center.x);
-    // sweep = 4 * atan(bulge), positive counter-clockwise.
-    let sweep = 4.0 * libm::atan(bulge);
-    (center, radius, start_angle, sweep)
+/// The circle the bulge arc `from -> to` lies on, its start angle and sweep,
+/// as `exedra_curves` resolves them with libm alone; `None` where its radius
+/// or center overflows `f64`, as for a bulge too slight for its chord.
+pub(crate) fn bulge_arc(from: Point, to: Point, bulge: f64) -> Option<Arc> {
+    Arc::from_bulge([from.x, from.y], [to.x, to.y], bulge)
 }
 
 /// A profile: one counter-clockwise outer loop plus clockwise hole loops.
@@ -930,7 +918,8 @@ pub enum ProfileError {
         /// Index of the offending segment.
         seg: usize,
     },
-    /// An arc bulge is zero, NaN, or infinite.
+    /// An arc bulge is zero, NaN, or infinite, or so slight or so near a
+    /// full turn for its chord that its circle overflows `f64`.
     InvalidBulge {
         /// Index of the offending segment.
         seg: usize,
@@ -1091,7 +1080,10 @@ impl core::fmt::Display for ProfileError {
             Self::TooManySegments => write!(f, "segment count exceeds u32 budget"),
             Self::NonFinite { seg } => write!(f, "segment {seg} has a non-finite coordinate"),
             Self::InvalidBulge { seg } => {
-                write!(f, "segment {seg} has a zero or non-finite bulge")
+                write!(
+                    f,
+                    "segment {seg} has a zero or non-finite bulge, or one whose circle overflows"
+                )
             }
             Self::ZeroLengthChord { seg } => write!(f, "segment {seg} has zero length"),
             Self::WrongWinding { hole: None } => {
@@ -1681,6 +1673,36 @@ mod tests {
             bytes[5..13],
             1.0_f64.to_bits().to_le_bytes(),
             "x coordinate bits"
+        );
+    }
+
+    #[test]
+    fn arcs_whose_circles_overflow_are_refused_and_tiny_ones_kept() {
+        // Nearly a full turn, and nearly flat, each too large to hold.
+        for (to, bulge) in [((8.0, 0.0), -1e308), ((1.0, 0.0), 1e-310)] {
+            let refused = Loop2::new(vec![
+                Seg2::arc(to, bulge),
+                Seg2::line((0.0, 1.0)),
+                Seg2::line((0.0, 0.0)),
+            ]);
+            assert_eq!(
+                refused.err(),
+                Some(ProfileError::InvalidBulge { seg: 0 }),
+                "{bulge}"
+            );
+        }
+        // A half turn on a chord of 1e-200 resolves, with its radius.
+        let tiny = 1e-200;
+        let half = Loop2::new(vec![Seg2::arc((tiny, 0.0), 1.0), Seg2::line((0.0, 0.0))]).unwrap();
+        let (start, seg) = half.iter_with_starts().next().unwrap();
+        let SegKind::Arc { bulge } = seg.kind else {
+            panic!("an arc");
+        };
+        let arc = bulge_arc(start, seg.to, bulge).unwrap();
+        assert!(
+            (arc.radius / (0.5 * tiny) - 1.0).abs() < 1e-15,
+            "{}",
+            arc.radius
         );
     }
 }

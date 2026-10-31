@@ -22,6 +22,7 @@
 use alloc::vec::Vec;
 
 use exedra_curves::CubicBasis;
+use exedra_curves::profile::Arc;
 use kurbo::Point;
 
 use crate::len_u32;
@@ -454,36 +455,11 @@ fn arc_geometry(
     bulge: f64,
     policy: &DiscretizePolicy,
 ) -> Result<ArcGeometry, DiscretizeError> {
-    let dx = to.x - from.x;
-    let dy = to.y - from.y;
-    let chord = libm::hypot(dx, dy);
-    let half_chord = 0.5 * chord;
-    let reciprocal_bulge = 1.0 / bulge;
-    let signed_radius = half_chord * 0.5 * (bulge + reciprocal_bulge);
-    let radius = signed_radius.abs();
-    let offset = half_chord * 0.5 * (reciprocal_bulge - bulge);
-    // sweep = 4 atan(bulge); signed, counter-clockwise positive.
-    let sweep = 4.0 * libm::atan(bulge);
-    if !dx.is_finite()
-        || !dy.is_finite()
-        || !chord.is_finite()
-        || !radius.is_finite()
-        || radius == 0.0
-        || !offset.is_finite()
-        || !sweep.is_finite()
-        || sweep == 0.0
-    {
-        return Err(DiscretizeError::NumericLimit);
-    }
-    // Center: midpoint plus left normal scaled by (signed radius - sagitta).
-    // Signed radius carries the bulge sign, which puts the center on the
-    // correct side for both sweep directions and both minor/major arcs.
-    let mid = [from.x + dx * 0.5, from.y + dy * 0.5];
-    let normal = [-dy / chord, dx / chord];
-    let center = [mid[0] + normal[0] * offset, mid[1] + normal[1] * offset];
-    if center.iter().any(|coordinate| !coordinate.is_finite()) {
-        return Err(DiscretizeError::NumericLimit);
-    }
+    // The circle as `exedra_curves` resolves it, with libm alone.
+    let arc = Arc::from_bulge([from.x, from.y], [to.x, to.y], bulge)
+        .filter(|arc| arc.sweep.is_finite() && arc.sweep != 0.0)
+        .ok_or(DiscretizeError::NumericLimit)?;
+    let (center, radius, sweep) = (arc.center, arc.radius, arc.sweep);
     let realizable_tolerance = coordinate_tolerance(
         policy.chord_tolerance,
         &[from.x, from.y, to.x, to.y, center[0], center[1]],
@@ -495,12 +471,11 @@ fn arc_geometry(
         realizable_tolerance,
         CircularEdgeConstraints::new(policy.min_arc_edges, policy.max_segment_edges),
     )?;
-    let start_angle = libm::atan2(from.y - center[1], from.x - center[0]);
     Ok(ArcGeometry {
         center,
         radius,
         sweep,
-        start_angle,
+        start_angle: arc.start_angle,
         tolerance: realizable_tolerance,
         edges,
     })
@@ -1033,14 +1008,14 @@ mod tests {
             Err(DiscretizeError::ToleranceBudgetExceeded { maximum: 4, .. })
         ));
 
+        // An arc whose circle overflows never reaches discretization.
         let extreme_arc = Loop2::new(vec![
             Seg2::arc((f64::MAX, 0.0), 1.0),
             Seg2::line((-f64::MAX, 0.0)),
-        ])
-        .expect("finite endpoints are structurally valid");
+        ]);
         assert_eq!(
-            discretize_loop(&extreme_arc, &DiscretizePolicy::default()),
-            Err(DiscretizeError::NumericLimit)
+            extreme_arc.err(),
+            Some(crate::profile::ProfileError::InvalidBulge { seg: 0 })
         );
 
         for (center, tolerance, maximum) in [

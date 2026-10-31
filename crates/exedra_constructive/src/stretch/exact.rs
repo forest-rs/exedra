@@ -8,7 +8,7 @@ use alloc::vec::Vec;
 use kurbo::Point;
 
 use crate::ir::{CapMode, NodeId, NodeKind, Placement3, Plane3, PrimitiveSpec, Recipe};
-use crate::profile::{Loop2, Profile2, Seg2, SegKind};
+use crate::profile::{Loop2, Profile2, Seg2, SegKind, bulge_arc};
 use crate::tessellate::{
     EvalPolicy, ExtrudeWallSource, REGION_WALL_BASE, TessellateError, TessellatedBody,
     tessellate_extrude_with_wall_sources, tessellate_primitive,
@@ -809,15 +809,13 @@ fn curve_stays_on_side(
             .into_iter()
             .all(|point| signed_2d(point, normal, distance) * side > 0.0),
         SegKind::Arc { bulge } => {
-            let dx = segment.to.x - start.x;
-            let dy = segment.to.y - start.y;
-            let chord = libm::sqrt(dx * dx + dy * dy);
-            let center_scale = (1.0 - bulge * bulge) / (4.0 * bulge);
-            let center = Point::new(
-                (start.x + segment.to.x) * 0.5 - dy * center_scale,
-                (start.y + segment.to.y) * 0.5 + dx * center_scale,
-            );
-            let radius = chord * (1.0 + bulge * bulge) / (4.0 * bulge.abs());
+            // An arc too slight for its chord to resolve is not shown to
+            // stay on either side.
+            let Some(arc) = bulge_arc(start, segment.to, *bulge) else {
+                return false;
+            };
+            let center = Point::new(arc.center[0], arc.center[1]);
+            let radius = arc.radius;
             let center_signed = signed_2d(center, normal, distance);
             if side > 0.0 {
                 center_signed - radius > 0.0
@@ -852,15 +850,10 @@ fn curve_signed_bounds(
             )
         }
         SegKind::Arc { bulge } => {
-            let dx = segment.to.x - start.x;
-            let dy = segment.to.y - start.y;
-            let chord = libm::sqrt(dx * dx + dy * dy);
-            let center_scale = (1.0 - bulge * bulge) / (4.0 * bulge);
-            let center = Point::new(
-                (start.x + segment.to.x) * 0.5 - dy * center_scale,
-                (start.y + segment.to.y) * 0.5 + dx * center_scale,
-            );
-            let radius = chord * (1.0 + bulge * bulge) / (4.0 * bulge.abs());
+            // An arc too slight for its chord to resolve has no bounds.
+            let arc = bulge_arc(start, segment.to, *bulge)?;
+            let center = Point::new(arc.center[0], arc.center[1]);
+            let radius = arc.radius;
             let center_signed = signed_2d(center, normal, distance);
             (center_signed - radius, center_signed + radius)
         }
