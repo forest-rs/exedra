@@ -2,12 +2,12 @@
 // SPDX-License-Identifier: Apache-2.0 OR MIT
 
 //! Deterministic curve geometry: cubic and rational B-spline evaluation,
-//! explicit sampling and rotation-minimizing frames.
+//! explicit sampling, rotation-minimizing frames, and tubes and ribbons.
 //!
 //! The crate knows curves as mathematics and nothing of any scene format: a
 //! caller (a USD reader, a procedural generator) decides which controls
 //! form which spans, how its per-control data is laid out, and how finely
-//! to sample; this crate evaluates and frames.
+//! to sample; this crate evaluates, frames and sweeps.
 //!
 //! - **Cubic bases** ([`CubicBasis`]): Bezier, uniform B-spline,
 //!   Catmull-Rom and Hermite, as their explicit basis matrices (the
@@ -30,13 +30,17 @@
 //!   shared with Exedra's sweeps (`exedra_math::path::double_reflection`),
 //!   along estimated or supplied tangents, with repeated points, cusps and
 //!   a closed loop's signed seam twist reported.
+//! - **Sweeps** ([`tube`], [`ribbon`]): triangles around or along the
+//!   frames at a stated side count, with a finite, nonnegative radius or
+//!   width per station and a tube's surface normals following its taper, as
+//!   plain buffers and a [`SweepReport`] of their counts.
 //! - **Reusable buffers**: every allocating function has an `_into` form
 //!   that fills a caller's buffers, and those that need scratch take a
 //!   [`Workspace`], so a caller that keeps them allocates nothing once they
 //!   have grown.
 //!
 //! ```
-//! use exedra_curves::{CubicBasis, sample, stations};
+//! use exedra_curves::{CubicBasis, rotation_minimizing_frames, sample, stations, tube};
 //!
 //! // One Catmull-Rom span through (1, 0, 0) and (2, 0, 0).
 //! let controls = [[0.0, 0.0, 0.0], [1.0, 0.0, 0.0], [2.0, 0.0, 0.0], [3.0, 0.0, 0.0]];
@@ -45,6 +49,11 @@
 //! assert_eq!(points.len(), 5);
 //! assert_eq!(points[0], [1.0, 0.0, 0.0]);
 //! assert_eq!(points[4], [2.0, 0.0, 0.0]);
+//!
+//! let (frames, _) = rotation_minimizing_frames(&points, false, None);
+//! let mesh = tube(&frames, &[0.1; 5], 6, false).unwrap();
+//! assert_eq!(mesh.report.vertices, 5 * 6);
+//! assert_eq!(mesh.report.triangles, 4 * 6 * 2);
 //! ```
 //!
 //! # Scope
@@ -53,27 +62,35 @@
 //! controls form a span (`OpenUSD`'s segment counts and `vstep`, periodic
 //! wrapping, pinned end conditions) and how per-control data follows a
 //! curve (primvar interpolation classes). The reader builds [`Span`]s and
-//! joints from those rules; the evaluation and framing here are the same
-//! mathematics for every format and for procedural generators.
+//! joints from those rules; the evaluation, framing and sweeping here are
+//! the same mathematics for every format and for procedural generators.
 //!
 //! # Contracts
 //!
-//! - **Explicit counts.** Samples per span are inputs. Nothing adapts them
-//!   to curvature or screen size.
+//! - **Explicit counts.** Samples per span and sides per ring are inputs.
+//!   Nothing adapts them to curvature or screen size.
 //! - **Stated parameters.** Every derivative is with respect to the
 //!   parameter its function names: a cubic span's `u`, or a NURBS curve's
 //!   `t`.
-//! - **Degeneracy is reported, not repaired.** Repeated points, cusps and a
-//!   closed loop's signed seam twist are counted in [`FrameReport`];
-//!   nothing is moved, dropped or untwisted.
-//! - **Parallel means within `2^-26` radians.** A seed or transported
-//!   normal is made perpendicular to a tangent only when its perpendicular
-//!   part exceeds `sqrt(EPSILON)` of its length; below that the part is
-//!   rounding, and the documented fallback applies. Two directions
-//!   reversing to within the same angle are a cusp.
+//! - **Degeneracy is reported, not repaired.** Repeated points, cusps,
+//!   collapsed rings, ribbon normals parallel to the tangent and a closed
+//!   loop's signed seam twist are counted in [`FrameReport`] and
+//!   [`SweepReport`]; nothing is moved, dropped or untwisted.
+//! - **Parallel means within `2^-26` radians.** A seed, ribbon normal or
+//!   transported normal is made perpendicular to a tangent only when its
+//!   perpendicular part exceeds `sqrt(EPSILON)` of its length; below that
+//!   the part is rounding, and the documented fallback applies. Two
+//!   directions reversing to within the same angle are a cusp.
+//! - **Sizes are finite and nonnegative.** Interpolated widths can
+//!   undershoot (a Catmull-Rom chain of nonnegative widths does); a sweep
+//!   refuses such a size ([`SweepError::Size`]) rather than choosing a
+//!   repair for the caller. Zero is swept and reported.
+//! - **Counts are planned first.** A sweep checks its vertex, triangle and
+//!   index counts before any allocation or trigonometry.
 //! - **Inputs are checked where they enter.** [`Nurbs::validate`] checks a
-//!   curve's knots, weights and controls once; sampling and framing
-//!   propagate a non-finite value rather than scanning on every call.
+//!   curve's knots, weights and controls once, and the sweeps check their
+//!   sizes; sampling and framing propagate a non-finite value rather than
+//!   scanning on every call.
 //! - **NURBS are validated once.** [`Nurbs::validate`] returns the
 //!   [`ValidNurbs`] that evaluates and samples, with finite knots, weights
 //!   and weighted controls; an interior knot of multiplicity `order` or
@@ -81,17 +98,24 @@
 //!   both sides of it and lists the break ([`NurbsSamples::breaks`]), so no
 //!   caller joins across a jump unknowingly.
 //!
-//! Not provided: adaptive or tolerance-driven sampling, arc length, and
-//! distributing a closed loop's seam twist. Each would be a new, explicit
-//! option rather than a change of these functions' results.
+//! Not provided: adaptive or tolerance-driven sampling, arc length, end
+//! caps, and distributing a closed loop's seam twist. Each would be a new,
+//! explicit option rather than a change of these functions' results.
 //!
 //! # Determinism
 //!
-//! Evaluation, sampling, and frames use only additions, subtractions,
-//! multiplications, divisions and square roots, in a documented fixed
-//! order. IEEE 754 rounds each of those correctly and Rust does not fuse
-//! them, so equal inputs give equal bits on every platform and under either
-//! feature.
+//! Evaluation, sampling, frames, ribbons, and a tube's counts, indices and
+//! normal weights use only additions, subtractions, multiplications,
+//! divisions and square roots, in a documented fixed order. IEEE 754 rounds
+//! each of those correctly and Rust does not fuse them, so equal inputs
+//! give equal bits on every platform and under either feature.
+//!
+//! A tube's ring directions are the exception: they come from
+//! `exedra_math`'s `sin_cos`, which is not correctly rounded. With the
+//! `libm` feature that is libm's pure-Rust implementation, the same bits
+//! everywhere; with `std` alone it is the platform's, whose precision Rust
+//! leaves unspecified, so ring positions and normals can differ in their
+//! last bits between platforms or toolchains.
 //!
 //! A faster path that changes the operation order (prepared power
 //! coefficients, reassociated SIMD reductions, fused multiply-adds) is to
@@ -111,6 +135,7 @@ mod basis;
 mod frames;
 mod nurbs;
 mod sample;
+mod sweep;
 mod workspace;
 
 pub use basis::{CubicBasis, CurveEvaluation};
@@ -123,4 +148,5 @@ pub use sample::{
     ControlOutOfRange, Span, Station, sample, sample_derivative, sample_derivative_into,
     sample_into, sample_linear, sample_linear_into, stations, stations_into,
 };
+pub use sweep::{SweepError, SweepReport, SweptMesh, ribbon, ribbon_into, tube, tube_into};
 pub use workspace::Workspace;
