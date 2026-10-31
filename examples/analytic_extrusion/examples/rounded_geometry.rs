@@ -25,6 +25,7 @@ use std::{
 type Result<T> = std::result::Result<T, Box<dyn Error>>;
 const PROFILE: ProfilePolicy = ProfilePolicy::new(1e-7);
 const REALIZE: RealizationPolicy = RealizationPolicy {
+    quality: None,
     tolerance: 0.04,
     geometry_gap: 1e-9,
     min_arc_segments: 4,

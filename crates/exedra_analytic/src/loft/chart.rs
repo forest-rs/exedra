@@ -118,6 +118,18 @@ impl Loft {
             for (i, &corner) in corners.iter().enumerate() {
                 let vertex = result.mesh.to_vertex(corner).expect("live corner");
                 let source = result.mesh_vertices[vertex.index() as usize].1;
+                if matches!(role, FaceRole::Cap { .. })
+                    && let VertexSource::Face { face: owner, uv } = source
+                {
+                    if owner != face {
+                        return Err(LoftUvError::Coordinates { face });
+                    }
+                    // Cap supports use the authored section frame. Native plane
+                    // parameters therefore already are the profile's rest X/Y,
+                    // independently of cap sense or occurrence placement.
+                    coordinates[i] = uv;
+                    continue;
+                }
                 coordinates[i] = match role {
                     FaceRole::Wall { band, segment, .. } => {
                         let uv = self

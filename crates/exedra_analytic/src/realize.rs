@@ -22,6 +22,8 @@ use exedra_triangulate::{PolygonInput, TriError, TriParams, triangulate_preservi
 
 mod grid;
 mod poles;
+mod quality;
+pub use quality::{TriangleQuality, TriangleQualityReport};
 mod strip;
 mod trimmed;
 use grid::GridPatch;
@@ -29,9 +31,10 @@ use poles::PolePatch;
 
 /// Explicit accuracy and storage bounds for one body realization.
 ///
-/// Planar faces use boundary-preserving constrained Delaunay triangulation.
-/// It improves interior diagonals without adding vertices; a minimum triangle
-/// angle is not guaranteed. Geometric deviation is controlled by
+/// By default, planar faces use boundary-preserving constrained Delaunay
+/// triangulation without adding interior vertices. [`Self::quality`] can add
+/// shared boundary and interior samples, with final shape reported separately.
+/// A minimum triangle angle is not guaranteed. Geometric deviation is controlled by
 /// [`Self::tolerance`] independently of triangle shape.
 /// Full spheres can use aligned latitude rings with fewer longitudes near the
 /// poles when a directed radial-deviation bound certifies the schedule. Other
@@ -45,12 +48,16 @@ pub struct RealizationPolicy {
     pub geometry_gap: f64,
     /// Minimum segments for a circle, ellipse or NURBS edge; at least four.
     pub min_arc_segments: u32,
-    /// Maximum segments for any circle, ellipse or NURBS edge in each attempt.
+    /// Maximum segments for any native edge in each attempt, including lines
+    /// subdivided for optional triangle quality.
     pub max_edge_segments: u32,
     /// Maximum emitted vertices in each attempt.
     pub max_vertices: u32,
     /// Maximum edge-chain entries in each attempt, including repeated endpoints.
     pub max_boundary_samples: u32,
+    /// Optional boundary spacing and triangle-shape improvement. Geometry accuracy
+    /// remains independent; inspect the quality report for unmet shape targets.
+    pub quality: Option<TriangleQuality>,
 }
 impl Default for RealizationPolicy {
     fn default() -> Self {
@@ -61,6 +68,7 @@ impl Default for RealizationPolicy {
             max_edge_segments: 4096,
             max_vertices: 1 << 20,
             max_boundary_samples: 1 << 22,
+            quality: None,
         }
     }
 }
@@ -191,6 +199,8 @@ pub struct RealizationReport {
     pub work: RealizationWork,
     /// A single curve retry, absent on the ordinary first-pass path.
     pub curve_refinement: Option<CurveRefinement>,
+    /// Final emitted triangle shape and refinement evidence, when requested.
+    pub quality: Option<TriangleQualityReport>,
 }
 impl RealizationReport {
     /// Whether the emitted result meets the requested geometric deviation.
@@ -581,12 +591,30 @@ impl<F, E> Body<F, E> {
         curve_tolerance: f64,
         region: impl Fn(FaceId, &Face<F>) -> u32,
     ) -> Result<RealizedBody, RealizationError> {
+        // Keep optional quality planning/emission out of the ordinary path's
+        // generated code. The two schedules share one implementation and all
+        // geometric validation; this branch occurs once per attempt.
+        if policy.quality.is_some() {
+            self.realize_scheduled::<true>(placement, policy, curve_tolerance, region)
+        } else {
+            self.realize_scheduled::<false>(placement, policy, curve_tolerance, region)
+        }
+    }
+
+    fn realize_scheduled<const QUALITY: bool>(
+        &self,
+        placement: Placement3,
+        policy: &RealizationPolicy,
+        curve_tolerance: f64,
+        region: impl Fn(FaceId, &Face<F>) -> u32,
+    ) -> Result<RealizedBody, RealizationError> {
         if !policy.tolerance.is_finite()
             || policy.tolerance <= 0.0
             || policy.min_arc_segments < 4
             || policy.min_arc_segments > policy.max_edge_segments
             || policy.max_vertices == 0
             || policy.max_boundary_samples == 0
+            || policy.quality.is_some_and(|q| !q.valid())
         {
             return Err(RealizationError::InvalidPolicy);
         }
@@ -708,6 +736,11 @@ impl<F, E> Body<F, E> {
             };
             counts.push(n);
         }
+        let quality_rows = if QUALITY {
+            quality::prepare(self, &patches, &mut counts, &mut groups, policy)?
+        } else {
+            Vec::new()
+        };
         trimmed::prepare_counts(self, &patches, &mut counts, policy)?;
         for patch in &patches {
             if let Patch::Pole(patch) = patch {
@@ -755,11 +788,17 @@ impl<F, E> Body<F, E> {
                     maximum: policy.max_vertices,
                 })?;
         }
+        let quality_interior = quality_rows
+            .iter()
+            .flatten()
+            .map(|r| r.interior_count(&counts))
+            .fold(0_usize, usize::saturating_add);
         let vertex_count = active_vertices
             .iter()
             .filter(|v| **v)
             .count()
             .saturating_add(interior)
+            .saturating_add(quality_interior)
             .saturating_add(
                 patches
                     .iter()
@@ -790,23 +829,33 @@ impl<F, E> Body<F, E> {
             .faces()
             .iter()
             .enumerate()
-            .map(|(i, face)| match patches[i] {
-                Patch::Planar | Patch::Trimmed => face
-                    .loops
-                    .iter()
-                    .flat_map(|id| &self.boundary_loop(*id).expect("validated loop").coedges)
-                    .map(|coedge| counts[coedge.edge.index()] as usize)
-                    .fold(0_usize, usize::saturating_add)
-                    .saturating_add(face.loops.len().saturating_sub(1).saturating_mul(2))
-                    .saturating_sub(2),
-                Patch::Strip(patch) => (counts[patch.a.edge.index()] as usize)
-                    .saturating_mul(2)
-                    .saturating_add(patch.sides.map_or(0, |s| s.extra_samples(self, &counts))),
-                Patch::Grid(patch) => patch.triangle_count(&counts),
-                Patch::Pole(patch) => {
-                    pole_corner_count =
-                        pole_corner_count.saturating_add(patch.pole_corner_count(&counts));
-                    patch.triangle_count(&counts)
+            .map(|(i, face)| {
+                if let Some(rows) = quality_rows.get(i).copied().flatten() {
+                    rows.triangle_count(&counts)
+                } else {
+                    match patches[i] {
+                        Patch::Planar | Patch::Trimmed => face
+                            .loops
+                            .iter()
+                            .flat_map(|id| {
+                                &self.boundary_loop(*id).expect("validated loop").coedges
+                            })
+                            .map(|coedge| counts[coedge.edge.index()] as usize)
+                            .fold(0_usize, usize::saturating_add)
+                            .saturating_add(face.loops.len().saturating_sub(1).saturating_mul(2))
+                            .saturating_sub(2),
+                        Patch::Strip(patch) => (counts[patch.a.edge.index()] as usize)
+                            .saturating_mul(2)
+                            .saturating_add(
+                                patch.sides.map_or(0, |s| s.extra_samples(self, &counts)),
+                            ),
+                        Patch::Grid(patch) => patch.triangle_count(&counts),
+                        Patch::Pole(patch) => {
+                            pole_corner_count =
+                                pole_corner_count.saturating_add(patch.pole_corner_count(&counts));
+                            patch.triangle_count(&counts)
+                        }
+                    }
                 }
             })
             .try_fold(0_usize, |total, count| {
@@ -1022,6 +1071,8 @@ impl<F, E> Body<F, E> {
         let mut triangles = Vec::with_capacity(triangle_count);
         let mut regions = Vec::with_capacity(triangle_count);
         let mut native_faces = Vec::with_capacity(triangle_count);
+        let mut quality_work = quality::Work::default();
+        let mut quality_scratch = quality::Scratch::default();
         let mut ruling_displacement = 0.0_f64;
         let mut surface_deviation = 0.0_f64;
         let mut trim_work = trimmed::Work::default();
@@ -1109,10 +1160,45 @@ impl<F, E> Body<F, E> {
                     outer: &rings[0],
                     holes: &holes,
                 };
-                let triangulated =
+                let face_triangles = if QUALITY {
+                    let settings = policy.quality.expect("quality schedule");
+                    quality::planar(
+                        self,
+                        id,
+                        placement,
+                        frame,
+                        &input,
+                        &mut indices,
+                        &mut emitted,
+                        &mut sources,
+                        &mut displacement,
+                        settings.with_max_steiner_points(
+                            settings.max_steiner_points.min(
+                                policy
+                                    .max_vertices
+                                    .saturating_sub(crate::usize_to_u32(vertex_count)),
+                            ),
+                        ),
+                        policy.max_vertices,
+                        &mut quality_work,
+                    )?
+                } else {
                     triangulate_preserving_boundary(&input, &TriParams::constrained_delaunay())
-                        .map_err(|error| RealizationError::Arrangement { face: id, error })?;
-                for triangle in triangulated.triangles {
+                        .map_err(|error| RealizationError::Arrangement { face: id, error })?
+                        .triangles
+                };
+                for triangle in face_triangles {
+                    if QUALITY {
+                        let p =
+                            triangle.map(|j| emitted[indices[j as usize] as usize].map(f64::from));
+                        let normal = exedra_math::cross(
+                            exedra_math::sub(p[1], p[0]),
+                            exedra_math::sub(p[2], p[0]),
+                        );
+                        if exedra_math::dot(normal, frame.rows.map(|r| r[2])) <= 0.0 {
+                            return Err(RealizationError::DegenerateFace { face: id });
+                        }
+                    }
                     emit(
                         &mut triangles,
                         triangle.map(|j| indices[j as usize]),
@@ -1227,6 +1313,26 @@ impl<F, E> Body<F, E> {
                 );
                 if exedra_math::dot(native_normal, normal) <= 0.0 {
                     return Err(RealizationError::DegenerateFace { face: id });
+                }
+                if let Some(rows) = quality_rows.get(i).copied().flatten() {
+                    rows.emit(
+                        self,
+                        id,
+                        patch,
+                        placement,
+                        &counts,
+                        policy.max_vertices,
+                        &chains,
+                        &mut quality_scratch,
+                        &mut emitted,
+                        &mut sources,
+                        &mut displacement,
+                        face_region,
+                        &mut triangles,
+                        &mut regions,
+                        &mut native_faces,
+                    )?;
+                    continue;
                 }
                 for j in 0..a.len() - 1 {
                     let corners = [a_at(j), a_at(j + 1), b_at(j + 1), b_at(j)];
@@ -1486,6 +1592,13 @@ impl<F, E> Body<F, E> {
                 edge_segments: counts,
                 work,
                 curve_refinement: None,
+                quality: if QUALITY {
+                    policy
+                        .quality
+                        .map(|q| quality::report(q, &emitted, &triangles, quality_work))
+                } else {
+                    None
+                },
             },
         })
     }

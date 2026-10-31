@@ -793,6 +793,9 @@ pub struct RefineParams {
     pub max_radius_edge_ratio: f64,
     /// Hard cap on generated vertices. Zero returns the legalized cover.
     pub max_steiner_points: u32,
+    /// Hard cap on attempted candidate insertions after initial triangulation.
+    /// Declined candidates count too; zero returns the legalized cover.
+    pub max_candidate_insertions: u32,
     /// Whether boundary segments may be split by generated midpoints.
     pub boundary_splits: BoundarySplits,
 }
@@ -808,6 +811,7 @@ impl RefineParams {
         Self {
             max_radius_edge_ratio,
             max_steiner_points: 1024,
+            max_candidate_insertions: 16384,
             boundary_splits: BoundarySplits::Allowed,
         }
     }
@@ -816,6 +820,14 @@ impl RefineParams {
     #[must_use]
     pub const fn with_max_steiner_points(mut self, max_steiner_points: u32) -> Self {
         self.max_steiner_points = max_steiner_points;
+        self
+    }
+
+    /// Replaces the candidate-insertion attempt budget. This bounds refinement
+    /// iterations, not the work inside one geometric insertion or initial CDT.
+    #[must_use]
+    pub const fn with_max_candidate_insertions(mut self, maximum: u32) -> Self {
+        self.max_candidate_insertions = maximum;
         self
     }
 
@@ -895,13 +907,15 @@ pub struct RefineStats {
     /// produce a non-CCW triangle, need a forbidden boundary split, or could
     /// not be located.
     pub declined_insertions: u32,
+    /// Attempted candidate insertions, including declined candidates.
+    pub candidate_insertions: u32,
     /// Triangles still violating the quality bound when refinement stopped.
     pub remaining_bad_triangles: usize,
     /// Remaining violations whose smallest angle lies between two boundary
     /// segments. The input fixes that angle, so no insertion can meet the
     /// bound there; these are never chased.
     pub input_limited_triangles: usize,
-    /// Whether the configured generated-point budget or the representable
+    /// Whether the configured generated-point or candidate-insertion budget, or the representable
     /// internal index budget stopped refinement with work pending.
     pub budget_exhausted: bool,
 }
