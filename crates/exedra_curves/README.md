@@ -41,6 +41,17 @@ Current scope:
   lines, arcs and cubics that Exedra's geometry heads share, with their
   closure and join intent;
 - `profile`: exact 2D profiles of lines and circular arcs, below;
+- `realize`: a `RealizationPlan` built once from an owned
+  `CurveDescription` (a cubic chain or a `NurbsCurve`, widths and ribbon
+  normals as constant, varying or per-control attributes, closure), keeping
+  three layers that change for different reasons: topology (Bezier
+  extraction matrices, pieces between breaks, stations), controls (Bezier
+  controls, bounds, creases and gaps, station points, analytic tangents,
+  rotation-minimizing frames) and attributes. Moving controls redoes only
+  the spans they shape and reframes from the first changed station; new
+  widths touch nothing else; each update returns a `PlanWork` count of
+  what it redid, bit for bit what a fresh plan would hold. A plan realizes
+  CPU tubes and ribbons through the sweeps above;
 - an `_into` form of every allocating function, filling a caller's buffers
   with a reusable `Workspace` for scratch, so a retained caller allocates
   nothing in steady state.

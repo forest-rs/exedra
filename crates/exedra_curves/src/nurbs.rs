@@ -175,6 +175,23 @@ const MIN_WEIGHT: f64 = f64::from_bits(0x2FF0_0000_0000_0000); // 2^-256
 /// The largest weight a curve takes, the reciprocal of [`MIN_WEIGHT`].
 const MAX_WEIGHT: f64 = f64::from_bits(0x4FF0_0000_0000_0000); // 2^256
 
+/// Whether `w` is a weight [`Nurbs::validate`] accepts: in
+/// `[2^-256, 2^256]`.
+pub(crate) fn valid_weight(w: f64) -> bool {
+    (MIN_WEIGHT..=MAX_WEIGHT).contains(&w)
+}
+
+/// Whether control `point` with weight `w` is one [`Nurbs::validate`]
+/// accepts: each weighted coordinate de Boor's scheme combines (without
+/// weights, the coordinate itself) finite, and normal unless the
+/// coordinate already was not.
+pub(crate) fn representable<const N: usize>(point: &[f64; N], w: f64) -> bool {
+    point.iter().all(|&c| {
+        let weighted = (w * c).abs();
+        weighted.is_finite() && (weighted >= f64::MIN_POSITIVE || c.abs() < f64::MIN_POSITIVE)
+    })
+}
+
 /// Runs `f` on a zeroed scratch buffer of `len` homogeneous points, on the
 /// stack up to [`INLINE_SCRATCH`].
 pub(crate) fn with_scratch<const N: usize, R>(
@@ -238,24 +255,13 @@ impl<'a, const N: usize> Nurbs<'a, N> {
                     points: n,
                 });
             }
-            if let Some(index) = weights
-                .iter()
-                .position(|w| !(MIN_WEIGHT..=MAX_WEIGHT).contains(w))
-            {
+            if let Some(index) = weights.iter().position(|w| !valid_weight(*w)) {
                 return Err(NurbsError::Weight { index });
             }
         }
-        // The weighted controls de Boor's scheme combines; without
-        // weights, the coordinates themselves.
         let mut weights = self.weights.unwrap_or(&[]).iter();
         for (index, point) in self.points.iter().enumerate() {
-            let w = weights.next().copied().unwrap_or(1.0);
-            let representable = |c: f64| {
-                let weighted = (w * c).abs();
-                weighted.is_finite()
-                    && (weighted >= f64::MIN_POSITIVE || c.abs() < f64::MIN_POSITIVE)
-            };
-            if !point.iter().all(|&c| representable(c)) {
+            if !representable(point, weights.next().copied().unwrap_or(1.0)) {
                 return Err(NurbsError::Point { index });
             }
         }
@@ -442,6 +448,50 @@ impl<'a, const N: usize> ValidNurbs<'a, N> {
             self.load(k, scratch);
             *slot = self.de_boor_levels(k, scratch, |r| if r <= p - i { a } else { b });
         }
+    }
+
+    /// Knot span `k`'s Bezier extraction matrix into `out`, `order` by
+    /// `order` and row-major: Bezier control `i` of the span's piece is
+    /// `sum_j out[i * order + j] * D[k - p + j]` over the span's `order`
+    /// weighted controls `D`. It depends on the knots alone, so a caller
+    /// that moves controls or changes weights applies it again without
+    /// any knot arithmetic.
+    ///
+    /// Column `j` is the piece of the `j`-th B-spline basis function in
+    /// Bezier form: [`Self::bezier_span`]'s blossoming run on a curve of
+    /// the span's own `2 order` knots whose controls are 1 at `j` and 0
+    /// elsewhere. Applying the matrix agrees with blossoming the controls
+    /// themselves to rounding, not bit for bit. `k` must be a nonempty
+    /// span in `[order - 1, points)`.
+    pub(crate) fn bezier_extraction_into(&self, k: usize, out: &mut Vec<f64>) {
+        let order = self.curve.order as usize;
+        let p = order - 1;
+        // The knots span `k`'s controls see: `knots[k - p ..= k + p + 1]`,
+        // `2 order` of them, so the window is a curve of `order` controls
+        // whose span `p` is span `k` here.
+        let window = &self.curve.knots[k - p..k + p + 2];
+        let mut unit = alloc::vec![[0.0; 1]; order];
+        out.clear();
+        out.resize(order * order, 0.0);
+        with_scratch(2 * order, |buffer| {
+            let (bezier, scratch) = buffer.split_at_mut(order);
+            for j in 0..order {
+                unit[j] = [1.0];
+                let local = ValidNurbs {
+                    curve: Nurbs {
+                        order: self.curve.order,
+                        knots: window,
+                        points: &unit,
+                        weights: None,
+                    },
+                };
+                local.bezier_span(p, bezier, scratch);
+                for (i, control) in bezier.iter().enumerate() {
+                    out[i * order + j] = control.weighted[0];
+                }
+                unit[j] = [0.0];
+            }
+        });
     }
 
     /// Samples the curve over `range` (clamped to the domain; the whole
@@ -698,19 +748,30 @@ impl<const N: usize> ValidNurbs<'_, N> {
 /// The point and derivatives with respect to `t` at `t` of the rational
 /// Bezier piece with weighted `controls` over `[a, b]`, with `scratch` as
 /// long as `controls`.
-fn span_evaluation<const N: usize>(
+pub(crate) fn span_evaluation<const N: usize>(
     controls: &[WeightedPoint<N>],
     a: f64,
     b: f64,
     t: f64,
     scratch: &mut [WeightedPoint<N>],
 ) -> CurveEvaluation<N> {
-    let u = (t - a) / (b - a);
+    local_evaluation(controls, b - a, (t - a) / (b - a), scratch)
+}
+
+/// As [`span_evaluation`] at the piece's own parameter `u` in `[0, 1]`
+/// rather than at `t`, which a wide parameter far from zero cannot
+/// represent at every `u`; derivatives are still with respect to `t`, the
+/// span being `width` wide.
+pub(crate) fn local_evaluation<const N: usize>(
+    controls: &[WeightedPoint<N>],
+    width: f64,
+    u: f64,
+    scratch: &mut [WeightedPoint<N>],
+) -> CurveEvaluation<N> {
     let [h, d1, d2] = de_casteljau(controls, u, scratch);
-    // Derivatives with respect to `u`, then to `t = a + (b - a) u`:
-    // divided by the width rather than multiplied by its reciprocal, which
+    // Derivatives with respect to `u`, then to `t = a + width u`: divided
+    // by the width rather than multiplied by its reciprocal, which
     // overflows for a span narrower than `1 / f64::MAX`.
-    let width = b - a;
     rational(h, d1.divided(width), d2.divided(width).divided(width))
 }
 
