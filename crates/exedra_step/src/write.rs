@@ -9,7 +9,7 @@ use alloc::{string::String, vec, vec::Vec};
 use core::fmt::{self, Write};
 use exedra_analytic::{
     body::{Body, FaceId, Sense},
-    geometry::{Curve, Surface},
+    geometry::{Curve, CurveSpan, NurbsCurve, Surface},
 };
 use exedra_math::{Placement3, norm};
 
@@ -57,6 +57,97 @@ impl Buffer {
         self.next += 1;
         self.append(format_args!("{}={};\n", Id(id), args))?;
         Ok(id)
+    }
+    /// A NURBS curve: `B_SPLINE_CURVE_WITH_KNOTS`, or for a rational one the
+    /// complex instance of its partial entities, listed alphabetically. A
+    /// placement moves the controls; the weights are unchanged. Whether it
+    /// is closed is stated where [known](closed); whether it crosses itself
+    /// is not established, so it is unknown.
+    fn nurbs(
+        &mut self,
+        curve: &NurbsCurve,
+        placement: Placement3,
+    ) -> Result<StepEntityId, StepError> {
+        let points = curve
+            .points()
+            .iter()
+            .map(|&p| self.point(placement.transform_point(p)))
+            .collect::<Result<Vec<_>, _>>()?;
+        let (knots, multiplicities) = distinct(curve.knots());
+        let degree = curve.order() - 1;
+        let closed = logical(closed(curve));
+        match curve.weights() {
+            None => self.entity(format_args!(
+                "B_SPLINE_CURVE_WITH_KNOTS('',{},{},.UNSPECIFIED.,{},.U.,{},{},.UNSPECIFIED.)",
+                degree,
+                Refs(&points),
+                closed,
+                Integers(&multiplicities),
+                Reals(&knots)
+            )),
+            Some(weights) => self.entity(format_args!(
+                "(BOUNDED_CURVE() B_SPLINE_CURVE({},{},.UNSPECIFIED.,{},.U.) B_SPLINE_CURVE_WITH_KNOTS({},{},.UNSPECIFIED.) CURVE() GEOMETRIC_REPRESENTATION_ITEM() RATIONAL_B_SPLINE_CURVE({}) REPRESENTATION_ITEM(''))",
+                degree,
+                Refs(&points),
+                closed,
+                Integers(&multiplicities),
+                Reals(&knots),
+                Reals(weights)
+            )),
+        }
+    }
+    /// A ruled patch's [rows](exedra_analytic::geometry::Ruled::nurbs_rows)
+    /// as a B-spline surface along U from the first row, linear in V:
+    /// `B_SPLINE_SURFACE_WITH_KNOTS`, or for rational rows the complex
+    /// instance with `RATIONAL_B_SPLINE_SURFACE`. It is closed in U where
+    /// both rows are [closed](closed), its first ruling its last, and not
+    /// where either row is open; in V only where the rows, of one order, knot
+    /// vector and weights, have the same controls. Whether it crosses itself
+    /// is not established.
+    fn ruled(
+        &mut self,
+        rows: &[NurbsCurve; 2],
+        placement: Placement3,
+    ) -> Result<StepEntityId, StepError> {
+        let mut net = Vec::with_capacity(rows[0].points().len());
+        for (&a, &b) in rows[0].points().iter().zip(rows[1].points()) {
+            net.push([
+                self.point(placement.transform_point(a))?,
+                self.point(placement.transform_point(b))?,
+            ]);
+        }
+        let (knots, multiplicities) = distinct(rows[0].knots());
+        let degree = rows[0].order() - 1;
+        let u_closed = logical(match (closed(&rows[0]), closed(&rows[1])) {
+            (Some(true), Some(true)) => Some(true),
+            (Some(false), _) | (_, Some(false)) => Some(false),
+            _ => None,
+        });
+        let v_closed = boolean(rows[0].points() == rows[1].points());
+        match (rows[0].weights(), rows[1].weights()) {
+            (Some(a), Some(b)) => {
+                let weights: Vec<[f64; 2]> = a.iter().zip(b).map(|(&a, &b)| [a, b]).collect();
+                self.entity(format_args!(
+                    "(BOUNDED_SURFACE() B_SPLINE_SURFACE({},1,{},.UNSPECIFIED.,{},{},.U.) B_SPLINE_SURFACE_WITH_KNOTS({},(2,2),{},(0.,1.),.UNSPECIFIED.) GEOMETRIC_REPRESENTATION_ITEM() RATIONAL_B_SPLINE_SURFACE({}) REPRESENTATION_ITEM('') SURFACE())",
+                    degree,
+                    Net(&net),
+                    u_closed,
+                    v_closed,
+                    Integers(&multiplicities),
+                    Reals(&knots),
+                    Grid(&weights)
+                ))
+            }
+            _ => self.entity(format_args!(
+                "B_SPLINE_SURFACE_WITH_KNOTS('',{},1,{},.UNSPECIFIED.,{},{},.U.,{},(2,2),{},(0.,1.),.UNSPECIFIED.)",
+                degree,
+                Net(&net),
+                u_closed,
+                v_closed,
+                Integers(&multiplicities),
+                Reals(&knots)
+            )),
+        }
     }
     fn point(&mut self, p: [f64; 3]) -> Result<StepEntityId, StepError> {
         self.entity(format_args!(
@@ -116,6 +207,77 @@ impl fmt::Display for Refs<'_> {
         f.write_str(")")
     }
 }
+/// A knot vector as STEP writes it: its distinct knots and how often
+/// each repeats.
+fn distinct(knots: &[f64]) -> (Vec<f64>, Vec<usize>) {
+    let mut values: Vec<f64> = Vec::new();
+    let mut multiplicities: Vec<usize> = Vec::new();
+    for &u in knots {
+        if values.last() == Some(&u) {
+            *multiplicities.last_mut().expect("a knot") += 1;
+        } else {
+            values.push(u);
+            multiplicities.push(1);
+        }
+    }
+    (values, multiplicities)
+}
+/// A STEP list of control point pairs, one per U, across V.
+struct Net<'a>(&'a [[StepEntityId; 2]]);
+impl fmt::Display for Net<'_> {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.write_str("(")?;
+        for (i, pair) in self.0.iter().enumerate() {
+            if i != 0 {
+                f.write_str(",")?;
+            }
+            write!(f, "{}", Refs(pair))?;
+        }
+        f.write_str(")")
+    }
+}
+/// A STEP list of weight pairs, one per U, across V.
+struct Grid<'a>(&'a [[f64; 2]]);
+impl fmt::Display for Grid<'_> {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.write_str("(")?;
+        for (i, pair) in self.0.iter().enumerate() {
+            if i != 0 {
+                f.write_str(",")?;
+            }
+            write!(f, "{}", Reals(pair))?;
+        }
+        f.write_str(")")
+    }
+}
+/// A parenthesized STEP list of reals.
+struct Reals<'a>(&'a [f64]);
+impl fmt::Display for Reals<'_> {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.write_str("(")?;
+        for (i, &value) in self.0.iter().enumerate() {
+            if i != 0 {
+                f.write_str(",")?;
+            }
+            write!(f, "{}", Real(value))?;
+        }
+        f.write_str(")")
+    }
+}
+/// A parenthesized STEP list of integers.
+struct Integers<'a>(&'a [usize]);
+impl fmt::Display for Integers<'_> {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.write_str("(")?;
+        for (i, &value) in self.0.iter().enumerate() {
+            if i != 0 {
+                f.write_str(",")?;
+            }
+            write!(f, "{value}")?;
+        }
+        f.write_str(")")
+    }
+}
 struct Real(f64);
 impl fmt::Display for Real {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
@@ -142,6 +304,33 @@ impl fmt::Display for Quoted<'_> {
 }
 fn boolean(b: bool) -> &'static str {
     if b { ".T." } else { ".F." }
+}
+/// A STEP LOGICAL: true, false or, for `None`, unknown.
+fn logical(b: Option<bool>) -> &'static str {
+    b.map_or(".U.", boolean)
+}
+/// Whether a NURBS curve ends where it starts, where that is known: a
+/// curve clamped at both ends starts at its first control and ends at its
+/// last, so it is closed when the two are equal and open when they are
+/// farther apart than rounding. `None` between, as for a full turn of
+/// arcs whose last control rounds off its first, or for a curve not clamped.
+fn closed(curve: &NurbsCurve) -> Option<bool> {
+    let order = curve.order() as usize;
+    let knots = curve.knots();
+    let clamped = |end: &[f64]| end.iter().all(|&u| u == end[0]);
+    if !(clamped(&knots[..order]) && clamped(&knots[knots.len() - order..])) {
+        return None;
+    }
+    let (&first, &last) = (curve.points().first()?, curve.points().last()?);
+    if first == last {
+        return Some(true);
+    }
+    let scale = first
+        .iter()
+        .chain(&last)
+        .map(|v| v.abs())
+        .fold(0.0, f64::max);
+    (norm(exedra_math::sub(first, last)) > 64.0 * f64::EPSILON * scale).then_some(false)
 }
 
 pub(super) fn export<F, E>(
@@ -174,6 +363,29 @@ pub(super) fn export<F, E>(
         let point = out.point(placement.transform_point(p))?;
         map.vertices[i] = Some(out.entity(format_args!("VERTEX_POINT('',{})", Id(point)))?);
     }
+    // A conic edge bounding a ruled patch written as a B-spline surface is
+    // written as the same rational arcs as the surface's row: the same
+    // points, described as the surface describes them, so a reader finds
+    // the edge on the surface without projecting one onto the other.
+    let mut arcs: Vec<Option<NurbsCurve>> = vec![None; body.edges().len()];
+    for face in body.faces() {
+        if !matches!(&face.surface, Surface::Ruled(ruled) if ruled.nurbs_rows().is_some()) {
+            continue;
+        }
+        for &loop_id in &face.loops {
+            for coedge in &body.loops()[loop_id.index()].coedges {
+                let index = coedge.edge.index();
+                if let Some((curve @ (Curve::Circle(_) | Curve::Ellipse(_)), range)) =
+                    body.edges()[index].regular()
+                    && arcs[index].is_none()
+                {
+                    arcs[index] = CurveSpan::new(curve.clone(), range, false)
+                        .ok()
+                        .and_then(|span| span.nurbs());
+                }
+            }
+        }
+    }
     for (i, (&active, edge)) in prepared.edges.iter().zip(body.edges()).enumerate() {
         if !active {
             continue;
@@ -185,6 +397,7 @@ pub(super) fn export<F, E>(
             continue;
         };
         let curve = match geometry {
+            _ if arcs[i].is_some() => out.nurbs(arcs[i].as_ref().expect("checked"), placement)?,
             Curve::Line(line) => {
                 let origin = out.point(placement.transform_point(line.origin()))?;
                 let direction = placement.transform_vector(line.direction());
@@ -227,13 +440,25 @@ pub(super) fn export<F, E>(
                     ))?
                 }
             }
+            // Only the edge's piece of its curve, clamped there: a reader
+            // finds the edge between its vertices along the written curve,
+            // which past the range may pass through them again.
+            Curve::Nurbs(nurbs) => {
+                let piece = nurbs
+                    .curve()
+                    .segment(range.bounds())
+                    .ok_or(StepError::Numeric)?;
+                out.nurbs(&piece, placement)?
+            }
         };
         // Some readers reconstruct a closed ellipse's surface parameter curve
         // outside the declared tolerance when its seam is rephased. Short exact
         // elliptic arcs bound that reconstruction work without changing any
         // supporting geometry or duplicating an edge between its two faces.
         let count = match geometry {
-            Curve::Ellipse(ellipse) if ellipse.semi_major() != ellipse.semi_minor() => {
+            Curve::Ellipse(ellipse)
+                if ellipse.semi_major() != ellipse.semi_minor() && arcs[i].is_none() =>
+            {
                 // OCCT reconstructs trims with a fixed physical confusion floor
                 // in millimetres, even for metre-valued STEP coordinates. Scale
                 // this empirically verified reconstruction guard with physical
@@ -396,7 +621,12 @@ pub(super) fn export<F, E>(
                 Real(t.major_radius()),
                 Real(t.minor_radius())
             ))?,
-            _ => unreachable!("preflight checked surface family"),
+            Surface::Ruled(ruled) => out.ruled(
+                &ruled
+                    .nurbs_rows()
+                    .expect("preflight checked the ruled patch"),
+                placement,
+            )?,
         };
         refs.clear();
         refs.reserve(face.loops.len());
@@ -569,6 +799,87 @@ mod tests {
                 ..
             })
         ));
+    }
+    #[test]
+    fn splines_state_closure_where_known_and_leave_self_crossing_unknown() {
+        let mut buffer = Buffer {
+            text: String::new(),
+            next: 1,
+            entities: 1000,
+            bytes: 1 << 20,
+            required: 0,
+        };
+        let entity = |buffer: &Buffer, id: StepEntityId| {
+            let prefix = format!("{}=", Id(id));
+            let line = buffer.text.lines().find(|l| l.starts_with(&prefix));
+            String::from(line.expect("written"))
+        };
+        let open = NurbsCurve::line([0.0; 3], [1.0, 0.0, 0.0]).unwrap();
+        // A closed cubic teardrop, clamped at its ends.
+        let teardrop = NurbsCurve::new(
+            4,
+            vec![0.0, 0.0, 0.0, 0.0, 1.0, 2.0, 2.0, 2.0, 2.0],
+            vec![
+                [0.0; 3],
+                [-3.0, 2.0, 0.0],
+                [0.0, 5.0, 0.0],
+                [3.0, 2.0, 0.0],
+                [0.0; 3],
+            ],
+            None,
+        )
+        .unwrap();
+        // The same curve unclamped at its start: it does not begin at its
+        // first control, so closure is not read from the controls.
+        let unclamped = NurbsCurve::new(
+            4,
+            vec![-1.0, 0.0, 0.0, 0.0, 1.0, 2.0, 2.0, 2.0, 2.0],
+            teardrop.points().to_vec(),
+            None,
+        )
+        .unwrap();
+        // A full turn of rational arcs, whose last control rounds off its
+        // first.
+        let turn = |z: f64| {
+            NurbsCurve::arc(
+                [0.0, 0.0, z],
+                [1.0, 0.0, 0.0],
+                [0.0, 1.0, 0.0],
+                [0.0, core::f64::consts::TAU],
+            )
+            .unwrap()
+        };
+        for (curve, flags) in [
+            (&open, ".UNSPECIFIED.,.F.,.U.,"),
+            (&teardrop, ".UNSPECIFIED.,.T.,.U.,"),
+            (&unclamped, ".UNSPECIFIED.,.U.,.U.,"),
+            (&turn(0.0), ".UNSPECIFIED.,.U.,.U.)"),
+        ] {
+            let id = buffer.nurbs(curve, Placement3::IDENTITY).unwrap();
+            let line = entity(&buffer, id);
+            assert!(line.contains(flags), "{line}");
+        }
+        // A wall around a closed curve is closed in U; one along a line is
+        // not; neither is closed in V.
+        let lift = |c: &NurbsCurve, z: f64| {
+            let points = c.points().iter().map(|p| [p[0], p[1], p[2] + z]).collect();
+            NurbsCurve::new(c.order(), c.knots().to_vec(), points, None).unwrap()
+        };
+        for (rows, flags) in [
+            (
+                [teardrop.clone(), lift(&teardrop, 1.0)],
+                ".UNSPECIFIED.,.T.,.F.,.U.,",
+            ),
+            (
+                [open.clone(), lift(&open, 1.0)],
+                ".UNSPECIFIED.,.F.,.F.,.U.,",
+            ),
+            ([turn(0.0), turn(1.0)], ".UNSPECIFIED.,.U.,.F.,.U.)"),
+        ] {
+            let id = buffer.ruled(&rows, Placement3::IDENTITY).unwrap();
+            let line = entity(&buffer, id);
+            assert!(line.contains(flags), "{line}");
+        }
     }
     #[test]
     fn step_reals_round_trip_binary64_and_always_have_real_lexical_form() {

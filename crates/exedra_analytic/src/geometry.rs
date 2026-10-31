@@ -4,13 +4,16 @@
 //! Construction-independent f64 curves, surfaces and parameter domains.
 //!
 //! Circle and cylinder angles are radians; plane coordinates and cylinder
-//! height are model lengths. Derivatives are with respect to those parameters,
-//! without normalization. Ruled patches use normalized unit parameters and
+//! height are model lengths; a NURBS curve's parameter is its own knot
+//! parameter, from `exedra_curves`. Derivatives are with respect to those
+//! parameters, without normalization. Ruled patches use normalized unit parameters and
 //! certify that bounded square's regularity. Other supporting geometry is
 //! untrimmed: body topology owns
 //! the bounded portions and their oriented uses. Texture coordinates are not
 //! surface parameters.
 
+/// Rational B-spline curves, as [`Curve::Nurbs`] and NURBS trims hold them.
+pub use exedra_curves::NurbsCurve;
 use exedra_math::{FrameError, Placement3};
 
 pub mod intersection;
@@ -174,6 +177,96 @@ impl Ellipse {
     }
 }
 
+/// A rational B-spline curve over its knot domain, without jumps.
+///
+/// Its parameter is the curve's own, `exedra_curves`' knot parameter; the
+/// curve is not periodic, and evaluation outside the domain is refused. A
+/// closed loop repeats its first point at its domain's end.
+#[derive(Clone, Debug, PartialEq)]
+pub struct Nurbs {
+    curve: NurbsCurve,
+}
+
+impl Nurbs {
+    /// The curve's knots, controls and weights.
+    #[must_use]
+    pub const fn curve(&self) -> &NurbsCurve {
+        &self.curve
+    }
+
+    /// The parameter domain.
+    #[must_use]
+    pub fn domain(&self) -> ParameterRange {
+        let [min, max] = self.curve.domain();
+        ParameterRange { min, max }
+    }
+
+    /// The curve over `range` alone, clamped there, so its controls bound
+    /// that piece; `None` unless `range` lies in the domain.
+    pub(crate) fn piece(&self, range: ParameterRange) -> Option<NurbsCurve> {
+        self.curve.segment(range.bounds())
+    }
+
+    /// The first knot inside `range` that repeats `degree` times or more,
+    /// where the curve may turn a corner: its tangent may jump there.
+    pub(crate) fn kink(&self, range: ParameterRange) -> Option<f64> {
+        let degree = self.curve.order() as usize - 1;
+        let knots = self.curve.knots();
+        knots.iter().copied().find(|&u| {
+            range.min < u && u < range.max && knots.iter().filter(|&&k| k == u).count() >= degree
+        })
+    }
+
+    /// Whether the curve may turn a corner inside `range`.
+    fn kinked(&self, range: ParameterRange) -> bool {
+        self.kink(range).is_some()
+    }
+
+    /// The farthest a piece of the curve over `range` strays from the chord
+    /// between samples `step` apart in its parameter: `step^2 / 8` times
+    /// the largest `|C''|`, or, across a corner, `step / 2` times the
+    /// largest `|C'|`, since every point is within half a step of a sample.
+    /// Infinite where the bounds cannot be found.
+    pub(crate) fn chord_bound(&self, range: ParameterRange, step: f64) -> f64 {
+        let Some(bounds) = self.curve.view().prepare().range_bounds(range.bounds()) else {
+            return f64::INFINITY;
+        };
+        if self.kinked(range) {
+            0.5 * step * bounds.first
+        } else {
+            0.125 * step * step * bounds.second
+        }
+    }
+
+    /// The fewest uniform steps over `range` whose [chords](Self::chord_bound)
+    /// all lie within `tolerance` of the curve; `None` where that count
+    /// cannot be found or overflows `u32`.
+    pub(crate) fn edge_count(&self, range: ParameterRange, tolerance: f64) -> Option<u32> {
+        let bounds = self.curve.view().prepare().range_bounds(range.bounds())?;
+        let span = range.span();
+        let needed = if self.kinked(range) {
+            span * bounds.first / (2.0 * tolerance)
+        } else {
+            span * libm::sqrt(bounds.second / (8.0 * tolerance))
+        };
+        let needed = libm::ceil(needed).max(1.0);
+        if !needed.is_finite() || needed > f64::from(u32::MAX) {
+            return None;
+        }
+        #[expect(
+            clippy::cast_possible_truncation,
+            clippy::cast_sign_loss,
+            reason = "needed is a finite ceil in [1, u32::MAX]"
+        )]
+        let mut count = needed as u32;
+        // Rounding may leave the count a hair short of its own bound.
+        while self.chord_bound(range, span / f64::from(count)) > tolerance {
+            count = count.checked_add(1)?;
+        }
+        Some(count)
+    }
+}
+
 /// An untrimmed, validated 3D curve independent of any construction operation.
 #[derive(Clone, Debug, PartialEq)]
 pub enum Curve {
@@ -183,18 +276,13 @@ pub enum Curve {
     Circle(Circle),
     /// A periodic ellipse; its period is `TAU` radians.
     Ellipse(Ellipse),
+    /// A rational B-spline over its knot domain.
+    Nurbs(Nurbs),
 }
 
-/// Curve position and its first two parameter derivatives.
-#[derive(Copy, Clone, Debug, PartialEq)]
-pub struct CurveEvaluation {
-    /// Position in the curve's coordinate system.
-    pub point: [f64; 3],
-    /// First derivative, with respect to the curve parameter.
-    pub first: [f64; 3],
-    /// Second derivative, with respect to the curve parameter twice.
-    pub second: [f64; 3],
-}
+/// Curve position and its first two derivatives with respect to the curve
+/// parameter, in the curve's coordinate system.
+pub use exedra_curves::CurveEvaluation;
 
 impl Curve {
     /// Creates a line with a finite origin and finite, nonzero direction.
@@ -248,9 +336,54 @@ impl Curve {
         }))
     }
 
+    /// Creates a rational B-spline curve. Its knot domain is its parameter
+    /// range; edges use any interval of it.
+    ///
+    /// # Errors
+    /// Returns [`GeometryError::Discontinuous`] when an interior knot repeats
+    /// `order` times or more, where the curve may jump: an edge is one
+    /// connected curve, so such a curve is split into edges at its jumps.
+    pub fn nurbs(curve: NurbsCurve) -> Result<Self, GeometryError> {
+        continuous(&curve)?;
+        Ok(Self::Nurbs(Nurbs { curve }))
+    }
+
+    /// The curve moved by the rigid `frame`, with the same parameters: a
+    /// conic's frame composed with it, a line's or NURBS curve's points
+    /// mapped, a NURBS curve's weights unchanged.
+    ///
+    /// # Errors
+    /// Returns the error the moved curve's constructor gives, as for a
+    /// frame that is not rigid or coordinates that overflow.
+    pub fn transformed(&self, frame: Placement3) -> Result<Self, GeometryError> {
+        match self {
+            Self::Line(l) => Self::line(
+                frame.transform_point(l.origin()),
+                frame.transform_vector(l.direction()),
+            ),
+            Self::Circle(c) => Self::circle(frame * c.frame(), c.radius()),
+            Self::Ellipse(e) => Self::ellipse(frame * e.frame(), e.semi_major(), e.semi_minor()),
+            Self::Nurbs(n) => {
+                let c = n.curve();
+                Self::nurbs(
+                    NurbsCurve::new(
+                        c.order(),
+                        c.knots().to_vec(),
+                        c.points()
+                            .iter()
+                            .map(|&p| frame.transform_point(p))
+                            .collect(),
+                        c.weights().map(<[f64]>::to_vec),
+                    )
+                    .map_err(GeometryError::Nurbs)?,
+                )
+            }
+        }
+    }
+
     pub(crate) fn harmonic(&self) -> Option<(Placement3, [f64; 2])> {
         match self {
-            Self::Line(_) => None,
+            Self::Line(_) | Self::Nurbs(_) => None,
             Self::Circle(c) => Some((c.frame(), [c.radius(); 2])),
             Self::Ellipse(e) => Some((e.frame(), [e.semi_major(), e.semi_minor()])),
         }
@@ -258,7 +391,7 @@ impl Curve {
 
     pub(crate) fn sampling_radius(&self) -> Option<f64> {
         match self {
-            Self::Line(_) => None,
+            Self::Line(_) | Self::Nurbs(_) => None,
             Self::Circle(c) => Some(c.radius()),
             Self::Ellipse(e) => Some(e.semi_major() * (1.0 + 4.0 * FRAME_TOLERANCE)),
         }
@@ -268,14 +401,15 @@ impl Curve {
     #[must_use]
     pub fn period(&self) -> Option<f64> {
         match self {
-            Self::Line(_) => None,
+            Self::Line(_) | Self::Nurbs(_) => None,
             Self::Circle(_) | Self::Ellipse(_) => Some(core::f64::consts::TAU),
         }
     }
 
     /// Evaluates without clamping or wrapping the supplied parameter.
     ///
-    /// Returns `None` for non-finite input or an overflowed result.
+    /// Returns `None` for non-finite input, a parameter outside a NURBS
+    /// curve's domain, or an overflowed result.
     #[must_use]
     pub fn evaluate(&self, parameter: f64) -> Option<CurveEvaluation> {
         if !parameter.is_finite() {
@@ -304,6 +438,12 @@ impl Curve {
                     first: vector(ellipse.frame, [-a * sin, b * cos, 0.0]),
                     second: vector(ellipse.frame, [-a * cos, -b * sin, 0.0]),
                 }
+            }
+            Self::Nurbs(nurbs) => {
+                if !nurbs.domain().contains(parameter) {
+                    return None;
+                }
+                nurbs.curve.view().evaluation(parameter)
             }
         };
         (finite(result.point) && finite(result.first) && finite(result.second)).then_some(result)
@@ -479,8 +619,9 @@ impl Surface {
     /// and V interpolates between them. Evaluation is restricted to `[0,1]²`.
     ///
     /// # Errors
-    /// Returns [`GeometryError::NonRegularRuled`] if bounded interval analysis
-    /// cannot certify a nonzero normal throughout the patch.
+    /// Returns [`GeometryError::Kinked`] where a NURBS span may turn a corner
+    /// inside its range, and [`GeometryError::NonRegularRuled`] if bounded
+    /// interval analysis cannot certify a nonzero normal throughout the patch.
     pub fn ruled(a: CurveSpan, b: CurveSpan) -> Result<Self, GeometryError> {
         Ruled::new(a, b).map(Self::Ruled)
     }
@@ -804,6 +945,20 @@ pub enum GeometryError {
     },
     /// The placement violates the rigid-frame contract.
     Frame(FrameError),
+    /// A NURBS curve's knots, controls or weights are invalid.
+    Nurbs(exedra_curves::NurbsError),
+    /// A NURBS curve jumps at an interior knot repeated `order` times.
+    Discontinuous {
+        /// The knot.
+        knot: f64,
+    },
+    /// A ruled patch's NURBS span may turn a corner at an interior knot
+    /// repeated `degree` times, where the patch's curvature bounds do not
+    /// hold; the patch is split there instead.
+    Kinked {
+        /// The knot.
+        knot: f64,
+    },
 }
 
 impl core::fmt::Display for GeometryError {
@@ -835,6 +990,14 @@ impl core::fmt::Display for GeometryError {
                 "parameter bounds [{min}, {max}] need a finite positive span"
             ),
             Self::Frame(error) => write!(f, "geometry frame: {error}"),
+            Self::Nurbs(error) => write!(f, "NURBS curve: {error}"),
+            Self::Discontinuous { knot } => {
+                write!(f, "NURBS curve may jump at knot {knot}; split it there")
+            }
+            Self::Kinked { knot } => write!(
+                f,
+                "ruled patch's NURBS span may turn a corner at knot {knot}; split it there"
+            ),
         }
     }
 }
@@ -917,6 +1080,21 @@ pub(crate) fn ellipse_support_gap(ellipse: &Ellipse, surface: &Surface) -> f64 {
         .map(|r| r[3].abs())
         .fold(ellipse.semi_major(), f64::max);
     bound + 256.0 * f64::EPSILON * magnitude
+}
+
+/// Refuses a NURBS curve that may jump: an interior knot repeated `order`
+/// times or more.
+pub(crate) fn continuous(curve: &NurbsCurve) -> Result<(), GeometryError> {
+    let order = curve.order() as usize;
+    let [start, end] = curve.domain();
+    let knots = curve.knots();
+    let jump = knots
+        .iter()
+        .find(|&&u| start < u && u < end && knots.iter().filter(|&&k| k == u).count() >= order);
+    match jump {
+        Some(&knot) => Err(GeometryError::Discontinuous { knot }),
+        None => Ok(()),
+    }
 }
 
 pub(crate) fn rigid(frame: Placement3) -> Result<(), GeometryError> {

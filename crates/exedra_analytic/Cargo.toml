@@ -10,6 +10,7 @@ keywords = ["geometry", "analytic", "tessellation", "no_std"]
 categories = ["data-structures", "algorithms"]
 
 [dependencies]
+exedra_curves.workspace = true
 exedra_math.workspace = true
 exedra_mesh.workspace = true
 exedra_profile.workspace = true
@@ -20,8 +21,8 @@ libm.workspace = true
 
 [features]
 default = ["std"]
-libm = ["exedra_mesh/libm", "exedra_math/libm"]
-std = ["exedra_mesh/std", "exedra_math/std"]
+libm = ["exedra_curves/libm", "exedra_mesh/libm", "exedra_math/libm"]
+std = ["exedra_curves/std", "exedra_mesh/std", "exedra_math/std"]
 
 [lints]
 workspace = true

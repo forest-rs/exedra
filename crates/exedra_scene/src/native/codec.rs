@@ -8,7 +8,9 @@ use exedra_analytic::{
         Body, BodyParts, BoundaryLoop, Coedge, Edge, EdgeId, Face, FaceId, LoopId, LoopTrims,
         Sense, TrimCurve, ValidationPolicy, VertexId,
     },
-    geometry::{Curve, CurveSpan, ParameterDomain, ParameterRange, Surface},
+    geometry::{
+        Curve, CurveSpan, GeometryError, NurbsCurve, ParameterDomain, ParameterRange, Surface,
+    },
 };
 use exedra_compile::NativeSource;
 use exedra_constructive::{ir::Placement3, profile::SegTag};
@@ -26,7 +28,19 @@ impl Encoder {
     fn frame(&mut self, frame: Placement3) {
         self.scalars.extend(frame.rows.into_iter().flatten());
     }
-    fn curve(&mut self, curve: &Curve) {
+    /// A NURBS curve: its order, knot and control counts, and whether it
+    /// has weights, then its knots, controls and weights.
+    fn nurbs<const N: usize>(&mut self, curve: &NurbsCurve<N>) -> Result<(), ArchiveError> {
+        self.words.push(curve.order());
+        self.count(curve.knots().len())?;
+        self.count(curve.points().len())?;
+        self.words.push(u32::from(curve.weights().is_some()));
+        self.scalars.extend(curve.knots());
+        self.scalars.extend(curve.points().iter().flatten());
+        self.scalars.extend(curve.weights().unwrap_or(&[]));
+        Ok(())
+    }
+    fn curve(&mut self, curve: &Curve) -> Result<(), ArchiveError> {
         match curve {
             Curve::Line(v) => {
                 self.words.push(0);
@@ -43,9 +57,14 @@ impl Encoder {
                 self.frame(v.frame());
                 self.scalars.extend([v.semi_major(), v.semi_minor()]);
             }
+            Curve::Nurbs(v) => {
+                self.words.push(3);
+                self.nurbs(v.curve())?;
+            }
         }
+        Ok(())
     }
-    fn surface(&mut self, surface: &Surface) {
+    fn surface(&mut self, surface: &Surface) -> Result<(), ArchiveError> {
         match surface {
             Surface::Plane(v) => {
                 self.words.push(0);
@@ -74,12 +93,13 @@ impl Encoder {
             Surface::Ruled(v) => {
                 self.words.push(5);
                 for span in v.curves() {
-                    self.curve(span.curve());
+                    self.curve(span.curve())?;
                     self.words.push(u32::from(span.reversed()));
                     self.scalars.extend(span.range().bounds());
                 }
             }
         }
+        Ok(())
     }
 }
 pub(super) fn capture(
@@ -96,11 +116,23 @@ pub(super) fn capture(
         NativeGeometryRef::Body { body, .. } => capture_body(body, source, limits),
     }
 }
-fn curve_size(curve: &Curve) -> usize {
+/// The words and scalars a NURBS curve takes after its kind.
+fn nurbs_size<const N: usize>(curve: &NurbsCurve<N>) -> (usize, usize) {
+    let scalars = curve.knots().len()
+        + curve.points().len().saturating_mul(N)
+        + curve.weights().map_or(0, <[f64]>::len);
+    (4, scalars)
+}
+/// The words and scalars a curve takes, its kind included.
+fn curve_size(curve: &Curve) -> (usize, usize) {
     match curve {
-        Curve::Line(_) => 6,
-        Curve::Circle(_) => 13,
-        Curve::Ellipse(_) => 14,
+        Curve::Line(_) => (1, 6),
+        Curve::Circle(_) => (1, 13),
+        Curve::Ellipse(_) => (1, 14),
+        Curve::Nurbs(v) => {
+            let (words, scalars) = nurbs_size(v.curve());
+            (1 + words, scalars)
+        }
     }
 }
 fn surface_size(surface: &Surface) -> (usize, usize) {
@@ -108,13 +140,13 @@ fn surface_size(surface: &Surface) -> (usize, usize) {
         Surface::Plane(_) => (1, 12),
         Surface::Cylinder(_) | Surface::Sphere(_) => (1, 13),
         Surface::Cone(_) | Surface::Torus(_) => (1, 14),
-        Surface::Ruled(v) => (
-            5,
-            v.curves()
-                .iter()
-                .map(|span| curve_size(span.curve()) + 2)
-                .sum(),
-        ),
+        Surface::Ruled(v) => v.curves().iter().fold((1, 0), |(words, scalars), span| {
+            let (w, s) = curve_size(span.curve());
+            (
+                words.saturating_add(w + 1),
+                scalars.saturating_add(s.saturating_add(2)),
+            )
+        }),
     }
 }
 fn preflight<F, E>(
@@ -136,8 +168,9 @@ fn preflight<F, E>(
     for edge in body.edges() {
         words = words.saturating_add(3);
         if let Some((curve, _)) = edge.regular() {
-            words = words.saturating_add(1);
-            scalars = scalars.saturating_add(curve_size(curve) + 2);
+            let (curve_words, curve_scalars) = curve_size(curve);
+            words = words.saturating_add(curve_words);
+            scalars = scalars.saturating_add(curve_scalars.saturating_add(2));
         }
     }
     for ring in body.loops() {
@@ -172,10 +205,16 @@ fn preflight<F, E>(
         words = words.saturating_add(2).saturating_add(trims.curves.len());
         items = items.saturating_add(trims.curves.len());
         for curve in &trims.curves {
-            scalars = scalars.saturating_add(match curve {
-                TrimCurve::Line { .. } => 4,
-                TrimCurve::Harmonic { .. } => 10,
-            });
+            let (extra_words, curve_scalars) = match curve {
+                TrimCurve::Line { .. } => (0, 4),
+                TrimCurve::Harmonic { .. } => (0, 10),
+                TrimCurve::Nurbs { curve, .. } => {
+                    let (w, s) = nurbs_size(curve);
+                    (w, s.saturating_add(2))
+                }
+            };
+            words = words.saturating_add(extra_words);
+            scalars = scalars.saturating_add(curve_scalars);
         }
     }
     if words > limits.topology_words {
@@ -220,7 +259,7 @@ fn capture_body<F, E>(
         out.words.extend([edge.start.0, edge.end.0]);
         if let Some((curve, range)) = edge.regular() {
             out.words.push(1);
-            out.curve(curve);
+            out.curve(curve)?;
             out.scalars.extend(range.bounds());
         } else {
             out.words.push(0);
@@ -235,7 +274,7 @@ fn capture_body<F, E>(
     }
     out.count(body.faces().len())?;
     for (index, face) in body.faces().iter().enumerate() {
-        out.surface(&face.surface);
+        out.surface(&face.surface)?;
         out.scalars.extend(face.domain.u.bounds());
         out.scalars.extend(face.domain.v.bounds());
         out.words.push(u32::from(face.sense == Sense::Reverse));
@@ -277,6 +316,11 @@ fn capture_body<F, E>(
                     for values in [*origin, *linear, *cosine, *sine, range.bounds()] {
                         out.scalars.extend(values);
                     }
+                }
+                TrimCurve::Nurbs { curve, range } => {
+                    out.words.push(2);
+                    out.nurbs(curve)?;
+                    out.scalars.extend(range.bounds());
                 }
             }
         }
@@ -322,7 +366,7 @@ struct Decoder<'a> {
     index: usize,
 }
 impl Decoder<'_> {
-    fn geometry(&self, error: exedra_analytic::geometry::GeometryError) -> ArchiveError {
+    fn geometry(&self, error: GeometryError) -> ArchiveError {
         ArchiveError::Geometry {
             record: self.record,
             index: self.index,
@@ -406,6 +450,30 @@ impl Decoder<'_> {
         let [min, max] = self.values("parameter range")?;
         ParameterRange::new(min, max).map_err(|error| self.geometry(error))
     }
+    /// A NURBS curve, as [`Encoder::nurbs`] writes it.
+    fn nurbs<const N: usize>(&mut self) -> Result<NurbsCurve<N>, ArchiveError> {
+        let order = self.word("nurbs order")?;
+        let knots = self.count("nurbs knot count", 0, 1)?;
+        let points = self.count("nurbs control count", 0, N)?;
+        let weighted = self.boolean("nurbs weights")?;
+        let knots = (0..knots)
+            .map(|_| self.values::<1>("nurbs knot").map(|[k]| k))
+            .collect::<Result<Vec<_>, _>>()?;
+        let points = (0..points)
+            .map(|_| self.values::<N>("nurbs control"))
+            .collect::<Result<Vec<_>, _>>()?;
+        let weights = if weighted {
+            Some(
+                (0..points.len())
+                    .map(|_| self.values::<1>("nurbs weight").map(|[w]| w))
+                    .collect::<Result<Vec<_>, _>>()?,
+            )
+        } else {
+            None
+        };
+        NurbsCurve::new(order, knots, points, weights)
+            .map_err(|error| self.geometry(GeometryError::Nurbs(error)))
+    }
     fn curve(&mut self) -> Result<Curve, ArchiveError> {
         match self.word("curve kind")? {
             0 => Curve::line(self.values("line origin")?, self.values("line direction")?)
@@ -419,6 +487,10 @@ impl Decoder<'_> {
                 let frame = self.frame()?;
                 let [major, minor] = self.values("ellipse radii")?;
                 Curve::ellipse(frame, major, minor).map_err(|error| self.geometry(error))
+            }
+            3 => {
+                let curve = self.nurbs()?;
+                Curve::nurbs(curve).map_err(|error| self.geometry(error))
             }
             _ => Err(self.error("curve kind")),
         }
@@ -645,6 +717,10 @@ pub(super) fn restore_streams(
                     sine: input.values("trim sine")?,
                     range: input.range()?,
                 },
+                2 => TrimCurve::Nurbs {
+                    curve: input.nurbs()?,
+                    range: input.range()?,
+                },
                 _ => return Err(input.error("trim curve kind")),
             });
         }
@@ -690,6 +766,31 @@ mod tests {
             Curve::line([-0.0, 1.0, 2.0], [0.3, 0.7, -0.0]).unwrap(),
             Curve::circle(frame, 1.23456789012345).unwrap(),
             Curve::ellipse(frame, 3.12345678901234, 1.23456789012345).unwrap(),
+            Curve::nurbs(
+                NurbsCurve::new(
+                    3,
+                    vec![-0.0, -0.0, -0.0, 0.123456789012345, 1.0, 1.0, 1.0],
+                    vec![
+                        [-0.0, 1.0, 2.0],
+                        [0.3, 0.7, -0.0],
+                        [1.2345678901234, -2.0, 0.5],
+                        [3.0, 1.0, 0.25],
+                    ],
+                    Some(vec![1.0, core::f64::consts::FRAC_1_SQRT_2, 2.5, 1.0]),
+                )
+                .unwrap(),
+            )
+            .unwrap(),
+            Curve::nurbs(
+                NurbsCurve::new(
+                    2,
+                    vec![0.0, 0.0, 1.0, 1.0],
+                    vec![[0.0; 3], [1.0, 2.0, 3.0]],
+                    None,
+                )
+                .unwrap(),
+            )
+            .unwrap(),
         ];
         let a = CurveSpan::new(
             Curve::line([-0.0, 0.0, 0.0], [2.0, 0.0, 0.0]).unwrap(),
@@ -716,10 +817,10 @@ mod tests {
             scalars: vec![],
         };
         for c in &curves {
-            original.curve(c);
+            original.curve(c).unwrap();
         }
         for s in &surfaces {
-            original.surface(s);
+            original.surface(s).unwrap();
         }
         let mut input = decoder(&original.words, &original.scalars);
         let mut again = Encoder {
@@ -729,12 +830,12 @@ mod tests {
         for expected in curves {
             let actual = input.curve().unwrap();
             assert_eq!(actual, expected);
-            again.curve(&actual);
+            again.curve(&actual).unwrap();
         }
         for expected in surfaces {
             let actual = input.surface().unwrap();
             assert_eq!(actual, expected);
-            again.surface(&actual);
+            again.surface(&actual).unwrap();
         }
         assert_eq!(again.words, original.words);
         assert_eq!(
@@ -762,7 +863,7 @@ mod tests {
                 index: 23,
                 word: 1,
                 scalar: 6,
-                error: exedra_analytic::geometry::GeometryError::ZeroDirection
+                error: GeometryError::ZeroDirection
             })
         ));
         let mut input = decoder(&[99], &[]);

@@ -2,7 +2,6 @@
 // SPDX-License-Identifier: Apache-2.0 OR MIT
 
 use super::*;
-use crate::geometry::Curve;
 use crate::{
     body::{EdgeGeometry, Sense},
     extrusion::Extrusion,
@@ -190,17 +189,7 @@ fn placed(mut body: Body, frame: Placement3) -> Body {
     }
     for edge in &mut parts.edges {
         if let EdgeGeometry::Curve { curve, .. } = &mut edge.geometry {
-            *curve = match curve {
-                Curve::Line(l) => Curve::line(
-                    frame.transform_point(l.origin()),
-                    frame.transform_vector(l.direction()),
-                )
-                .unwrap(),
-                Curve::Circle(c) => Curve::circle(frame * c.frame(), c.radius()).unwrap(),
-                Curve::Ellipse(e) => {
-                    Curve::ellipse(frame * e.frame(), e.semi_major(), e.semi_minor()).unwrap()
-                }
-            };
+            *curve = curve.transformed(frame).unwrap();
         }
     }
     for face in &mut parts.faces {
@@ -425,7 +414,11 @@ fn eccentric_partial_ellipse_near_tangent_endpoint_refuses_uncertain_crossing() 
     // displacement is within the 1e-12 allowance. allowance/radius would skip
     // it as certainly outside; sensitivity requires an ambiguous retry.
     let point = [-200.0, libm::sin(end) + 5e-13];
-    assert_eq!(arc.crossing(point, [1.0, 0.0], 1e-12), None);
+    let mut meter = Meter {
+        work: QueryWork::default(),
+        maximum: usize::MAX,
+    };
+    assert_eq!(arc.crossing(point, [1.0, 0.0], 1e-12, &mut meter), Ok(None));
     let start = core::f64::consts::FRAC_PI_2 + 1e-4;
     let arc = Curve2::Conic {
         center: [0.0; 2],
@@ -435,8 +428,13 @@ fn eccentric_partial_ellipse_near_tangent_endpoint_refuses_uncertain_crossing() 
         reversed: false,
     };
     assert_eq!(
-        arc.crossing([-200.0, libm::sin(start) + 5e-13], [1.0, 0.0], 1e-12),
-        None
+        arc.crossing(
+            [-200.0, libm::sin(start) + 5e-13],
+            [1.0, 0.0],
+            1e-12,
+            &mut meter
+        ),
+        Ok(None)
     );
 }
 
@@ -471,5 +469,166 @@ fn prepared_inverse_preserves_native_inverse_arithmetic() {
                 native.map(f64::to_bits)
             );
         }
+    }
+}
+
+#[test]
+fn points_are_classified_against_spline_trims() {
+    use trim::{Curve2, Region, classify};
+    let body = Body::try_from_parts(
+        crate::nurbs_tests::d_face(),
+        &ValidationPolicy { max_gap: 1e-9 },
+    )
+    .unwrap();
+    let face = FaceId(0);
+    let curves: Vec<Curve2> = body.loops()[0]
+        .coedges
+        .iter()
+        .map(|&co| Curve2::from_edge(&body, face, co).unwrap())
+        .collect();
+    // The D as a fine polygon: the bulge's samples, closed by the line.
+    let bulge = crate::nurbs_tests::bulge(0.0);
+    let outline: Vec<[f64; 2]> = (0..=4000)
+        .map(|i| {
+            let p = bulge.view().evaluate(2.0 * f64::from(i) / 4000.0);
+            [p[0], p[1]]
+        })
+        .collect();
+    let inside_outline = |p: [f64; 2]| {
+        let mut inside = false;
+        for (a, b) in outline.iter().zip(outline.iter().cycle().skip(1)) {
+            if (a[1] > p[1]) != (b[1] > p[1])
+                && p[0] < a[0] + (p[1] - a[1]) / (b[1] - a[1]) * (b[0] - a[0])
+            {
+                inside = !inside;
+            }
+        }
+        inside
+    };
+    let clear = |p: [f64; 2]| {
+        outline
+            .iter()
+            .zip(outline.iter().cycle().skip(1))
+            .all(|(a, b)| {
+                let d = [b[0] - a[0], b[1] - a[1]];
+                let t = (((p[0] - a[0]) * d[0] + (p[1] - a[1]) * d[1])
+                    / (d[0] * d[0] + d[1] * d[1]))
+                    .clamp(0.0, 1.0);
+                libm::hypot(p[0] - a[0] - t * d[0], p[1] - a[1] - t * d[1]) > 1e-3
+            })
+    };
+    let mut meter = Meter {
+        work: QueryWork::default(),
+        maximum: usize::MAX,
+    };
+    let mut checked = 0;
+    for i in 0..=50 {
+        for j in 0..=35 {
+            let p = [-0.5 + 0.1 * f64::from(i), -0.5 + 0.1 * f64::from(j)];
+            if !clear(p) {
+                continue;
+            }
+            let region = classify(&curves, p, 1e-9, &mut meter).unwrap();
+            let expected = if inside_outline(p) {
+                Region::Inside
+            } else {
+                Region::Outside
+            };
+            assert_eq!(region, expected, "{p:?}");
+            checked += 1;
+        }
+    }
+    assert!(checked > 1500, "{checked}");
+    // Points on the spline are on the boundary.
+    for t in [0.1, 0.77, 1.5] {
+        let p = bulge.view().evaluate(t);
+        let region = classify(&curves, [p[0], p[1]], 1e-9, &mut meter).unwrap();
+        assert_eq!(region, Region::Edge, "{t}");
+    }
+}
+
+#[test]
+fn spline_trim_subdivision_is_charged_to_the_work_limit() {
+    use crate::geometry::{NurbsCurve, ParameterRange};
+    use trim::{Curve2, classify};
+    // A rational line whose weights crowd nearly all of it into the first
+    // 2^-40 of its parameter: its speed bound is about 2^40, so proving a
+    // point two units away is not near it takes about 2^40 pieces.
+    let curve = NurbsCurve::<2>::new(
+        2,
+        vec![0.0, 0.0, 1.0, 1.0],
+        vec![[0.0, 0.0], [1.0, 0.0]],
+        Some(vec![1.0, libm::ldexp(1.0, 40)]),
+    )
+    .unwrap();
+    let speed = curve
+        .view()
+        .prepare()
+        .range_bounds([0.0, 1.0])
+        .unwrap()
+        .first;
+    let curves = [Curve2::Nurbs {
+        curve,
+        range: ParameterRange::UNIT,
+        speed,
+        reversed: false,
+    }];
+    let mut meter = Meter {
+        work: QueryWork::default(),
+        maximum: 1000,
+    };
+    let result = classify(&curves, [0.0, 2.0], 1e-9, &mut meter);
+    let Err(QueryError::WorkLimit { work, maximum }) = result else {
+        panic!("{result:?}");
+    };
+    assert_eq!((work.total(), maximum), (1000, 1000));
+    assert_eq!(work.trim_tests, 1);
+    assert_eq!(work.subdivisions, 999);
+    // Counting a ray's crossings subdivides as finely, and is charged alike.
+    let mut meter = Meter {
+        work: QueryWork::default(),
+        maximum: 1000,
+    };
+    let result = curves[0].crossing([-1.0, 0.5], [1.0, 0.0], 1e-9, &mut meter);
+    let Err(QueryError::WorkLimit { work, .. }) = result else {
+        panic!("{result:?}");
+    };
+    assert_eq!(work.subdivisions, 1000);
+}
+
+#[test]
+fn spline_trims_cross_alike_under_the_slightest_weights() {
+    use crate::geometry::{NurbsCurve, ParameterRange};
+    use trim::Curve2;
+    // A short upright segment, weighted alike: scaling every weight down to
+    // 2^-256 moves no point, so a ray meets it however slight they are.
+    let slightest = libm::ldexp(1.0, -256);
+    for w in [1.0, slightest] {
+        let curve = NurbsCurve::<2>::new(
+            2,
+            vec![0.0, 0.0, 1.0, 1.0],
+            vec![[1e-8, 0.0], [1e-8, 1e-8]],
+            Some(vec![w, w]),
+        )
+        .unwrap();
+        let speed = curve
+            .view()
+            .prepare()
+            .range_bounds([0.0, 1.0])
+            .unwrap()
+            .first;
+        assert!(speed >= 1e-8, "{w}: {speed}");
+        let segment = Curve2::Nurbs {
+            curve,
+            range: ParameterRange::UNIT,
+            speed,
+            reversed: false,
+        };
+        let mut meter = Meter {
+            work: QueryWork::default(),
+            maximum: usize::MAX,
+        };
+        let crossing = segment.crossing([0.0, 2.5e-9], [1.0, 0.0], 1e-12, &mut meter);
+        assert_eq!(crossing.map(|c| c.map(i32::abs)), Ok(Some(1)), "{w}");
     }
 }

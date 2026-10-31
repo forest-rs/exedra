@@ -31,6 +31,11 @@ pub(super) enum SurfaceSupport {
         major_radius: f64,
         minor_radius: f64,
     },
+    /// A ruled patch written as a B-spline surface; `reach` is its largest
+    /// control coordinate.
+    BSpline {
+        reach: f64,
+    },
 }
 
 pub(super) fn surface_support(
@@ -61,10 +66,18 @@ pub(super) fn surface_support(
             minor_radius: t.minor_radius(),
         }),
         Surface::Sphere(s) => Ok(SurfaceSupport::Sphere { radius: s.radius() }),
-        Surface::Ruled(_) => Err(StepError::UnsupportedSurface {
-            face,
-            family: "ruled",
-        }),
+        Surface::Ruled(ruled) => {
+            let rows = ruled.nurbs_rows().ok_or(StepError::UnsupportedSurface {
+                face,
+                family: "ruled patch no B-spline surface represents exactly",
+            })?;
+            let reach = rows
+                .iter()
+                .flat_map(|row| row.points().iter().flatten())
+                .map(|v| v.abs())
+                .fold(0.0, f64::max);
+            Ok(SurfaceSupport::BSpline { reach })
+        }
     }
 }
 
@@ -243,6 +256,7 @@ pub(super) fn prepare<F, E>(
                 }
                 major_radius + minor_radius
             }
+            SurfaceSupport::BSpline { reach } => reach,
         };
         scale = scale.max(magnitude(face.surface.frame().rows.map(|r| r[3])) + radius);
         for &loop_id in &face.loops {
@@ -293,11 +307,19 @@ pub(super) fn prepare<F, E>(
                 }
                 scale = scale.max(magnitude(l.origin()));
             }
+            Curve::Nurbs(nurbs) => {
+                scale = nurbs
+                    .curve()
+                    .points()
+                    .iter()
+                    .map(|&p| magnitude(p))
+                    .fold(scale, f64::max);
+            }
             curve => {
                 let (frame, radius) = match curve {
                     Curve::Circle(c) => (c.frame(), c.radius()),
                     Curve::Ellipse(e) => (e.frame(), e.semi_major()),
-                    Curve::Line(_) => unreachable!(),
+                    Curve::Line(_) | Curve::Nurbs(_) => unreachable!(),
                 };
                 let span = range.span();
                 let full = (span - core::f64::consts::TAU).abs()

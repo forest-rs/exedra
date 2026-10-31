@@ -755,6 +755,30 @@ impl Identity {
                 self.frame(v.frame());
                 self.values([v.semi_major(), v.semi_minor()]);
             }
+            Curve::Nurbs(v) => {
+                self.word(3);
+                self.nurbs(v.curve());
+            }
+        }
+    }
+    fn nurbs<const N: usize>(&mut self, curve: &exedra_analytic::geometry::NurbsCurve<N>) {
+        self.word(u64::from(curve.order()));
+        self.word(curve.knots().len() as u64);
+        for &knot in curve.knots() {
+            self.values([knot]);
+        }
+        self.word(curve.points().len() as u64);
+        for &point in curve.points() {
+            self.values(point);
+        }
+        match curve.weights() {
+            None => self.word(0),
+            Some(weights) => {
+                self.word(1);
+                for &weight in weights {
+                    self.values([weight]);
+                }
+            }
         }
     }
     fn surface(&mut self, surface: &exedra_analytic::geometry::Surface) {
@@ -842,6 +866,11 @@ impl Identity {
                         self.values(*linear);
                         self.values(*cosine);
                         self.values(*sine);
+                        self.values(range.bounds());
+                    }
+                    exedra_analytic::body::TrimCurve::Nurbs { curve, range } => {
+                        self.word(2);
+                        self.nurbs(curve);
                         self.values(range.bounds());
                     }
                 }

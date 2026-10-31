@@ -3,7 +3,7 @@
 
 //! Regular ruled patches between two bounded line/circle curves.
 
-use super::{Curve, CurveEvaluation, GeometryError, ParameterRange};
+use super::{Curve, CurveEvaluation, GeometryError, NurbsCurve, ParameterRange};
 use exedra_math::{add, cross, dot, lerp, norm, normalize, scale, sub};
 
 /// A bounded source curve traversed over a normalized parameter in `[0,1]`.
@@ -53,16 +53,48 @@ impl CurveSpan {
         &self,
         frame: exedra_math::Placement3,
     ) -> Result<Self, GeometryError> {
-        let curve = match &self.curve {
-            Curve::Line(l) => Curve::line(
-                frame.transform_point(l.origin()),
-                super::vector(frame, l.direction()),
-            )?,
-            Curve::Circle(c) => Curve::circle(frame * c.frame(), c.radius())?,
-            Curve::Ellipse(e) => Curve::ellipse(frame * e.frame(), e.semi_major(), e.semi_minor())?,
-        };
+        let curve = self.curve.transformed(frame)?;
         Self::new(curve, self.range, self.reversed)
     }
+    /// The span as a NURBS curve over `[0, 1]`, traced in its normalized
+    /// direction: exactly the same points. Lines and NURBS spans keep their
+    /// normalized parameter too; a conic becomes rational quadratic arcs,
+    /// whose parameter is not proportional to angle. `None` where the
+    /// conversion overflows.
+    #[must_use]
+    pub fn nurbs(&self) -> Option<NurbsCurve> {
+        let [lo, hi] = self.range.bounds();
+        let conic = |center: [f64; 3], x: [f64; 3], y: [f64; 3]| {
+            NurbsCurve::arc(center, x, y, [lo, hi])?.with_domain([0.0, 1.0])
+        };
+        let curve = match &self.curve {
+            Curve::Line(_) => NurbsCurve::line(
+                self.curve.evaluate(lo)?.point,
+                self.curve.evaluate(hi)?.point,
+            )?,
+            Curve::Nurbs(n) => n.piece(self.range)?.with_domain([0.0, 1.0])?,
+            Curve::Circle(c) => {
+                let f = c.frame();
+                let axis = |i: usize| scale(f.rows.map(|r| r[i]), c.radius());
+                conic(f.rows.map(|r| r[3]), axis(0), axis(1))?
+            }
+            Curve::Ellipse(e) => {
+                let f = e.frame();
+                let axis = |i: usize, r: f64| scale(f.rows.map(|row| row[i]), r);
+                conic(
+                    f.rows.map(|r| r[3]),
+                    axis(0, e.semi_major()),
+                    axis(1, e.semi_minor()),
+                )?
+            }
+        };
+        Some(if self.reversed {
+            curve.reversed()
+        } else {
+            curve
+        })
+    }
+
     /// Evaluates the bounded curve, with derivatives in normalized parameter units.
     #[must_use]
     pub fn evaluate(&self, fraction: f64) -> Option<CurveEvaluation> {
@@ -81,9 +113,19 @@ impl CurveSpan {
             .all(f64::is_finite)
             .then_some(e)
     }
+    /// Bounds of a NURBS span's piece over its range, in curve units.
+    fn nurbs_bounds(&self) -> Option<exedra_curves::RangeBounds> {
+        let Curve::Nurbs(n) = &self.curve else {
+            return None;
+        };
+        n.curve().view().prepare().range_bounds(self.range.bounds())
+    }
     pub(crate) fn speed(&self) -> f64 {
         match &self.curve {
             Curve::Line(l) => norm(l.direction()) * self.range.span(),
+            Curve::Nurbs(_) => self
+                .nurbs_bounds()
+                .map_or(f64::INFINITY, |b| b.first * self.range.span()),
             curve => {
                 curve.harmonic().expect("harmonic curve").1[0]
                     * self.range.span()
@@ -94,6 +136,9 @@ impl CurveSpan {
     pub(crate) fn second_bound(&self) -> f64 {
         match &self.curve {
             Curve::Line(_) => 0.0,
+            Curve::Nurbs(_) => self.nurbs_bounds().map_or(f64::INFINITY, |b| {
+                b.second * self.range.span() * self.range.span()
+            }),
             curve => {
                 curve.harmonic().expect("harmonic curve").1[0]
                     * self.range.span()
@@ -103,6 +148,15 @@ impl CurveSpan {
         }
     }
     pub(crate) fn magnitude(&self) -> f64 {
+        if let Curve::Nurbs(_) = self.curve {
+            return self.nurbs_bounds().map_or(f64::INFINITY, |b| {
+                b.bounds
+                    .iter()
+                    .flatten()
+                    .map(|v| v.abs())
+                    .fold(0.0, f64::max)
+            });
+        }
         match self.curve.harmonic() {
             Some((frame, radii)) => {
                 frame
@@ -167,6 +221,33 @@ impl CurveSpan {
                                 .map(f64::abs)
                                 .fold(other.range.span(), f64::max))
             }
+            (Curve::Nurbs(a), Curve::Nurbs(b)) => {
+                // Over the same range in the same sense, two splines of one
+                // order, knot vector and weights differ by the spline of
+                // their controls' differences, which no point exceeds.
+                let (a, b) = (a.curve(), b.curve());
+                if self.range != other.range
+                    || self.reversed != other.reversed
+                    || a.order() != b.order()
+                    || a.knots() != b.knots()
+                    || a.weights() != b.weights()
+                {
+                    return f64::INFINITY;
+                }
+                let scale = a
+                    .points()
+                    .iter()
+                    .chain(b.points())
+                    .flatten()
+                    .map(|v| v.abs())
+                    .fold(1.0, f64::max);
+                a.points()
+                    .iter()
+                    .zip(b.points())
+                    .map(|(p, q)| norm(sub(*p, *q)))
+                    .fold(0.0, f64::max)
+                    + 8.0 * f64::EPSILON * scale
+            }
             _ => f64::INFINITY,
         }
     }
@@ -184,6 +265,15 @@ pub struct Ruled {
 }
 impl Ruled {
     pub(super) fn new(a: CurveSpan, b: CurveSpan) -> Result<Self, GeometryError> {
+        // The bounds below take each span's tangent as Lipschitz, with its
+        // second-derivative bound; across a corner it is not.
+        for span in [&a, &b] {
+            if let Curve::Nurbs(n) = &span.curve
+                && let Some(knot) = n.kink(span.range)
+            {
+                return Err(GeometryError::Kinked { knot });
+            }
+        }
         let mut result = Self {
             curves: [a, b],
             mixed_bound: 0.0,
@@ -245,6 +335,35 @@ impl Ruled {
     #[must_use]
     pub const fn curves(&self) -> &[CurveSpan; 2] {
         &self.curves
+    }
+
+    /// The patch as a B-spline surface, where one traces this patch
+    /// exactly: its two source curves as NURBS of one order over one knot
+    /// vector ([`NurbsCurve::compatible`]), the rows of a surface linear in V.
+    ///
+    /// The rows interpolated at equal parameters trace the patch, each
+    /// ruling joining the same two points, only when both rows keep their
+    /// spans' parameters, as lines and NURBS spans do, or both are conics of
+    /// equal sweep in the same sense, whose arcs share one parameter; and
+    /// when both rows have the same weights, or the rational surface would
+    /// bend its rulings. `None` otherwise. The surface keeps the patch's
+    /// points, not its parameters: for conics, its U at a ruling is the
+    /// arcs' rational parameter, not the patch's angular one.
+    #[must_use]
+    pub fn nurbs_rows(&self) -> Option<[NurbsCurve; 2]> {
+        let [a, b] = &self.curves;
+        let keeps = |s: &CurveSpan| matches!(s.curve, Curve::Line(_) | Curve::Nurbs(_));
+        let conic = |s: &CurveSpan| s.curve.harmonic().is_some();
+        let shared = (keeps(a) && keeps(b))
+            || (conic(a)
+                && conic(b)
+                && a.range.span() == b.range.span()
+                && a.reversed == b.reversed);
+        if !shared {
+            return None;
+        }
+        let (a, b) = a.nurbs()?.compatible(&b.nurbs()?)?;
+        (a.weights() == b.weights()).then_some([a, b])
     }
     pub(super) fn evaluation(&self, uv: [f64; 2]) -> Option<super::SurfaceEvaluation> {
         if !ParameterRange::UNIT.contains(uv[1]) {

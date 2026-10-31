@@ -118,7 +118,7 @@ fn bore_info(source: &exedra_analytic::bore::BoredPlate) -> Result<Value, Error>
         let (major,minor,local_center)=match curve {
             Curve::Ellipse(e)=>(e.semi_major(),e.semi_minor(),e.frame().transform_point([0.0;3])),
             Curve::Circle(c)=>(c.radius(),c.radius(),c.frame().transform_point([0.0;3])),
-            Curve::Line(_)=>return Err(Error::new("inspection.boreRim","part.inspect","Native bore rim is not a conic")),
+            Curve::Line(_)|Curve::Nurbs(_)=>return Err(Error::new("inspection.boreRim","part.inspect","Native bore rim is not a conic")),
         };
         let document_center=frame.transform_point(local_center);
         if document_center.iter().chain([&major,&minor]).any(|v|!v.is_finite()){return Err(Error::new("bore.numericLimit","part.inspect","Placed native rim evidence exceeds finite f64 values"));}
@@ -213,11 +213,8 @@ mod tests {
         .unwrap();
         let value = metadata(&NativeSource::from(loft), &BTreeMap::new()).unwrap();
         assert_eq!(value["family"], "loft");
-        assert_eq!(value["stepSupport"]["status"], "unsupported");
-        assert_eq!(
-            value["stepSupport"]["diagnostic"]["geometryFamily"],
-            "ruled"
-        );
+        // Its ruled walls export exactly as B-spline surfaces.
+        assert_eq!(value["stepSupport"]["status"], "supported");
         for measure in ["volume", "surfaceArea"] {
             assert_eq!(value["measurements"][measure]["status"], "unavailable");
             assert_eq!(

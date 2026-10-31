@@ -195,10 +195,10 @@ impl CubicBasis {
 /// A curve's point and its first two derivatives at one parameter, each
 /// with respect to the parameter the producing function names.
 ///
-/// The fields follow `exedra_analytic`'s `CurveEvaluation`, generalized
-/// to values of any dimension, so positions and attributes evaluate alike.
+/// Values of any dimension evaluate alike, positions and attributes; space
+/// curves are the default.
 #[derive(Clone, Copy, Debug, PartialEq)]
-pub struct CurveEvaluation<const N: usize> {
+pub struct CurveEvaluation<const N: usize = 3> {
     /// The point (or value).
     pub point: [f64; N],
     /// The first derivative.

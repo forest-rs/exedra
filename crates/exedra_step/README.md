@@ -7,9 +7,19 @@ features select the same numeric backends as the analytic head.
 `export_body(&body, placement, &StepOptions)` writes a deterministic ISO 10303-21
 text document declaring AP214 `AUTOMOTIVE_DESIGN`. The first supported solid
 family is one connected, oriented closed shell with planar, cylindrical, conical
-spherical and regular ring-toroidal supporting faces and line/circle/ellipse edges. This
+spherical and regular ring-toroidal supporting faces, ruled patches that a B-spline
+surface represents exactly, and line/circle/ellipse/NURBS edges. This
 covers exact extrusions, through holes, blind pockets, supported axial finishes,
-and supported line/arc revolutions. Certified spherical pole boundaries
+supported line/arc revolutions, and lofts whose walls are ruled between lines or
+between arcs of equal sweep.
+
+NURBS edges are written as `B_SPLINE_CURVE_WITH_KNOTS`, rational ones as the
+complex instance with `RATIONAL_B_SPLINE_CURVE`. A ruled patch is written as a
+B-spline surface of degree one across, whose two rows are its source curves
+made one order over one knot vector. That surface is the patch only when both
+rows keep their spans' parameters (lines and NURBS spans), or are conics of equal
+sweep, and carry the same weights; any other ruled patch is refused, not
+approximated. Certified spherical pole boundaries
 have explicit point topology. Multiple boundary shells are supported for exact
 rectilinear solids: one connected material component with disjoint closed
 cavities. Other multi-shell support families, disconnected solids, touching or

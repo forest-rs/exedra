@@ -78,7 +78,8 @@ pub struct QueryWork {
     pub trim_tests: usize,
     /// Analytic ray/support intersection tests, including misses and retries.
     pub intersection_tests: usize,
-    /// Interval nodes used to resolve elliptic edge distance thresholds.
+    /// Interval nodes used to resolve conic and NURBS edge distance
+    /// thresholds and NURBS trim predicates.
     pub subdivisions: usize,
     /// 3D ray directions started; not an additional work unit.
     pub ray_attempts: usize,
@@ -253,6 +254,9 @@ enum EdgeQuery {
         singular: f64,
         speed: f64,
     },
+    /// A NURBS edge, searched by subdivision: `speed` bounds `|C'|` over
+    /// its range.
+    Nurbs { speed: f64 },
 }
 #[derive(Debug)]
 struct PreparedEdge {
@@ -262,8 +266,19 @@ struct PreparedEdge {
 impl PreparedEdge {
     fn new<F, E>(body: &Body<F, E>, id: EdgeId) -> Option<Self> {
         let edge = &body.edges()[id.index()];
-        let (curve, _) = edge.regular()?;
-        let geometry = if let Some((frame, axes)) = curve.harmonic() {
+        let (curve, range) = edge.regular()?;
+        let geometry = if let crate::geometry::Curve::Nurbs(nurbs) = curve {
+            let speed = nurbs
+                .curve()
+                .view()
+                .prepare()
+                .range_bounds(range.bounds())?
+                .first;
+            if !speed.is_finite() {
+                return None;
+            }
+            EdgeQuery::Nurbs { speed }
+        } else if let Some((frame, axes)) = curve.harmonic() {
             let cols = [0, 1, 2].map(|i| frame.rows.map(|r| r[i]));
             let singular = libm::sqrt(
                 (0..3)
@@ -852,31 +867,35 @@ impl<F, E> SolidQuery<'_, F, E> {
                 Near::Unknown
             });
         }
-        let EdgeQuery::Conic {
-            inverse,
-            axes,
-            singular,
-            speed,
-        } = &prepared.geometry
-        else {
-            unreachable!("prepared conic")
-        };
-        let local = inverse
-            .point(point)
-            .ok_or_else(|| meter.numeric(None, allowance))?;
-        let radius = libm::hypot(local[0] / axes[0], local[1] / axes[1]);
-        let lower = singular * libm::hypot(axes[0].min(axes[1]) * (radius - 1.0).abs(), local[2]);
-        if !lower.is_finite() {
-            return Err(meter.numeric(None, allowance));
-        }
-        if lower > tolerance + allowance {
-            return Ok(Near::No);
-        }
         let [lo, hi] = range.bounds();
-        let theta = libm::atan2(local[1] / axes[1], local[0] / axes[0]);
-        let theta =
-            theta + core::f64::consts::TAU * libm::ceil((lo - theta) / core::f64::consts::TAU);
-        for t in [lo, hi, theta.clamp(lo, hi)] {
+        let (speed, guess) = match &prepared.geometry {
+            EdgeQuery::Conic {
+                inverse,
+                axes,
+                singular,
+                speed,
+            } => {
+                let local = inverse
+                    .point(point)
+                    .ok_or_else(|| meter.numeric(None, allowance))?;
+                let radius = libm::hypot(local[0] / axes[0], local[1] / axes[1]);
+                let lower =
+                    singular * libm::hypot(axes[0].min(axes[1]) * (radius - 1.0).abs(), local[2]);
+                if !lower.is_finite() {
+                    return Err(meter.numeric(None, allowance));
+                }
+                if lower > tolerance + allowance {
+                    return Ok(Near::No);
+                }
+                let theta = libm::atan2(local[1] / axes[1], local[0] / axes[0]);
+                let theta = theta
+                    + core::f64::consts::TAU * libm::ceil((lo - theta) / core::f64::consts::TAU);
+                (speed, theta.clamp(lo, hi))
+            }
+            EdgeQuery::Nurbs { speed } => (speed, lo + 0.5 * (hi - lo)),
+            EdgeQuery::Line { .. } => unreachable!("lines answered above"),
+        };
+        for t in [lo, hi, guess] {
             let witness = curve
                 .evaluate(t)
                 .ok_or_else(|| meter.numeric(None, allowance))?

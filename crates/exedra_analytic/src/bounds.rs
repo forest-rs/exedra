@@ -131,7 +131,8 @@ impl Curve {
     /// Conservative enclosure of a bounded curve in its coordinate system.
     ///
     /// Lines use their range endpoints. Circular/elliptic arcs use their entire
-    /// supporting curve, so short arcs may have deliberately loose bounds. No sampling or
+    /// supporting curve, so short arcs may have deliberately loose bounds.
+    /// NURBS curves use the controls of the piece over the range. No sampling or
     /// display-tolerance dependence is introduced.
     /// # Errors
     /// Returns [`BoundsError::NumericLimit`] on unrepresentable positions/extents.
@@ -152,6 +153,16 @@ impl Curve {
                         endpoints[1][k] = value[1];
                     }
                     bounds.include(endpoints)?;
+                }
+                bounds.finish()
+            }
+            Self::Nurbs(nurbs) => {
+                // The piece's controls hold it: each point is a convex
+                // combination of them.
+                let piece = nurbs.piece(range).ok_or_else(numeric)?;
+                let mut bounds = Bounds::new();
+                for &p in piece.points() {
+                    bounds.point(p)?;
                 }
                 bounds.finish()
             }

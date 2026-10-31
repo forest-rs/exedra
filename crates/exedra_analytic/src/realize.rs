@@ -43,9 +43,9 @@ pub struct RealizationPolicy {
     pub tolerance: f64,
     /// Allowed native endpoint/support agreement, separate from tessellation accuracy.
     pub geometry_gap: f64,
-    /// Minimum segments for a periodic circle or ellipse edge; at least four.
+    /// Minimum segments for a circle, ellipse or NURBS edge; at least four.
     pub min_arc_segments: u32,
-    /// Maximum segments for any periodic circle or ellipse edge in each attempt.
+    /// Maximum segments for any circle, ellipse or NURBS edge in each attempt.
     pub max_edge_segments: u32,
     /// Maximum emitted vertices in each attempt.
     pub max_vertices: u32,
@@ -668,6 +668,26 @@ impl<F, E> Body<F, E> {
                 if let Some((curve, range)) = edge.regular() {
                     match curve {
                         Curve::Line(_) => 1,
+                        Curve::Nurbs(nurbs) => {
+                            let edge = EdgeId(crate::usize_to_u32(i));
+                            let required = nurbs
+                                .edge_count(range, curve_tolerance)
+                                .ok_or(RealizationError::Sampling {
+                                    edge,
+                                    error: CircularSamplingError::EdgeCountOverflow,
+                                })?
+                                .max(policy.min_arc_segments);
+                            if required > policy.max_edge_segments {
+                                return Err(RealizationError::Sampling {
+                                    edge,
+                                    error: CircularSamplingError::ToleranceBudgetExceeded {
+                                        required,
+                                        maximum: policy.max_edge_segments,
+                                    },
+                                });
+                            }
+                            required
+                        }
                         curve => circular_edge_count(
                             curve.sampling_radius().expect("periodic curve"),
                             range.span(),
@@ -938,6 +958,10 @@ impl<F, E> Body<F, E> {
                 .any(|p| emitted[p[0] as usize] == emitted[p[1] as usize])
             {
                 return Err(RealizationError::CollapsedEdge { edge: id });
+            }
+            if let Curve::Nurbs(nurbs) = curve {
+                max_parameter_step = max_parameter_step.max((max - previous_parameter).abs());
+                curve_deviation = curve_deviation.max(nurbs.chord_bound(range, max_parameter_step));
             }
             if let Some(radius) = curve.sampling_radius() {
                 // Absolute parameter origins can make nominally equal steps
