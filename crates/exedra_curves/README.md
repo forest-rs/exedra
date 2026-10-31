@@ -26,6 +26,9 @@ Current scope:
 - `tube` and `ribbon`: triangles at a stated side count with a finite,
   nonnegative radius or width per station, outward-wound, a tube's normals
   following its taper, as plain `f64` buffers and a `SweepReport`;
+- arc length by stated Gauss-Legendre quadrature, with the parameter at a
+  length, and sampling refined to a chord or angle tolerance under a hard
+  cap;
 - an `_into` form of every allocating function, filling a caller's buffers
   with a reusable `Workspace` for scratch, so a retained caller allocates
   nothing in steady state.

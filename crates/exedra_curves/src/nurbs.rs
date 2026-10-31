@@ -167,7 +167,7 @@ const MAX_WEIGHT: f64 = f64::from_bits(0x4FF0_0000_0000_0000); // 2^256
 
 /// Runs `f` on a zeroed scratch buffer of `len` homogeneous points, on the
 /// stack up to [`INLINE_SCRATCH`].
-fn with_scratch<R>(len: usize, f: impl FnOnce(&mut [[f64; 4]]) -> R) -> R {
+pub(crate) fn with_scratch<R>(len: usize, f: impl FnOnce(&mut [[f64; 4]]) -> R) -> R {
     if len <= INLINE_SCRATCH {
         let mut inline = [[0.0; 4]; INLINE_SCRATCH];
         f(&mut inline[..len])
@@ -750,12 +750,21 @@ impl PreparedNurbs {
     }
 
     fn in_span(&self, span: usize, t: f64) -> CurveEvaluation<3> {
+        with_scratch(self.order, |scratch| self.in_span_with(span, t, scratch))
+    }
+
+    /// As [`Self::evaluation_in`], with `t` already in span `span` and
+    /// `scratch`, `order` long, for de Casteljau's scheme.
+    pub(crate) fn in_span_with(
+        &self,
+        span: usize,
+        t: f64,
+        scratch: &mut [[f64; 4]],
+    ) -> CurveEvaluation<3> {
         let (a, b) = (self.bounds[span], self.bounds[span + 1]);
         let first = span * self.order;
         let controls = &self.controls[first..first + self.order];
-        with_scratch(self.order, |scratch| {
-            span_evaluation(controls, a, b, t, scratch)
-        })
+        span_evaluation(controls, a, b, t, scratch)
     }
 }
 

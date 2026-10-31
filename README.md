@@ -64,8 +64,9 @@ Construction and extraction crates:
   dependency-free planar polygon triangulation and exact predicate seams.
 - **[exedra_curves](crates/exedra_curves/)** - Deterministic cubic (Bezier,
   B-spline, Catmull-Rom, Hermite) and rational B-spline evaluation with
-  derivatives, explicit per-span sampling, rotation-minimizing frames, and
-  tube and ribbon tessellation as plain buffers with count reports.
+  derivatives, explicit or tolerance-driven sampling, arc length,
+  rotation-minimizing frames, and tube and ribbon tessellation as plain
+  buffers with count reports.
 - **[exedra_primitives](crates/exedra_primitives/)** - Deterministic mesh
   primitive generators such as quads, boxes, grids, cylinders, cones, torus,
   UV spheres, and icospheres.

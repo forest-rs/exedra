@@ -2,12 +2,13 @@
 // SPDX-License-Identifier: Apache-2.0 OR MIT
 
 //! Deterministic curve geometry: cubic and rational B-spline evaluation,
-//! explicit sampling, rotation-minimizing frames, and tubes and ribbons.
+//! explicit sampling, rotation-minimizing frames, tubes and ribbons, and
+//! arc length and tolerance-driven sampling.
 //!
 //! The crate knows curves as mathematics and nothing of any scene format: a
 //! caller (a USD reader, a procedural generator) decides which controls
 //! form which spans, how its per-control data is laid out, and how finely
-//! to sample; this crate evaluates, frames and sweeps.
+//! to sample; this crate evaluates, frames, sweeps and measures.
 //!
 //! - **Cubic bases** ([`CubicBasis`]): Bezier, uniform B-spline,
 //!   Catmull-Rom and Hermite, as their explicit basis matrices (the
@@ -34,10 +35,16 @@
 //!   frames at a stated side count, with a finite, nonnegative radius or
 //!   width per station and a tube's surface normals following its taper, as
 //!   plain buffers and a [`SweepReport`] of their counts.
+//! - **Measuring** ([`CubicBasis::arc_length`], [`chain_lengths`],
+//!   [`PreparedNurbs::lengths`], [`adaptive_stations`],
+//!   [`PreparedNurbs::adaptive_sample`]): arc length by stated
+//!   Gauss-Legendre quadrature with the parameter at a length, and sampling
+//!   refined to a chord or angle [`Tolerance`] under a cap, reported.
 //! - **Reusable buffers**: every allocating function has an `_into` form
 //!   that fills a caller's buffers, and those that need scratch take a
 //!   [`Workspace`], so a caller that keeps them allocates nothing once they
-//!   have grown.
+//!   have grown. Functions that take no workspace keep a NURBS curve's
+//!   scratch on the stack up to order 8, and allocate it past that.
 //!
 //! ```
 //! use exedra_curves::{CubicBasis, rotation_minimizing_frames, sample, stations, tube};
@@ -68,7 +75,10 @@
 //! # Contracts
 //!
 //! - **Explicit counts.** Samples per span and sides per ring are inputs.
-//!   Nothing adapts them to curvature or screen size.
+//!   Nothing adapts them unless a caller asks for tolerance-driven
+//!   sampling, which caps its samples past each span's own ends, and
+//!   reports whether the cap stopped it or an interval too narrow to split
+//!   still failed.
 //! - **Stated parameters.** Every derivative is with respect to the
 //!   parameter its function names: a cubic span's `u`, or a NURBS curve's
 //!   `t`.
@@ -97,25 +107,30 @@
 //!   more is valid and leaves the curve discontinuous, and sampling takes
 //!   both sides of it and lists the break ([`NurbsSamples::breaks`]), so no
 //!   caller joins across a jump unknowingly.
+//! - **Estimates are labelled.** Arc lengths are quadrature estimates.
+//!   Adaptive sampling's tolerances are bounds, up to rounding, taken from
+//!   each interval's Bezier control polygon.
 //!
-//! Not provided: adaptive or tolerance-driven sampling, arc length, end
-//! caps, and distributing a closed loop's seam twist. Each would be a new,
-//! explicit option rather than a change of these functions' results.
+//! Not provided: end caps and distributing a closed loop's seam twist. Each
+//! would be a new, explicit option rather than a change of these functions'
+//! results.
 //!
 //! # Determinism
 //!
-//! Evaluation, sampling, frames, ribbons, and a tube's counts, indices and
-//! normal weights use only additions, subtractions, multiplications,
-//! divisions and square roots, in a documented fixed order. IEEE 754 rounds
-//! each of those correctly and Rust does not fuse them, so equal inputs
-//! give equal bits on every platform and under either feature.
+//! Evaluation, sampling, measuring, frames, ribbons, and a tube's counts,
+//! indices and normal weights use only additions, subtractions,
+//! multiplications, divisions and square roots, in a documented fixed
+//! order. IEEE 754 rounds each of those correctly and Rust does not fuse
+//! them, so equal inputs give equal bits on every platform and under either
+//! feature.
 //!
 //! A tube's ring directions are the exception: they come from
 //! `exedra_math`'s `sin_cos`, which is not correctly rounded. With the
 //! `libm` feature that is libm's pure-Rust implementation, the same bits
 //! everywhere; with `std` alone it is the platform's, whose precision Rust
 //! leaves unspecified, so ring positions and normals can differ in their
-//! last bits between platforms or toolchains.
+//! last bits between platforms or toolchains. An angle [`Tolerance`] is
+//! turned into its cosine the same way, once per call.
 //!
 //! A faster path that changes the operation order (prepared power
 //! coefficients, reassociated SIMD reductions, fused multiply-adds) is to
@@ -133,6 +148,7 @@ extern crate alloc;
 
 mod basis;
 mod frames;
+mod measure;
 mod nurbs;
 mod sample;
 mod sweep;
@@ -142,6 +158,10 @@ pub use basis::{CubicBasis, CurveEvaluation};
 pub use frames::{
     Frame, FrameReport, TangentCount, rotation_minimizing_frames, rotation_minimizing_frames_along,
     rotation_minimizing_frames_into,
+};
+pub use measure::{
+    AdaptiveReport, Tolerance, adaptive_stations, adaptive_stations_into, chain_lengths,
+    chain_lengths_into, chain_station_at_length,
 };
 pub use nurbs::{Nurbs, NurbsError, NurbsSamples, PreparedNurbs, ValidNurbs};
 pub use sample::{
