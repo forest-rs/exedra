@@ -46,6 +46,14 @@ impl<const N: usize> WeightedPoint<N> {
         }
     }
 
+    /// `a + b`, in every coordinate and the weight.
+    pub(crate) fn plus(a: Self, b: Self) -> Self {
+        Self {
+            weighted: add(a.weighted, b.weighted),
+            weight: a.weight + b.weight,
+        }
+    }
+
     /// `a - b`, in every coordinate and the weight.
     pub(crate) fn minus(a: Self, b: Self) -> Self {
         Self {
