@@ -5,7 +5,7 @@
 
 use super::{Boundary, Edge, EdgeId, EdgeRole, Extrusion, ExtrusionError, FaceId, pocket};
 use alloc::vec::Vec;
-use exedra_profile::{
+use exedra_curves::profile::{
     CornerError, CornerSegment, CornerSource, CornerTreatment, LoopRef, ProfilePolicy, SegTag,
     SegmentRef,
 };
@@ -59,7 +59,7 @@ pub enum AxialFinishError {
         pockets: Vec<usize>,
         /// Combined arrangement diagnosis. Hole references index profile holes
         /// first, followed by this explicit pocket table.
-        error: exedra_profile::ProfileError,
+        error: exedra_curves::profile::ProfileError,
     },
     /// Rebuilding or revalidating existing pockets failed.
     Extrusion(ExtrusionError),
@@ -138,7 +138,7 @@ impl Extrusion {
     /// ```
     /// use exedra_analytic::extrusion::Extrusion;
     /// use exedra_math::Placement3;
-    /// use exedra_profile::{CornerTreatment, Loop, Profile, ProfilePolicy, SegTag, Segment};
+    /// use exedra_curves::profile::{CornerTreatment, Loop, Profile, ProfilePolicy, SegTag, Segment};
     /// let policy = ProfilePolicy::new(1e-9);
     /// let outline = Loop::new([
     ///     Segment::line([2.0, -2.0]), Segment::line([2.0, 2.0]),
@@ -219,13 +219,12 @@ impl Extrusion {
             }
             let mut holes = treated.profile.holes().to_vec();
             holes.extend(indices.iter().map(|&i| self.pockets[i].outline.clone()));
-            exedra_profile::Profile::new(treated.profile.outer().clone(), holes, policy).map_err(
-                |error| AxialFinishError::PocketArrangement {
+            exedra_curves::profile::Profile::new(treated.profile.outer().clone(), holes, policy)
+                .map_err(|error| AxialFinishError::PocketArrangement {
                     end,
                     pockets: indices,
                     error,
-                },
-            )?;
+                })?;
         }
         for (index, p) in self.pockets.iter().enumerate() {
             for (other, existing) in self.pockets[..index].iter().enumerate() {
@@ -278,8 +277,8 @@ mod tests {
         geometry::Surface,
     };
     use alloc::vec;
+    use exedra_curves::profile::{Loop, Profile, Segment};
     use exedra_math::Placement3;
-    use exedra_profile::{Loop, Profile, Segment};
     const POLICY: ProfilePolicy = ProfilePolicy::new(1e-9);
     const BODY: SegTag = SegTag(1);
     const FINISH: SegTag = SegTag(2);
@@ -322,8 +321,8 @@ mod tests {
             assert_eq!(output.profile_segments.len(), 8);
             assert_eq!(output.solid.faces_tagged(FINISH).count(), 4);
             let area = match treatment.shape {
-                exedra_profile::CornerShape::Chamfer { .. } => 312.0,
-                exedra_profile::CornerShape::Fillet { .. } => {
+                exedra_curves::profile::CornerShape::Chamfer { .. } => 312.0,
+                exedra_curves::profile::CornerShape::Fillet { .. } => {
                     320.0 - 16.0 + 4.0 * core::f64::consts::PI
                 }
             };
@@ -335,11 +334,11 @@ mod tests {
                 ));
                 assert_eq!(output.solid.face_tag(transition.wall), Some(FINISH));
                 match treatment.shape {
-                    exedra_profile::CornerShape::Chamfer { .. } => assert!(matches!(
+                    exedra_curves::profile::CornerShape::Chamfer { .. } => assert!(matches!(
                         output.solid.faces()[transition.wall.index()].surface,
                         Surface::Plane(_)
                     )),
-                    exedra_profile::CornerShape::Fillet { .. } => assert!(matches!(
+                    exedra_curves::profile::CornerShape::Fillet { .. } => assert!(matches!(
                         output.solid.faces()[transition.wall.index()].surface,
                         Surface::Cylinder(_)
                     )),
@@ -534,7 +533,7 @@ mod tests {
             )
             .unwrap_err();
         assert!(
-            matches!(error,AxialFinishError::PocketArrangement {end:End::End,pockets,error:exedra_profile::ProfileError::Contact {..}} if pockets==vec![0,1])
+            matches!(error,AxialFinishError::PocketArrangement {end:End::End,pockets,error:exedra_curves::profile::ProfileError::Contact {..}} if pockets==vec![0,1])
         );
         let opposite = block()
             .with_pocket(

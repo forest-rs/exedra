@@ -4,7 +4,7 @@
 //! An exact analytic extrusion reached by two routes, then realized.
 //!
 //! A plate with a round hole is described twice: by hand, as an
-//! [`exedra::profile::Profile`] of lines and arcs, and the way a spec compiler
+//! [`exedra::curves::profile::Profile`] of lines and arcs, and the way a spec compiler
 //! would reach it, through constructive builders and
 //! [`exedra::constructive::profile::Profile2::to_line_arc`]. Both give the same
 //! profile, so the same [`Extrusion`] and the same realized mesh. The mesh can
@@ -15,7 +15,9 @@ use exedra::analytic::extrusion::{Extrusion, ExtrusionError};
 use exedra::constructive::builders;
 use exedra::constructive::ir::Placement3;
 use exedra::constructive::profile::LineArcError;
-use exedra::profile::{Loop, LoopError, Profile, ProfileError, ProfilePolicy, SegTag, Segment};
+use exedra::curves::profile::{
+    Loop, LoopError, Profile, ProfileError, ProfilePolicy, SegTag, Segment,
+};
 
 /// Plate dimensions in millimeters, centered on the origin.
 #[derive(Copy, Clone, Debug, PartialEq)]
@@ -134,7 +136,7 @@ pub fn extrude(profile: Profile, spec: &PlateSpec) -> Result<Extrusion, PlateErr
 mod tests {
     use super::*;
     use exedra::analytic::extrusion::{Boundary, FaceRole, TessellationPolicy};
-    use exedra::profile::LoopRef;
+    use exedra::curves::profile::LoopRef;
 
     #[test]
     fn both_routes_give_the_same_solid_and_mesh() {

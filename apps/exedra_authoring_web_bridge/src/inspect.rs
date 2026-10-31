@@ -197,8 +197,8 @@ mod tests {
     use super::*;
     use exedra_analytic::loft::{Loft, LoftPolicy};
     use exedra_constructive::builders;
+    use exedra_curves::profile::ProfilePolicy;
     use exedra_math::Placement3;
-    use exedra_profile::ProfilePolicy;
     #[test]
     fn valid_loft_inspection_preserves_unavailable_integrals_without_fabrication() {
         let profile = builders::rect_centered(4.0, 3.0).unwrap();
@@ -241,7 +241,7 @@ mod tests {
             .with_through_bore(
                 exedra_analytic::bore::Bore::new([0.0; 3], [0.2, 0.0, 1.0], 2.0)
                     .unwrap()
-                    .tagged(exedra_profile::SegTag(9)),
+                    .tagged(exedra_curves::profile::SegTag(9)),
                 &exedra_analytic::bore::BorePolicy {
                     separation: 0.1,
                     geometry_gap: 1e-8,

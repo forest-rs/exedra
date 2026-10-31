@@ -4,7 +4,7 @@
 use super::*;
 use alloc::vec;
 use core::f64::consts::{PI, TAU};
-use exedra_profile::{ProfilePolicy, Segment};
+use exedra_curves::profile::{ProfilePolicy, Segment};
 const BASE: SegTag = SegTag(1);
 const SHELL: SegTag = SegTag(2);
 const AXIS: SegTag = SegTag(3);

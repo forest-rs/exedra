@@ -5,8 +5,8 @@ use super::*;
 use crate::extrusion::{Boundary, EdgeRole, FaceRole, Level};
 use alloc::vec;
 use core::f64::consts::{PI, TAU};
-use exedra_profile::LoopRef;
-use exedra_profile::{Loop, Profile, ProfilePolicy, Segment};
+use exedra_curves::profile::LoopRef;
+use exedra_curves::profile::{Loop, Profile, ProfilePolicy, Segment};
 
 const SEPARATION: ProfilePolicy = ProfilePolicy::new(1e-9);
 

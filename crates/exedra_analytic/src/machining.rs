@@ -972,7 +972,7 @@ fn section_clearance<F, E>(
 mod tests {
     use super::*;
     use crate::extrusion::Extrusion;
-    use exedra_profile::{Loop, Profile, ProfilePolicy, Segment};
+    use exedra_curves::profile::{Loop, Profile, ProfilePolicy, Segment};
     fn stock() -> Body {
         let outline = Loop::new(alloc::vec![
             Segment::line([30.0, -20.0]),

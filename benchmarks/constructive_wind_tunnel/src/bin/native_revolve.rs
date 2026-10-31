@@ -14,7 +14,7 @@ use exedra_constructive::profile::{Loop2, Profile2, Seg2};
 use exedra_constructive::tessellate::{
     EvalPolicy, tessellate_revolve, tessellate_revolve_with_chart,
 };
-use exedra_profile::ProfilePolicy;
+use exedra_curves::profile::ProfilePolicy;
 use std::error::Error;
 use std::hint::black_box;
 use std::time::Instant;
@@ -189,7 +189,7 @@ fn main() -> Result<(), Box<dyn Error>> {
 fn allocation_profile(
     mode: &str,
     profile: &Profile2,
-    shared: &exedra_profile::Profile,
+    shared: &exedra_curves::profile::Profile,
     chart: SurfaceChart,
 ) -> Result<(), Box<dyn Error>> {
     use std::io::{self, Write};

@@ -11,9 +11,9 @@ use crate::body::{
 };
 use crate::geometry::{Curve, ParameterDomain, ParameterRange, Surface};
 use alloc::{vec, vec::Vec};
+use exedra_curves::profile::{Arc, LoopRef, Profile, SegmentRef};
 use exedra_math::path::{CurvePathSource, PathClosure, PathJoin, PathSegment3};
 use exedra_math::{Placement3, add, cross, dot, scale, sub};
-use exedra_profile::{Arc, LoopRef, Profile, SegmentRef};
 
 #[derive(Clone, Debug, PartialEq)]
 pub(super) struct Section {
@@ -66,7 +66,7 @@ struct Vertex {
     point: [f64; 2],
     arc: Option<Arc>,
     source: SegmentRef,
-    tag: Option<exedra_profile::SegTag>,
+    tag: Option<exedra_curves::profile::SegTag>,
     next: usize,
 }
 fn norm(p: [f64; 3]) -> f64 {

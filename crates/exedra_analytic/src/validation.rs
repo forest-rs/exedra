@@ -166,14 +166,14 @@ pub enum BoundaryValidationError {
         /// Native face.
         face: FaceId,
         /// Structured profile-arrangement diagnosis.
-        error: exedra_profile::ProfileError,
+        error: exedra_curves::profile::ProfileError,
     },
     /// A chart loop has a collapsed or otherwise invalid affine segment chain.
     ChartLoop {
         /// Native face.
         face: FaceId,
         /// Structured loop diagnosis.
-        error: exedra_profile::LoopError,
+        error: exedra_curves::profile::LoopError,
     },
     /// An inferred legacy planar trim lies outside its declared face domain.
     ChartDomain {

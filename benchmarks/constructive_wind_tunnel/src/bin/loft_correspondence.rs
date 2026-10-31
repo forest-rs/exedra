@@ -7,7 +7,7 @@ use exedra_constructive::{
     builders,
     loft::{CorrespondencePolicy, CorrespondenceProfile, correspond_profiles},
 };
-use exedra_profile::ProfilePolicy;
+use exedra_curves::profile::ProfilePolicy;
 use std::{hint::black_box, time::Instant};
 
 fn main() {

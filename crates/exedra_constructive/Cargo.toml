@@ -37,7 +37,6 @@ exedra_mesh_ops = { features = ["libm"], workspace = true }
 # Explicit libm opts primitive coordinates into the deterministic backend even
 # when another workspace consumer enables exedra_primitives/std.
 exedra_primitives = { features = ["libm"], workspace = true }
-exedra_profile.workspace = true
 exedra_triangulate.workspace = true
 hashbrown.workspace = true
 kurbo.workspace = true

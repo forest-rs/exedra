@@ -28,7 +28,7 @@
 //! ```
 //! use exedra_analytic::extrusion::{Extrusion, TessellationPolicy};
 //! use exedra_math::Placement3;
-//! use exedra_profile::{Loop, Profile, ProfilePolicy, Segment};
+//! use exedra_curves::profile::{Loop, Profile, ProfilePolicy, Segment};
 //!
 //! let disk = Loop::new(vec![Segment::arc([-1.0, 0.0], 1.0), Segment::arc([1.0, 0.0], 1.0)])?;
 //! let profile = Profile::new(disk, vec![], &ProfilePolicy::new(1e-9))?;
@@ -44,8 +44,8 @@ use alloc::vec::Vec;
 
 use crate::body::{Body, BodyParts, BoundaryLoop, Sense, ValidationPolicy};
 use crate::geometry::{ParameterDomain, ParameterRange};
+use exedra_curves::profile::{Curve, Loop, LoopRef, Profile, ProfileError, ProfilePolicy, SegTag};
 use exedra_math::{FrameError, Placement3};
-use exedra_profile::{Curve, Loop, LoopRef, Profile, ProfileError, ProfilePolicy, SegTag};
 
 mod authoring;
 mod boundary;
@@ -205,7 +205,7 @@ impl Pocket {
     /// ```
     /// use exedra_analytic::extrusion::{End, Extrusion, Pocket};
     /// use exedra_math::Placement3;
-    /// use exedra_profile::{Loop, Profile, ProfilePolicy, Segment};
+    /// use exedra_curves::profile::{Loop, Profile, ProfilePolicy, Segment};
     ///
     /// let square = |min: f64, max: f64| {
     ///     Loop::new(vec![
@@ -825,7 +825,7 @@ mod pocket_tests;
 mod tests {
     use super::*;
     use alloc::vec;
-    use exedra_profile::{Loop, ProfilePolicy, Segment};
+    use exedra_curves::profile::{Loop, ProfilePolicy, Segment};
 
     fn rect_with_round_hole() -> Profile {
         let outer = Loop::new(vec![
@@ -970,7 +970,7 @@ mod centered_profile_tests {
     use super::*;
     use crate::{geometry::Surface, realize::RealizationPolicy, revolve::Revolution};
     use alloc::vec;
-    use exedra_profile::{Loop, Segment};
+    use exedra_curves::profile::{Loop, Segment};
     #[test]
     fn shared_center_intent_drives_exact_cylinder_and_torus_supports() {
         let tag = SegTag(39);

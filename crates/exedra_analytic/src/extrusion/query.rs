@@ -7,8 +7,8 @@
 //! [`Extrusion::frame`] places them. Measures are exact for the native
 //! geometry, not for a realized mesh.
 
+use exedra_curves::profile::{Curve, LoopRef};
 use exedra_math::Placement3;
-use exedra_profile::{Curve, LoopRef};
 
 use super::{Boundary, BoundarySegment, EdgeId, Extrusion, FaceId, FaceRole, Surface};
 
@@ -169,7 +169,7 @@ impl Extrusion {
 }
 
 /// The start and end points of segment `index`.
-fn segment_ends(loop_: &exedra_profile::Loop, index: usize) -> ([f64; 2], [f64; 2]) {
+fn segment_ends(loop_: &exedra_curves::profile::Loop, index: usize) -> ([f64; 2], [f64; 2]) {
     let segments = loop_.segments();
     (
         segments[(index + segments.len() - 1) % segments.len()].to,
@@ -182,7 +182,7 @@ mod tests {
     use super::*;
     use alloc::vec;
     use core::f64::consts::PI;
-    use exedra_profile::{Loop, Profile, ProfilePolicy, Segment};
+    use exedra_curves::profile::{Loop, Profile, ProfilePolicy, Segment};
 
     /// A 4 x 2 plate with a hole of radius 0.5, extruded by 3.
     fn plate(frame: Placement3) -> Extrusion {

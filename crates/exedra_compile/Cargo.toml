@@ -20,8 +20,8 @@ std = ["exedra_analytic/std", "exedra_constructive/std", "exedra_mesh/std", "exe
 [dependencies]
 exedra_analytic = { features = ["libm"], workspace = true }
 exedra_constructive.workspace = true
+exedra_curves.workspace = true
 exedra_math = { features = ["libm"], workspace = true }
 exedra_mesh = { features = ["libm"], workspace = true }
 exedra_mesh_ops.workspace = true
-exedra_profile.workspace = true
 hashbrown.workspace = true

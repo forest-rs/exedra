@@ -39,7 +39,7 @@ name = "exedra-accuracy-comparison-{label}"
 path = {json.dumps(str(worker))}
 [dependencies]
 {dependencies}
-exedra_profile = {{ path = {json.dumps(str(repo / "crates/exedra_profile"))} }}
+exedra_curves = {{ path = {json.dumps(str(repo / "crates/exedra_curves"))} }}
 serde_json = "=1.0.151"
 ''')
     subprocess.run(["cargo", "build", "--release", "--offline", "--manifest-path", str(package / "Cargo.toml")],

@@ -13,8 +13,8 @@ use exedra_analytic::{
     },
     realize::{RealizationPolicy, RealizedBody},
 };
+use exedra_curves::profile::{Loop, Profile, ProfilePolicy, Segment};
 use exedra_math::Placement3;
-use exedra_profile::{Loop, Profile, ProfilePolicy, Segment};
 use serde_json::{Value, json};
 use std::{
     hint::black_box,

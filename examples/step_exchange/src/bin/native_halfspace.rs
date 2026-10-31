@@ -6,8 +6,8 @@ use exedra_analytic::{
     extrusion::Extrusion,
     halfspace::{ClipPolicy, HalfSpace, intersect_half_space_with_roles},
 };
+use exedra_curves::profile::{Loop, Profile, ProfilePolicy, Segment};
 use exedra_math::Placement3;
-use exedra_profile::{Loop, Profile, ProfilePolicy, Segment};
 use exedra_step::{StepOptions, export_body};
 use serde_json::json;
 use std::{collections::BTreeSet, error::Error, path::PathBuf};

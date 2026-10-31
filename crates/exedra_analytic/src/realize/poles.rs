@@ -794,7 +794,7 @@ mod tests {
     use crate::revolve::Revolution;
     use alloc::vec;
     use core::f64::consts::TAU;
-    use exedra_profile::{Loop, Profile, ProfilePolicy, Segment};
+    use exedra_curves::profile::{Loop, Profile, ProfilePolicy, Segment};
     fn sphere(r: f64) -> Profile {
         Profile::new(
             Loop::new(vec![Segment::line([0.0, -r]), Segment::arc([0.0, r], 1.0)]).unwrap(),

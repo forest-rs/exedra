@@ -14,7 +14,7 @@ use exedra::{
         loft::{BoundaryPoint, CorrespondencePolicy, CorrespondenceProfile, correspond_profiles},
         tessellate::{EvalPolicy, tessellate_loft_with_chart},
     },
-    profile::{LoopRef, ProfilePolicy},
+    curves::profile::{LoopRef, ProfilePolicy},
 };
 use std::error::Error;
 use support::{Exhibit, export};

@@ -1,6 +1,6 @@
 # Analytic extrusion
 
-One plate with a round hole, described by hand as an `exedra::profile::Profile`
+One plate with a round hole, described by hand as an `exedra::curves::profile::Profile`
 and through constructive builders with `Profile2::to_line_arc`. Both routes give
 the same profile, so the same exact `Extrusion` and a bit-identical realized
 mesh. The demo:

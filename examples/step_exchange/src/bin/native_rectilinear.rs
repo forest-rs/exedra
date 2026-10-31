@@ -9,8 +9,8 @@ use exedra_analytic::{
     machining::{CylinderTool, MachiningPolicy, subtract_through_cylinder},
     rectilinear::{BooleanOperation, RectilinearPolicy, boolean_rectilinear},
 };
+use exedra_curves::profile::{Loop, Profile, ProfilePolicy, Segment};
 use exedra_math::Placement3;
-use exedra_profile::{Loop, Profile, ProfilePolicy, Segment};
 use exedra_step::{StepOptions, export_body};
 use serde_json::json;
 use std::{error::Error, path::PathBuf};

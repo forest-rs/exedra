@@ -2,8 +2,8 @@
 // SPDX-License-Identifier: Apache-2.0 OR MIT
 
 use super::*;
-use crate::arc::{Piece, cross, length, sub};
-use crate::{Arc, Loop, LoopRef, ProfilePolicy, Segment};
+use crate::profile::arc::{Piece, cross, length, sub};
+use crate::profile::{Arc, Loop, LoopRef, ProfilePolicy, Segment};
 use alloc::{vec, vec::Vec};
 
 #[derive(Copy, Clone)]

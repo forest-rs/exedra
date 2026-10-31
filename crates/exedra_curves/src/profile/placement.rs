@@ -3,7 +3,7 @@
 
 //! Checked placement of shared profile geometry without curve sampling.
 
-use crate::{Loop, LoopError, LoopRef, Profile, ProfileError, ProfilePolicy};
+use crate::profile::{Loop, LoopError, LoopRef, Profile, ProfileError, ProfilePolicy};
 use alloc::vec::Vec;
 
 /// Why translating a profile cannot preserve its validated geometry.
@@ -44,8 +44,8 @@ impl Loop {
                 .map(|segment| {
                     let mut moved = *segment;
                     moved.to = [segment.to[0] + offset[0], segment.to[1] + offset[1]];
-                    if let crate::Curve::ArcCenter { center, clockwise } = segment.curve {
-                        moved.curve = crate::Curve::ArcCenter {
+                    if let crate::profile::Curve::ArcCenter { center, clockwise } = segment.curve {
+                        moved.curve = crate::profile::Curve::ArcCenter {
                             center: core::array::from_fn(|i| {
                                 if offset[i] == 0.0 {
                                     center[i]
@@ -103,7 +103,7 @@ impl Profile {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::{CornerTreatment, Curve, SegTag, Segment};
+    use crate::profile::{CornerTreatment, Curve, SegTag, Segment};
     use alloc::vec;
     const POLICY: ProfilePolicy = ProfilePolicy::new(1e-9);
     fn square() -> Profile {
@@ -185,7 +185,7 @@ mod tests {
 #[cfg(test)]
 mod centered_tests {
     use super::*;
-    use crate::{CornerTreatment, Curve, SegTag, Segment};
+    use crate::profile::{CornerTreatment, Curve, SegTag, Segment};
     use alloc::vec;
     #[test]
     fn unchanged_center_components_keep_authored_signed_zero() {

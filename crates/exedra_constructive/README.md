@@ -281,7 +281,7 @@ and then placed with `translated` as often as needed.
 the feature in analytic face roles after lowering, without a numeric conversion.
 
 `Profile2::to_line_arc` lowers a profile into the shared
-`exedra_profile::Profile` that the analytic head extrudes exactly. Endpoints,
+`exedra_curves::profile::Profile` that the analytic head extrudes exactly. Endpoints,
 bulges and tags carry over and the shared arrangement checks apply. Cubic and
 policy-defined segments are refused rather than approximated, because a
 policy is local to its recipe.

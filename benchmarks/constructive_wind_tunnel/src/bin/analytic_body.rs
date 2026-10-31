@@ -9,7 +9,7 @@ use exedra_analytic::extrusion::{Extrusion, TessellationPolicy};
 use exedra_analytic::realize::RealizationPolicy;
 use exedra_constructive::builders;
 use exedra_constructive::ir::Placement3;
-use exedra_profile::{Profile, ProfilePolicy};
+use exedra_curves::profile::{Profile, ProfilePolicy};
 use std::error::Error;
 use std::hint::black_box;
 use std::time::Instant;

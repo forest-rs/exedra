@@ -4,8 +4,8 @@
 //! Construction from independently authored, checked profile inputs.
 
 use super::{Extrusion, ExtrusionError, Workplane};
+use exedra_curves::profile::{IntoProfile, ProfilePolicy};
 use exedra_math::Placement3;
-use exedra_profile::{IntoProfile, ProfilePolicy};
 
 /// A profile could not be converted or its extrusion could not be constructed.
 ///
@@ -86,7 +86,7 @@ impl Workplane {
 mod tests {
     use super::*;
     use alloc::vec;
-    use exedra_profile::{Loop, Profile, Segment};
+    use exedra_curves::profile::{Loop, Profile, Segment};
 
     fn square() -> Profile {
         Profile::new(

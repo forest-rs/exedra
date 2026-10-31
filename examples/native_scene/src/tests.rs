@@ -4,7 +4,7 @@
 use super::*;
 use exedra_analytic::extrusion::Extrusion;
 use exedra_compile::{PartSource, PreparedSource};
-use exedra_profile::{Loop, Profile, ProfilePolicy, Segment};
+use exedra_curves::profile::{Loop, Profile, ProfilePolicy, Segment};
 use exedra_scene::{
     SceneErrorKind,
     schemas::procedural::{ProceduralEvaluator, ProceduralInputs},

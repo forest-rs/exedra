@@ -13,11 +13,11 @@ use exedra::compile::{CompilePolicy, PartCompiler, PartId, PartInput, PartSource
 use exedra::constructive::chart::{ChartTransform, SurfaceChart};
 use exedra::constructive::ir::Placement3;
 use exedra::constructive::profile::{Loop2, Profile2, Seg2};
+use exedra::curves::profile::{ProfilePolicy, SegTag};
 use exedra::gltf::{
     GltfExportOptions, GltfMesh, GltfNode, GltfScene, MaterialResolver, Texture,
     export_glb_with_materials,
 };
-use exedra::profile::{ProfilePolicy, SegTag};
 use serde_json::{Value, json};
 use std::error::Error;
 
@@ -264,7 +264,7 @@ fn write_scene(
 fn comparison(out: &str, profile: &Profile2, chart: SurfaceChart) -> Result<(), Box<dyn Error>> {
     use exedra::constructive::ir::CapMode;
     use exedra::constructive::tessellate::{EvalPolicy, tessellate_revolve_with_chart};
-    use exedra::profile::{CircularEdgeConstraints, circular_edge_count};
+    use exedra::curves::profile::{CircularEdgeConstraints, circular_edge_count};
     let sweep = 1.5 * core::f64::consts::PI;
     let tolerance = 0.015;
     let steps = circular_edge_count(

@@ -5,7 +5,7 @@
 
 use crate::profile::{LineArcError, Loop2, Profile2, ProfileError, Seg2};
 use alloc::{boxed::Box, vec, vec::Vec};
-use exedra_profile::{Loop, LoopRef, Profile, ProfilePolicy, SegmentRef};
+use exedra_curves::profile::{Loop, LoopRef, Profile, ProfilePolicy, SegmentRef};
 
 mod metric;
 use metric::Metric;
@@ -297,7 +297,7 @@ struct Event {
 /// use exedra_constructive::{builders, loft::{
 ///     correspond_profiles, CorrespondencePolicy, CorrespondenceProfile,
 /// }};
-/// use exedra_profile::ProfilePolicy;
+/// use exedra_curves::profile::ProfilePolicy;
 ///
 /// let circle = builders::circle(10.0)?;
 /// let rectangle = builders::rect_centered(20.0, 12.0)?;
@@ -551,20 +551,19 @@ pub fn correspond_profiles(
             origins[i].push(spans);
         }
     }
-    let profiles = output_loops
-        .into_iter()
-        .zip(origins)
-        .enumerate()
-        .map(|(section, (mut loops, segments))| {
-            let outer = loops.remove(0);
-            let profile = Profile2::new(outer, loops)
-                .map_err(|error| CorrespondenceError::Output { section, error })?;
-            profile.to_line_arc(&policy.profile).map_err(|error| {
-                let sources =
-                    if let LineArcError::Profile(exedra_profile::ProfileError::Contact {
-                        first,
-                        second,
-                    }) = error
+    let profiles =
+        output_loops
+            .into_iter()
+            .zip(origins)
+            .enumerate()
+            .map(|(section, (mut loops, segments))| {
+                let outer = loops.remove(0);
+                let profile = Profile2::new(outer, loops)
+                    .map_err(|error| CorrespondenceError::Output { section, error })?;
+                profile.to_line_arc(&policy.profile).map_err(|error| {
+                    let sources = if let LineArcError::Profile(
+                        exedra_curves::profile::ProfileError::Contact { first, second },
+                    ) = error
                     {
                         Some(Box::new([
                             segments[loop_index(first.loop_ref)][first.segment],
@@ -573,15 +572,15 @@ pub fn correspond_profiles(
                     } else {
                         None
                     };
-                CorrespondenceError::OutputValidation {
-                    section,
-                    error,
-                    sources,
-                }
-            })?;
-            Ok(MatchedProfile { profile, segments })
-        })
-        .collect::<Result<_, _>>()?;
+                    CorrespondenceError::OutputValidation {
+                        section,
+                        error,
+                        sources,
+                    }
+                })?;
+                Ok(MatchedProfile { profile, segments })
+            })
+            .collect::<Result<_, _>>()?;
     Ok(CorrespondenceResult { profiles, report })
 }
 

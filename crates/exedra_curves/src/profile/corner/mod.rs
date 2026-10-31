@@ -3,7 +3,7 @@
 
 //! Intentional corner selection and analytic line-corner treatment.
 
-use crate::{Curve, LoopError, Profile, ProfileError, SegTag, SegmentRef};
+use crate::profile::{Curve, LoopError, Profile, ProfileError, SegTag, SegmentRef};
 use alloc::vec::Vec;
 
 mod arrangement;

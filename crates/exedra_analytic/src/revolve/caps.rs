@@ -5,8 +5,8 @@
 
 use super::{Revolution, RevolutionError};
 use alloc::vec;
+use exedra_curves::profile::{Loop, LoopError, Profile, ProfileError, ProfilePolicy, Segment};
 use exedra_math::Placement3;
-use exedra_profile::{Loop, LoopError, Profile, ProfileError, ProfilePolicy, Segment};
 
 /// A requested spherical cap could not preserve its authored dimensions.
 #[derive(Clone, Debug, PartialEq)]
@@ -71,7 +71,7 @@ impl Revolution {
     /// ```
     /// use exedra_analytic::revolve::Revolution;
     /// use exedra_math::Placement3;
-    /// use exedra_profile::ProfilePolicy;
+    /// use exedra_curves::profile::ProfilePolicy;
     /// let dome = Revolution::spherical_cap(20.0, 8.0,
     ///     Placement3::IDENTITY, &ProfilePolicy::new(1e-9))?;
     /// assert!(dome.body().is_closed());

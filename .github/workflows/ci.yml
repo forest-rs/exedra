@@ -30,7 +30,6 @@ env:
     -p exedra_math
     -p exedra_measurements
     -p exedra_primitives
-    -p exedra_profile
     -p exedra_scene
     -p exedra_step
     -p exedra_testkit
@@ -53,7 +52,6 @@ env:
     -p exedra_math
     -p exedra_measurements
     -p exedra_primitives
-    -p exedra_profile
     -p exedra_scene
     -p exedra_step
     -p exedra_testkit

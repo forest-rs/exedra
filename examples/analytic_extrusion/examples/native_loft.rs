@@ -18,7 +18,7 @@ use exedra::{
         loft::{BoundaryPoint, CorrespondencePolicy, CorrespondenceProfile, correspond_profiles},
         profile::Profile2,
     },
-    profile::{LoopRef, ProfilePolicy},
+    curves::profile::{LoopRef, ProfilePolicy},
 };
 use std::error::Error;
 use support::{Exhibit, export};

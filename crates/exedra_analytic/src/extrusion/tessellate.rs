@@ -15,9 +15,11 @@
 
 use alloc::vec::Vec;
 
+use exedra_curves::profile::{
+    CircularEdgeConstraints, CircularSamplingError, Curve, circular_edge_count,
+};
 use exedra_math::{Placement3, narrow};
 use exedra_mesh::{FaceBuildAttrs, Mesh, MeshBuilder};
-use exedra_profile::{CircularEdgeConstraints, CircularSamplingError, Curve, circular_edge_count};
 use exedra_triangulate::{PolygonInput, TriError, TriParams, triangulate_preserving_boundary};
 
 use super::{Boundary, BoundarySegment, EdgeId, End, Extrusion, Face, FaceId, Level, VertexId};
@@ -227,7 +229,7 @@ impl Extrusion {
     /// ```
     /// use exedra_analytic::extrusion::{Extrusion, FaceRole, TessellationPolicy};
     /// use exedra_math::Placement3;
-    /// use exedra_profile::{Loop, Profile, ProfilePolicy, Segment, SegTag};
+    /// use exedra_curves::profile::{Loop, Profile, ProfilePolicy, Segment, SegTag};
     ///
     /// const ROUND: SegTag = SegTag(1);
     /// let outline = Loop::new(vec![
@@ -734,7 +736,12 @@ enum Refusal {
 }
 
 /// Whether the profile turns by at most `angle` from `segment` into `next`.
-fn smooth_at(loop_: &exedra_profile::Loop, segment: usize, next: usize, angle: f64) -> bool {
+fn smooth_at(
+    loop_: &exedra_curves::profile::Loop,
+    segment: usize,
+    next: usize,
+    angle: f64,
+) -> bool {
     let leaving = end_tangent(loop_, segment, true);
     let entering = end_tangent(loop_, next, false);
     let turn = libm::atan2(
@@ -745,7 +752,7 @@ fn smooth_at(loop_: &exedra_profile::Loop, segment: usize, next: usize, angle: f
 }
 
 /// Unit tangent of segment `index` at its end (`at_end`) or start.
-fn end_tangent(loop_: &exedra_profile::Loop, index: usize, at_end: bool) -> [f64; 2] {
+fn end_tangent(loop_: &exedra_curves::profile::Loop, index: usize, at_end: bool) -> [f64; 2] {
     let segments = loop_.segments();
     let from = segments[(index + segments.len() - 1) % segments.len()].to;
     let to = segments[index].to;

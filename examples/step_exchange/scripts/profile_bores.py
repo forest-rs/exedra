@@ -35,7 +35,7 @@ edition = "2024"
 exedra_analytic = {{ path = {json.dumps(str(repo / "crates/exedra_analytic"))}, features = ["std"] }}
 {extra_dependencies}
 exedra_math = {{ path = {json.dumps(str(repo / "crates/exedra_math"))}, features = ["std"] }}
-exedra_profile = {{ path = {json.dumps(str(repo / "crates/exedra_profile"))} }}
+exedra_curves = {{ path = {json.dumps(str(repo / "crates/exedra_curves"))} }}
 exedra_step = {{ path = {json.dumps(str(repo / "crates/exedra_step"))}, features = ["std"] }}
 serde_json = {{ version = "=1.0.151", features = ["float_roundtrip"] }}
 dhat = "=0.3.3"

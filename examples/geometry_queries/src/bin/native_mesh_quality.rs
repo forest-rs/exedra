@@ -9,7 +9,7 @@ use exedra::analytic::{
     realize::{RealizationPolicy, RealizedBody, TriangleQuality},
 };
 use exedra::constructive::ir::Placement3;
-use exedra::profile::{Loop, Profile, ProfilePolicy, Segment};
+use exedra::curves::profile::{Loop, Profile, ProfilePolicy, Segment};
 use std::{
     collections::{BTreeMap, BTreeSet},
     f64::consts::{PI, TAU},

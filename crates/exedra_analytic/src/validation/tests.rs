@@ -7,8 +7,8 @@ use crate::extrusion::Extrusion;
 use crate::geometry::{Curve, ParameterDomain, ParameterRange, Surface};
 use crate::machining::{CylinderTool, MachiningPolicy, subtract_through_cylinder};
 use alloc::{vec, vec::Vec};
+use exedra_curves::profile::{Loop, Profile, ProfilePolicy, Segment};
 use exedra_math::Placement3;
-use exedra_profile::{Loop, Profile, ProfilePolicy, Segment};
 
 fn cube(origin: [f64; 3], length: f64) -> Body {
     let ring = Loop::new(vec![
@@ -284,7 +284,7 @@ fn nested_and_outside_holes_are_not_certified() {
     assert!(matches!(
         body.validate_boundary(&BoundaryValidationPolicy::default()),
         Err(BoundaryValidationError::PolygonArrangement {
-            error: exedra_profile::ProfileError::NestedHole { .. },
+            error: exedra_curves::profile::ProfileError::NestedHole { .. },
             ..
         })
     ));
@@ -293,7 +293,7 @@ fn nested_and_outside_holes_are_not_certified() {
     assert!(matches!(
         body.validate_boundary(&BoundaryValidationPolicy::default()),
         Err(BoundaryValidationError::PolygonArrangement {
-            error: exedra_profile::ProfileError::HoleOutside { .. },
+            error: exedra_curves::profile::ProfileError::HoleOutside { .. },
             ..
         })
     ));

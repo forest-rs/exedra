@@ -21,11 +21,11 @@ use exedra_analytic::{
     revolve::Revolution,
     sweep::Sweep,
 };
+use exedra_curves::profile::{Profile, SegTag};
 use exedra_math::{
     Placement3,
     path::{PathClosure, PathJoin, PathSegment3},
 };
-use exedra_profile::{Profile, SegTag};
 
 /// Supported retained construction family, independent of display tolerance.
 #[derive(Copy, Clone, Debug, PartialEq, Eq)]
@@ -92,7 +92,7 @@ pub enum NativeGeometryRef<'a> {
 /// use exedra_compile::{NativeSource, PartSource, PreparedSource, PartInput, PartCompiler, CompilePolicy, PartId};
 /// use exedra_constructive::builders;
 /// use exedra_math::Placement3;
-/// use exedra_profile::ProfilePolicy;
+/// use exedra_curves::profile::ProfilePolicy;
 /// let profile = builders::circle(5.0)?.to_line_arc(&ProfilePolicy::new(1e-9))?;
 /// let native = NativeSource::from(Extrusion::new(profile, Placement3::IDENTITY, 3.0)?);
 /// let prepared = PreparedSource::new(PartSource::Native(native.clone()));
@@ -902,12 +902,12 @@ impl Identity {
                 self.values(segment.to);
                 self.tag(segment.tag);
                 match segment.curve {
-                    exedra_profile::Curve::Line => self.word(0),
-                    exedra_profile::Curve::Arc { bulge } => {
+                    exedra_curves::profile::Curve::Line => self.word(0),
+                    exedra_curves::profile::Curve::Arc { bulge } => {
                         self.word(1);
                         self.values([bulge]);
                     }
-                    exedra_profile::Curve::ArcCenter { center, clockwise } => {
+                    exedra_curves::profile::Curve::ArcCenter { center, clockwise } => {
                         self.word(2);
                         self.values(center);
                         self.word(u64::from(clockwise));
@@ -941,12 +941,12 @@ fn source_fingerprint(geometry: &Geometry) -> PartFingerprint {
                     id.values(s.to);
                     id.tag(s.tag);
                     match s.curve {
-                        exedra_profile::Curve::Line => id.word(0),
-                        exedra_profile::Curve::Arc { bulge } => {
+                        exedra_curves::profile::Curve::Line => id.word(0),
+                        exedra_curves::profile::Curve::Arc { bulge } => {
                             id.word(1);
                             id.values([bulge]);
                         }
-                        exedra_profile::Curve::ArcCenter { center, clockwise } => {
+                        exedra_curves::profile::Curve::ArcCenter { center, clockwise } => {
                             id.word(2);
                             id.values(center);
                             id.word(u64::from(clockwise));
@@ -1045,7 +1045,7 @@ fn source_fingerprint(geometry: &Geometry) -> PartFingerprint {
 mod centered_identity_tests {
     use super::*;
     use alloc::vec;
-    use exedra_profile::{Loop, ProfilePolicy, Segment};
+    use exedra_curves::profile::{Loop, ProfilePolicy, Segment};
     fn circle(center: [f64; 2], centered: bool) -> Profile {
         let segment = |to| {
             if centered {

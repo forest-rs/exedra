@@ -13,8 +13,8 @@ use crate::{
     geometry::{Curve, CurveSpan, ParameterDomain, ParameterRange, Surface},
 };
 use alloc::{vec, vec::Vec};
+use exedra_curves::profile::{IntoProfile, LoopRef, SegmentRef};
 use exedra_math::{Placement3, dot, norm, sub};
-use exedra_profile::{IntoProfile, LoopRef, SegmentRef};
 
 pub(super) fn construct<P: IntoProfile>(
     inputs: impl IntoIterator<Item = (Placement3, P)>,

@@ -8,8 +8,8 @@ use exedra_analytic::{
     extrusion::{Extrusion, Pocket},
     loft::{Loft, LoftPolicy},
 };
+use exedra_curves::profile::{Loop, Profile, ProfilePolicy, SegTag, Segment};
 use exedra_math::Placement3;
-use exedra_profile::{Loop, Profile, ProfilePolicy, SegTag, Segment};
 use exedra_step::{LengthUnit, StepDocument, StepOptions, export_body};
 use std::{error::Error, path::PathBuf};
 

@@ -286,7 +286,7 @@ mod tests {
                 &profile,
                 Placement3::translate(2.0, 3.0, 4.0),
                 5.0,
-                &exedra_profile::ProfilePolicy::new(1e-9),
+                &exedra_curves::profile::ProfilePolicy::new(1e-9),
             )
             .unwrap(),
         )

@@ -12,7 +12,7 @@ use exedra::analytic::{
     query::{PointLocation, SolidQuery, SolidQueryPolicy},
 };
 use exedra::constructive::ir::Placement3;
-use exedra::profile::{Loop, Profile, ProfilePolicy, Segment};
+use exedra::curves::profile::{Loop, Profile, ProfilePolicy, Segment};
 use std::{hint::black_box, time::Instant};
 
 fn valve_block() -> Body {

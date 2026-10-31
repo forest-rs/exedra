@@ -3,7 +3,7 @@
 
 //! Filled-region operations on analytic line and circular-arc boundaries.
 
-use crate::{LoopError, Profile, ProfileError, ProfilePolicy, SegmentRef};
+use crate::profile::{LoopError, Profile, ProfileError, ProfilePolicy, SegmentRef};
 use alloc::vec::Vec;
 
 mod arrangement;

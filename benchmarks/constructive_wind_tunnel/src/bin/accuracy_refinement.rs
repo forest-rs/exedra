@@ -14,7 +14,7 @@ use exedra_analytic::{
     revolve::Revolution,
 };
 use exedra_constructive::ir::Placement3;
-use exedra_profile::{Loop, Profile, ProfilePolicy, Segment};
+use exedra_curves::profile::{Loop, Profile, ProfilePolicy, Segment};
 use std::{hint::black_box, time::Instant};
 
 fn profile(points: &[[f64; 2]], size: f64) -> Profile {

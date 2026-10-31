@@ -12,11 +12,11 @@
 use exedra::analytic::extrusion::{TessellationPolicy, Workplane};
 use exedra::compile::{CompilePolicy, PartCompiler, PartId, PartInput, PartSource};
 use exedra::constructive::{builders, ir::Placement3};
-use exedra::gltf::{GltfExportOptions, GltfMesh, GltfNode, GltfScene, export_glb_with_materials};
-use exedra::profile::{
+use exedra::curves::profile::{
     Arc, CornerKind, CornerTreatment, Curve, Loop, Profile, ProfilePolicy, RegionOp, RegionPolicy,
     SegTag,
 };
+use exedra::gltf::{GltfExportOptions, GltfMesh, GltfNode, GltfScene, export_glb_with_materials};
 use std::{error::Error, fmt::Write as _, path::PathBuf};
 
 const VALIDATION: ProfilePolicy = ProfilePolicy::new(1e-7);

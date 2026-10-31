@@ -8,8 +8,8 @@ use exedra_analytic::{
     extrusion::Extrusion,
     realize::{RealizationPolicy, RealizedBody},
 };
+use exedra_curves::profile::{Loop, Profile, ProfilePolicy, Segment};
 use exedra_math::Placement3;
-use exedra_profile::{Loop, Profile, ProfilePolicy, Segment};
 use exedra_step::{StepDocument, StepOptions, export_body};
 use std::{hint::black_box, time::Instant};
 

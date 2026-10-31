@@ -24,8 +24,8 @@ use exedra::constructive::builders;
 use exedra::constructive::ir::Placement3;
 use exedra::constructive::offset::CornerPolicy;
 use exedra::constructive::profile::Profile2;
+use exedra::curves::profile::{ProfilePolicy, SegTag};
 use exedra::gltf::{GltfExportOptions, GltfMesh, GltfNode, GltfScene, export_glb_with_materials};
-use exedra::profile::{ProfilePolicy, SegTag};
 
 const POLICY: ProfilePolicy = ProfilePolicy::new(1e-6);
 
@@ -100,7 +100,7 @@ impl Finish {
     }
 }
 
-fn shared(profile: &Profile2) -> exedra::profile::Profile {
+fn shared(profile: &Profile2) -> exedra::curves::profile::Profile {
     profile.to_line_arc(&POLICY).expect("line and arc profile")
 }
 

@@ -16,7 +16,7 @@ use exedra::constructive::{
     chart::{ChartTransform, SurfaceChart},
     path::PathCursor3,
 };
-use exedra::profile::ProfilePolicy;
+use exedra::curves::profile::ProfilePolicy;
 use std::{
     error::Error,
     f64::consts::{PI, TAU},

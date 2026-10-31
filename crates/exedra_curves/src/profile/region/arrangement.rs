@@ -2,8 +2,8 @@
 // SPDX-License-Identifier: Apache-2.0 OR MIT
 
 use super::*;
-use crate::arc::{Piece, bounds_may_contact, cross, length, sub, turns, winding_angle};
-use crate::{Arc, Curve, Loop, LoopRef, ProfilePolicy, SegTag, Segment};
+use crate::profile::arc::{Piece, bounds_may_contact, cross, length, sub, turns, winding_angle};
+use crate::profile::{Arc, Curve, Loop, LoopRef, ProfilePolicy, SegTag, Segment};
 use alloc::{collections::BTreeMap, vec, vec::Vec};
 
 #[derive(Copy, Clone)]

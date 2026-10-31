@@ -12,7 +12,7 @@ use exedra_compile::{
     PartCompiler, PartId, PartInput, PartSource, PreparedSource,
 };
 use exedra_constructive::{builders, ir::Placement3};
-use exedra_profile::{ProfilePolicy, SegTag};
+use exedra_curves::profile::{ProfilePolicy, SegTag};
 use std::{hint::black_box, sync::Arc, time::Instant};
 
 const FLOOR: SegTag = SegTag(7);

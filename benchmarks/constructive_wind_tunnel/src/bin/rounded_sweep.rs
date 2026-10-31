@@ -6,7 +6,7 @@
 use exedra_analytic::{realize::RealizationPolicy, sweep::Sweep};
 use exedra_constructive::ir::Placement3;
 use exedra_constructive::{builders, path::PathCursor3};
-use exedra_profile::ProfilePolicy;
+use exedra_curves::profile::ProfilePolicy;
 use std::{hint::black_box, time::Instant};
 
 fn main() {

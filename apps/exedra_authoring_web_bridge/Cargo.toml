@@ -15,8 +15,8 @@ crate-type = ["cdylib", "rlib"]
 exedra_analytic = { features = ["libm"], workspace = true }
 exedra_compile.workspace = true
 exedra_constructive.workspace = true
+exedra_curves.workspace = true
 exedra_math = { features = ["libm"], workspace = true }
-exedra_profile.workspace = true
 exedra_step.workspace = true
 serde = { default-features = false, features = ["alloc", "derive"], version = "1.0.228" }
 serde_json = { default-features = false, features = ["alloc"], version = "1.0.145" }

@@ -15,9 +15,9 @@
 use crate::body::{Body, BodyError, Coedge, EdgeId, Face, FaceId, ValidationPolicy, VertexId};
 use crate::geometry::{Curve, GeometryError, Surface};
 use alloc::{boxed::Box, vec::Vec};
+use exedra_curves::profile::{CircularEdgeConstraints, CircularSamplingError, circular_edge_count};
 use exedra_math::{Placement3, narrow};
 use exedra_mesh::{BuildParams, Mesh};
-use exedra_profile::{CircularEdgeConstraints, CircularSamplingError, circular_edge_count};
 use exedra_triangulate::{PolygonInput, TriError, TriParams, triangulate_preserving_boundary};
 
 mod grid;
@@ -2332,7 +2332,7 @@ mod tests {
     #[test]
     fn profile_holes_and_both_pocket_directions_realize_from_the_retained_body() {
         use crate::extrusion::{End, Extrusion, Pocket};
-        use exedra_profile::{Loop, Profile, ProfilePolicy, Segment};
+        use exedra_curves::profile::{Loop, Profile, ProfilePolicy, Segment};
         let policy = ProfilePolicy::new(1e-9);
         let outer = Loop::new(vec![
             Segment::line([10.0, 0.0]),
@@ -2497,7 +2497,7 @@ mod tests {
         );
     }
     fn translated_bore() -> crate::bore::BoredPlate {
-        use exedra_profile::{Loop, Profile, ProfilePolicy, Segment};
+        use exedra_curves::profile::{Loop, Profile, ProfilePolicy, Segment};
         let size = 1e-6;
         let outline = Loop::new(vec![
             Segment::line([35.0 * size, -25.0 * size]),

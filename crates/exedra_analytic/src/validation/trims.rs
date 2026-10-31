@@ -8,7 +8,7 @@ use super::{
 use crate::body::{Body, Coedge, FaceId, LoopId, LoopTrims, TrimCurve};
 use crate::geometry::{Curve, Surface};
 use alloc::{borrow::Cow, vec, vec::Vec};
-use exedra_profile::{Loop, Profile, ProfilePolicy, Segment};
+use exedra_curves::profile::{Loop, Profile, ProfilePolicy, Segment};
 
 #[derive(Clone)]
 enum Shape {
@@ -90,7 +90,10 @@ fn inverse(a: [f64; 2], b: [f64; 2], p: [f64; 2]) -> Option<[f64; 2]> {
     let q = [cross(p, b) / determinant, cross(a, p) / determinant];
     q.into_iter().all(f64::is_finite).then_some(q)
 }
-fn polygon_loop(points: &[[f64; 2]], reverse: bool) -> Result<Loop, exedra_profile::LoopError> {
+fn polygon_loop(
+    points: &[[f64; 2]],
+    reverse: bool,
+) -> Result<Loop, exedra_curves::profile::LoopError> {
     let mut segments = points
         .iter()
         .copied()

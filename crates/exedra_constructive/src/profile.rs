@@ -39,7 +39,7 @@ pub use placement::CutoutPatternError;
 
 /// Shared opaque segment tag, carried through profiles, source maps and
 /// analytic face roles without conversion or interpretation.
-pub use exedra_profile::SegTag;
+pub use exedra_curves::profile::SegTag;
 
 /// Geometry of one segment; the start point is the previous segment's
 /// endpoint, the end point lives in [`Seg2::to`].
@@ -646,7 +646,7 @@ impl Profile2 {
         Self::new(self.outer.translated(offset)?, holes)
     }
 
-    /// This profile as a line and arc [`exedra_profile::Profile`], for heads
+    /// This profile as a line and arc [`exedra_curves::profile::Profile`], for heads
     /// that accept only exact lines and circular arcs.
     ///
     /// Endpoints, bulges and tags carry over unchanged, and `policy` validates
@@ -656,7 +656,7 @@ impl Profile2 {
     ///
     /// ```
     /// use exedra_constructive::builders::{circle, rect_centered};
-    /// use exedra_profile::ProfilePolicy;
+    /// use exedra_curves::profile::ProfilePolicy;
     ///
     /// let plate = rect_centered(80.0, 40.0)?.with_cutouts([circle(5.0)?])?;
     /// let shared = plate.to_line_arc(&ProfilePolicy::new(1e-6))?;
@@ -670,8 +670,8 @@ impl Profile2 {
     /// policy-defined segment, then any loop or arrangement error.
     pub fn to_line_arc(
         &self,
-        policy: &exedra_profile::ProfilePolicy,
-    ) -> Result<exedra_profile::Profile, LineArcError> {
+        policy: &exedra_curves::profile::ProfilePolicy,
+    ) -> Result<exedra_curves::profile::Profile, LineArcError> {
         let convert = |loop_: &Loop2, hole: Option<usize>| {
             let segments = loop_
                 .segs()
@@ -680,8 +680,8 @@ impl Profile2 {
                 .map(|(seg, s)| {
                     let to = [s.to.x, s.to.y];
                     let segment = match s.kind {
-                        SegKind::Line => exedra_profile::Segment::line(to),
-                        SegKind::Arc { bulge } => exedra_profile::Segment::arc(to, bulge),
+                        SegKind::Line => exedra_curves::profile::Segment::line(to),
+                        SegKind::Arc { bulge } => exedra_curves::profile::Segment::arc(to, bulge),
                         SegKind::Cubic { .. } | SegKind::PolicyTo { .. } => {
                             return Err(LineArcError::Unsupported { hole, seg });
                         }
@@ -692,7 +692,7 @@ impl Profile2 {
                     })
                 })
                 .collect::<Result<Vec<_>, _>>()?;
-            exedra_profile::Loop::new(segments).map_err(LineArcError::Loop)
+            exedra_curves::profile::Loop::new(segments).map_err(LineArcError::Loop)
         };
         let outer = convert(&self.outer, None)?;
         let holes = self
@@ -701,7 +701,7 @@ impl Profile2 {
             .enumerate()
             .map(|(hole, loop_)| convert(loop_, Some(hole)))
             .collect::<Result<Vec<_>, _>>()?;
-        exedra_profile::Profile::new(outer, holes, policy).map_err(LineArcError::Profile)
+        exedra_curves::profile::Profile::new(outer, holes, policy).map_err(LineArcError::Profile)
     }
 
     /// The outer loop.
@@ -717,24 +717,24 @@ impl Profile2 {
     }
 }
 
-impl exedra_profile::IntoProfile for &Profile2 {
+impl exedra_curves::profile::IntoProfile for &Profile2 {
     type Error = LineArcError;
 
     fn into_profile(
         self,
-        policy: &exedra_profile::ProfilePolicy,
-    ) -> Result<exedra_profile::Profile, Self::Error> {
+        policy: &exedra_curves::profile::ProfilePolicy,
+    ) -> Result<exedra_curves::profile::Profile, Self::Error> {
         self.to_line_arc(policy)
     }
 }
 
-impl exedra_profile::IntoProfile for Profile2 {
+impl exedra_curves::profile::IntoProfile for Profile2 {
     type Error = LineArcError;
 
     fn into_profile(
         self,
-        policy: &exedra_profile::ProfilePolicy,
-    ) -> Result<exedra_profile::Profile, Self::Error> {
+        policy: &exedra_curves::profile::ProfilePolicy,
+    ) -> Result<exedra_curves::profile::Profile, Self::Error> {
         self.to_line_arc(policy)
     }
 }
@@ -751,9 +751,9 @@ pub enum LineArcError {
         seg: usize,
     },
     /// A loop failed the shared loop checks.
-    Loop(exedra_profile::LoopError),
+    Loop(exedra_curves::profile::LoopError),
     /// The loops failed the shared arrangement checks.
-    Profile(exedra_profile::ProfileError),
+    Profile(exedra_curves::profile::ProfileError),
 }
 
 impl core::fmt::Display for LineArcError {
@@ -1359,7 +1359,7 @@ mod tests {
             .unwrap()
             .with_cutouts([crate::builders::circle(0.5).unwrap()])
             .unwrap();
-        let policy = exedra_profile::ProfilePolicy::new(1e-9);
+        let policy = exedra_curves::profile::ProfilePolicy::new(1e-9);
         let shared = plate.to_line_arc(&policy).unwrap();
         let source = plate.holes()[0].segs();
         let converted = shared.holes()[0].segments();

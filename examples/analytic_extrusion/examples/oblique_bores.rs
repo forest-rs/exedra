@@ -11,7 +11,7 @@ use exedra::{
         realize::RealizationPolicy,
     },
     constructive::{builders, ir::Placement3},
-    profile::{ProfilePolicy, SegTag},
+    curves::profile::{ProfilePolicy, SegTag},
 };
 use std::error::Error;
 use support::{Exhibit, export};

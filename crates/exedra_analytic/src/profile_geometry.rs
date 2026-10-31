@@ -4,8 +4,8 @@
 //! Shared lowering of a checked profile arc into supporting 3D geometry.
 
 use crate::geometry::{Curve, GeometryError};
+use exedra_curves::profile::Arc;
 use exedra_math::Placement3;
-use exedra_profile::Arc;
 
 pub(crate) fn circle(a: Arc, frame: Placement3) -> Result<Curve, GeometryError> {
     let (s, c) = (libm::sin(a.start_angle), libm::cos(a.start_angle));

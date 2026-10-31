@@ -21,7 +21,7 @@ std = ["exedra_analytic/std", "exedra_compile/std", "exedra_constructive/std", "
 exedra_analytic.workspace = true
 exedra_compile.workspace = true
 exedra_constructive.workspace = true
+exedra_curves.workspace = true
 exedra_mesh = { features = ["libm"], workspace = true }
-exedra_profile.workspace = true
 layerstack.workspace = true
 layerstack_schemas.workspace = true

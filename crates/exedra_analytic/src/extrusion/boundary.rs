@@ -6,8 +6,8 @@
 use crate::body::{BoundaryLoop, Coedge, LoopId, Sense};
 use crate::geometry::{Curve, ParameterDomain, ParameterRange, Surface};
 use alloc::vec::Vec;
+use exedra_curves::profile::Arc;
 use exedra_math::Placement3;
-use exedra_profile::Arc;
 
 pub(super) fn line(from: [f64; 3], to: [f64; 3]) -> (Curve, ParameterRange) {
     (

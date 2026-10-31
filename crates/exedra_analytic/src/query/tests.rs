@@ -11,7 +11,7 @@ use crate::{
     },
 };
 use alloc::{vec, vec::Vec};
-use exedra_profile::{Loop, Profile, ProfilePolicy, Segment};
+use exedra_curves::profile::{Loop, Profile, ProfilePolicy, Segment};
 
 fn stock() -> Body {
     let outline = Loop::new(vec![

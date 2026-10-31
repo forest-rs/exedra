@@ -44,6 +44,10 @@
 //!   [`PreparedNurbs::adaptive_sample`]): arc length by stated
 //!   Gauss-Legendre quadrature with the parameter at a length, and sampling
 //!   refined to a chord or angle [`Tolerance`] under a cap, reported.
+//! - **Profiles** ([`profile`]): exact 2D loops of lines and circular
+//!   arcs, validated against an explicit separation, combined as regions,
+//!   finished at their corners, and sampled with deterministic arc counts,
+//!   as Exedra's geometry heads share them.
 //! - **Reusable buffers**: every allocating function has an `_into` form
 //!   that fills a caller's buffers, and those that need scratch take a
 //!   [`Workspace`], so a caller that keeps them allocates nothing once they
@@ -156,6 +160,7 @@ mod frames;
 mod knots;
 mod measure;
 mod nurbs;
+pub mod profile;
 mod query;
 mod sample;
 mod sweep;

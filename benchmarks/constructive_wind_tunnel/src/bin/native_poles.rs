@@ -8,7 +8,7 @@
 
 use exedra_analytic::{realize::RealizationPolicy, revolve::Revolution};
 use exedra_constructive::ir::Placement3;
-use exedra_profile::{Loop, Profile, ProfilePolicy, Segment};
+use exedra_curves::profile::{Loop, Profile, ProfilePolicy, Segment};
 use serde_json::{Value, json};
 use std::{error::Error, hint::black_box, time::Instant};
 

@@ -5,7 +5,7 @@
 
 use super::{End, ExtrusionError, Pocket, PocketError};
 use alloc::vec::Vec;
-use exedra_profile::{Profile, ProfilePolicy};
+use exedra_curves::profile::{Profile, ProfilePolicy};
 
 pub(super) fn checked_depth(
     length: f64,

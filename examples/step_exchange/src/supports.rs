@@ -4,8 +4,8 @@
 //! Exact supporting surfaces exercised through native authored revolutions.
 
 use exedra_analytic::revolve::Revolution;
+use exedra_curves::profile::{Loop, Profile, ProfilePolicy, Segment};
 use exedra_math::Placement3;
-use exedra_profile::{Loop, Profile, ProfilePolicy, Segment};
 use exedra_step::{LengthUnit, StepOptions, export_body};
 use std::{error::Error, path::Path};
 
