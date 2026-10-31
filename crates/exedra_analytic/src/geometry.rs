@@ -206,65 +206,6 @@ impl Nurbs {
     pub(crate) fn piece(&self, range: ParameterRange) -> Option<NurbsCurve> {
         self.curve.segment(range.bounds())
     }
-
-    /// The first knot inside `range` that repeats `degree` times or more,
-    /// where the curve may turn a corner: its tangent may jump there.
-    pub(crate) fn kink(&self, range: ParameterRange) -> Option<f64> {
-        let degree = self.curve.order() as usize - 1;
-        let knots = self.curve.knots();
-        knots.iter().copied().find(|&u| {
-            range.min < u && u < range.max && knots.iter().filter(|&&k| k == u).count() >= degree
-        })
-    }
-
-    /// Whether the curve may turn a corner inside `range`.
-    fn kinked(&self, range: ParameterRange) -> bool {
-        self.kink(range).is_some()
-    }
-
-    /// The farthest a piece of the curve over `range` strays from the chord
-    /// between samples `step` apart in its parameter: `step^2 / 8` times
-    /// the largest `|C''|`, or, across a corner, `step / 2` times the
-    /// largest `|C'|`, since every point is within half a step of a sample.
-    /// Infinite where the bounds cannot be found.
-    pub(crate) fn chord_bound(&self, range: ParameterRange, step: f64) -> f64 {
-        let Some(bounds) = self.curve.view().prepare().range_bounds(range.bounds()) else {
-            return f64::INFINITY;
-        };
-        if self.kinked(range) {
-            0.5 * step * bounds.first
-        } else {
-            0.125 * step * step * bounds.second
-        }
-    }
-
-    /// The fewest uniform steps over `range` whose [chords](Self::chord_bound)
-    /// all lie within `tolerance` of the curve; `None` where that count
-    /// cannot be found or overflows `u32`.
-    pub(crate) fn edge_count(&self, range: ParameterRange, tolerance: f64) -> Option<u32> {
-        let bounds = self.curve.view().prepare().range_bounds(range.bounds())?;
-        let span = range.span();
-        let needed = if self.kinked(range) {
-            span * bounds.first / (2.0 * tolerance)
-        } else {
-            span * libm::sqrt(bounds.second / (8.0 * tolerance))
-        };
-        let needed = libm::ceil(needed).max(1.0);
-        if !needed.is_finite() || needed > f64::from(u32::MAX) {
-            return None;
-        }
-        #[expect(
-            clippy::cast_possible_truncation,
-            clippy::cast_sign_loss,
-            reason = "needed is a finite ceil in [1, u32::MAX]"
-        )]
-        let mut count = needed as u32;
-        // Rounding may leave the count a hair short of its own bound.
-        while self.chord_bound(range, span / f64::from(count)) > tolerance {
-            count = count.checked_add(1)?;
-        }
-        Some(count)
-    }
 }
 
 /// An untrimmed, validated 3D curve independent of any construction operation.

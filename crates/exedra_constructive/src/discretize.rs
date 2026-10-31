@@ -13,13 +13,15 @@
 //! - Arc interior points are computed with [`libm`] trig only (never `std`,
 //!   never kurbo's feature-dependent dispatch), from subdivision counts
 //!   derived once per arc by [`circular_edge_count`].
-//! - Cubic interior points are sampled at uniform parameters with a count
-//!   from the second-difference flatness bound — arithmetic plus square
-//!   roots, owned here (kurbo does not sit on the deterministic path at
-//!   all; [`crate::EVAL_SCHEMA_VERSION`] guards rule changes).
+//! - Cubic interior points are sampled at uniform parameters, as
+//!   `exedra_curves` evaluates a Bezier span, with a count from its chord
+//!   bound on the span — arithmetic plus square roots (kurbo does not sit
+//!   on the deterministic path at all; [`crate::EVAL_SCHEMA_VERSION`]
+//!   guards rule changes).
 
 use alloc::vec::Vec;
 
+use exedra_curves::CubicBasis;
 use kurbo::Point;
 
 use crate::len_u32;
@@ -326,7 +328,7 @@ fn segment_edge_count(
     match kind {
         SegKind::Line => Ok(1),
         SegKind::Arc { bulge } => Ok(arc_geometry(start, to, *bulge, policy)?.edges),
-        SegKind::Cubic { c1, c2 } => Ok(cubic_plan(start, *c1, *c2, to, policy)?.edges),
+        SegKind::Cubic { c1, c2 } => cubic_edges([start, *c1, *c2, to], policy),
         SegKind::PolicyTo {
             policy: _,
             realized,
@@ -352,7 +354,7 @@ fn emit_kind_interior(
             emit_arc_interior(out, start, to, *bulge, policy, seg_index, edges)
         }
         SegKind::Cubic { c1, c2 } => {
-            emit_cubic_interior(out, start, *c1, *c2, to, policy, seg_index, edges)
+            emit_cubic_interior(out, [start, *c1, *c2, to], policy, seg_index, edges)
         }
         SegKind::PolicyTo {
             policy: _,
@@ -573,178 +575,57 @@ fn float_ulp(value: f64) -> f64 {
     f64::from_bits(magnitude.to_bits() + 1) - magnitude
 }
 
-/// Emits a cubic's interior points by uniform-parameter sampling.
-///
-/// The subdivision count derives once from the classic second-difference
-/// flatness bound (`n >= sqrt(3 d / (4 tol))`, `d` the largest control
-/// second difference). If the required count exceeds the policy cap, the
-/// operation fails typed — so work is bounded up front even for hostile
-/// control points, and the math is arithmetic
-/// plus one square root: bit-deterministic everywhere and independent of
-/// kurbo's flattener.
-#[expect(
-    clippy::too_many_arguments,
-    reason = "the cubic's four points, policy, provenance, and count are the emission contract"
-)]
+/// Emits a cubic's interior points by uniform-parameter sampling, at
+/// least as many as [`cubic_edges`] requires.
 fn emit_cubic_interior(
     out: &mut DiscretizedLoop,
-    from: Point,
-    c1: Point,
-    c2: Point,
-    to: Point,
+    controls: [Point; 4],
     policy: &DiscretizePolicy,
     seg_index: u32,
     edges: u32,
 ) -> Result<(), DiscretizeError> {
-    let plan = cubic_plan(from, c1, c2, to, policy)?;
-    let edges = edges.max(plan.edges);
+    let edges = edges.max(cubic_edges(controls, policy)?);
+    let controls = controls.map(|p| [p.x, p.y]);
     let output_start = out.points.len() - 1;
     for k in 1..edges {
         let t = f64::from(k) / f64::from(edges);
-        // Bernstein-basis cubic Bézier evaluation: pure arithmetic.
-        let mt = 1.0 - t;
-        let a = mt * mt * mt;
-        let b = 3.0 * mt * mt * t;
-        let c = 3.0 * mt * t * t;
-        let e = t * t * t;
-        let p = [
-            a * from.x + b * c1.x + c * c2.x + e * to.x,
-            a * from.y + b * c1.y + c * c2.y + e * to.y,
-        ];
+        let p = CubicBasis::Bezier.evaluate(controls, t);
         if p.iter().any(|coordinate| !coordinate.is_finite()) {
             return Err(DiscretizeError::NumericLimit);
         }
         push_point(out, p, seg_index);
     }
-    if out.points.len() - output_start != edges as usize
-        || !cubic_chords_within(
-            &out.points[output_start..],
-            [from.x, from.y],
-            [c1.x, c1.y],
-            [c2.x, c2.y],
-            [to.x, to.y],
-            plan.second_difference,
-            plan.tolerance,
-            edges,
-        )
-    {
+    // A point that rounded onto its neighbour would merge two chords.
+    if out.points.len() - output_start != edges as usize {
         return Err(DiscretizeError::NumericLimit);
     }
     Ok(())
 }
 
-/// A cubic's flatness bound and the edge count its tolerance requires.
-struct CubicPlan {
-    second_difference: f64,
-    tolerance: f64,
-    edges: u32,
-}
-
-fn cubic_plan(
-    from: Point,
-    c1: Point,
-    c2: Point,
-    to: Point,
-    policy: &DiscretizePolicy,
-) -> Result<CubicPlan, DiscretizeError> {
-    let realizable_tolerance = coordinate_tolerance(
-        policy.chord_tolerance,
-        &[from.x, from.y, c1.x, c1.y, c2.x, c2.y, to.x, to.y],
-    )
-    .ok_or(DiscretizeError::NumericLimit)?;
-    let d1 = [
-        (from.x - c1.x) - (c1.x - c2.x),
-        (from.y - c1.y) - (c1.y - c2.y),
-    ];
-    let d2 = [(c1.x - c2.x) - (c2.x - to.x), (c1.y - c2.y) - (c2.y - to.y)];
-    let d = libm::hypot(d1[0], d1[1]).max(libm::hypot(d2[0], d2[1]));
-    if !d.is_finite() {
+/// The uniform-parameter edges a cubic needs: as many as keep every chord
+/// within the tolerance left after reserving rounding for its coordinates,
+/// by `exedra_curves`' exact second-derivative bound on a cubic span. The
+/// count is fixed before any point is emitted, so a hostile control
+/// polygon fails typed against the policy cap instead of working
+/// unboundedly.
+fn cubic_edges(controls: [Point; 4], policy: &DiscretizePolicy) -> Result<u32, DiscretizeError> {
+    let coordinates = controls.map(|p| [p.x, p.y]);
+    let tolerance = coordinate_tolerance(policy.chord_tolerance, coordinates.as_flattened())
+        .ok_or(DiscretizeError::NumericLimit)?;
+    let bound = CubicBasis::Bezier.chord_bound(coordinates);
+    if !bound.deviation(1.0).is_finite() {
         return Err(DiscretizeError::NumericLimit);
     }
-    let root_bound = libm::sqrt(d) * (libm::sqrt(3.0) * 0.5);
-    let needed = libm::ceil(root_bound / libm::sqrt(realizable_tolerance));
-    if !needed.is_finite() || needed > f64::from(u32::MAX) {
-        return Err(DiscretizeError::EdgeCountOverflow);
-    }
-    #[expect(
-        clippy::cast_possible_truncation,
-        clippy::cast_sign_loss,
-        reason = "needed is a finite nonnegative ceil within the u32 domain"
-    )]
-    let mut edges = (needed as u32).max(1);
-    while root_bound / f64::from(edges) > libm::sqrt(realizable_tolerance) {
-        edges = edges
-            .checked_add(1)
-            .ok_or(DiscretizeError::EdgeCountOverflow)?;
-    }
+    let edges = bound
+        .steps(tolerance)
+        .ok_or(DiscretizeError::EdgeCountOverflow)?;
     if edges > policy.max_segment_edges {
         return Err(DiscretizeError::ToleranceBudgetExceeded {
             required: edges,
             maximum: policy.max_segment_edges,
         });
     }
-    Ok(CubicPlan {
-        second_difference: d,
-        tolerance: realizable_tolerance,
-        edges,
-    })
-}
-
-#[expect(
-    clippy::too_many_arguments,
-    reason = "the cubic's four points, emitted samples, bound, and count are the audited contract"
-)]
-fn cubic_chords_within(
-    emitted: &[[f64; 2]],
-    from: [f64; 2],
-    c1: [f64; 2],
-    c2: [f64; 2],
-    to: [f64; 2],
-    second_difference: f64,
-    tolerance: f64,
-    edges: u32,
-) -> bool {
-    let local_c1 = [c1[0] - from[0], c1[1] - from[1]];
-    let local_c2 = [c2[0] - from[0], c2[1] - from[1]];
-    let local_to = [to[0] - from[0], to[1] - from[1]];
-    if local_c1
-        .iter()
-        .chain(&local_c2)
-        .chain(&local_to)
-        .any(|value| !value.is_finite())
-    {
-        return false;
-    }
-    let mut max_emission_error = 0.0_f64;
-    for k in 0..=edges {
-        let actual = if k == edges { to } else { emitted[k as usize] };
-        let actual_local = [actual[0] - from[0], actual[1] - from[1]];
-        let t = f64::from(k) / f64::from(edges);
-        let ideal_local = cubic_point_at([0.0, 0.0], local_c1, local_c2, local_to, t);
-        let error = libm::hypot(
-            actual_local[0] - ideal_local[0],
-            actual_local[1] - ideal_local[1],
-        );
-        if !error.is_finite() {
-            return false;
-        }
-        max_emission_error = max_emission_error.max(error);
-    }
-    let edges = f64::from(edges);
-    let flatness_bound = 0.75 * second_difference / (edges * edges);
-    flatness_bound.is_finite() && flatness_bound + max_emission_error <= tolerance
-}
-
-fn cubic_point_at(from: [f64; 2], c1: [f64; 2], c2: [f64; 2], to: [f64; 2], t: f64) -> [f64; 2] {
-    let mt = 1.0 - t;
-    let a = mt * mt * mt;
-    let b = 3.0 * mt * mt * t;
-    let c = 3.0 * mt * t * t;
-    let d = t * t * t;
-    [
-        a * from[0] + b * c1[0] + c * c2[0] + d * to[0],
-        a * from[1] + b * c1[1] + c * c2[1] + d * to[1],
-    ]
+    Ok(edges)
 }
 
 #[cfg(test)]

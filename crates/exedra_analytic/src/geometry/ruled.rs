@@ -426,7 +426,7 @@ impl Ruled {
         // second-derivative bound; across a corner it is not.
         for span in [&a, &b] {
             if let Curve::Nurbs(n) = &span.curve
-                && let Some(knot) = n.kink(span.range)
+                && let Some(knot) = n.curve().view().corner(span.range.bounds())
             {
                 return Err(GeometryError::Kinked { knot });
             }

@@ -11,7 +11,7 @@ use core::cmp::Ordering;
 use exedra_math::cross;
 
 use crate::vector::{WeightedPoint, dot, magnitude, sub};
-use crate::{CurveEvaluation, NurbsCurve, PreparedNurbs};
+use crate::{CubicBasis, CurveEvaluation, NurbsCurve, PreparedNurbs, ValidNurbs};
 
 impl CurveEvaluation<3> {
     /// The curvature, `|C' x C''| / |C'|^3`, or `None` where the curve
@@ -70,6 +70,15 @@ impl<const N: usize> PreparedNurbs<N> {
     /// conservative; splitting a range tightens them.
     #[must_use]
     pub fn range_bounds(&self, range: [f64; 2]) -> Option<RangeBounds<N>> {
+        self.bounds_per(range, 1.0)
+    }
+
+    /// As [`Self::range_bounds`], with derivatives taken against a
+    /// parameter `unit` times coarser than the curve's: each span's own
+    /// derivatives are divided by its width over `unit`, and that ratio's
+    /// square ([`per_unit`]), which for a unit near the range's length
+    /// stays representable however long or short the range is.
+    fn bounds_per(&self, range: [f64; 2], unit: f64) -> Option<RangeBounds<N>> {
         let [start, end] = self.domain();
         let [a, b] = range;
         if !(start <= a && a < b && b <= end) {
@@ -101,8 +110,9 @@ impl<const N: usize> PreparedNurbs<N> {
             // Derivatives in the span's own `[0, 1]`, which spans `width`
             // of the curve's parameter.
             let [first, second] = derivative_bounds(controls, &piece, [u0, u1]);
-            out.first = upper(out.first, first / width);
-            out.second = upper(out.second, second / width / width);
+            let [first, second] = per_unit([first, second], width, unit);
+            out.first = upper(out.first, first);
+            out.second = upper(out.second, second);
         }
         // Rounding in the arithmetic above, generously.
         let slack = 1.0 + 64.0 * f64::EPSILON * order as f64;
@@ -226,6 +236,179 @@ impl<const N: usize> PreparedNurbs<N> {
         // Lengths past the largest `f64` certify nothing.
         best.certain = best.distance.is_finite() && lower >= best.distance - tolerance;
         best
+    }
+}
+
+impl<const N: usize> ValidNurbs<'_, N> {
+    /// The first knot strictly inside `range` that occurs `degree` times
+    /// or more, where the curve's tangent may jump: a possible corner.
+    #[must_use]
+    pub fn corner(&self, range: [f64; 2]) -> Option<f64> {
+        let curve = self.curve();
+        let degree = curve.order as usize - 1;
+        let knots = curve.knots;
+        knots.iter().enumerate().find_map(|(i, &u)| {
+            let first = i == 0 || knots[i - 1] < u;
+            let inside = range[0] < u && u < range[1];
+            (first && inside && knots[i..].iter().take_while(|&&k| k == u).count() >= degree)
+                .then_some(u)
+        })
+    }
+
+    /// How far chords between uniform samples over `range` stray from the
+    /// curve, from [`PreparedNurbs::range_bounds`]; `None` unless `range`
+    /// is an interval of the domain the curve does not jump inside. At a
+    /// jump at either end of the range, samples there are the side within
+    /// it, as [`PreparedNurbs::evaluation_in`] gives them.
+    ///
+    /// Prepares the curve, which allocates; a caller sampling the same
+    /// range at several step sizes keeps the result.
+    #[must_use]
+    pub fn chord_bound(&self, range: [f64; 2]) -> Option<ChordBound> {
+        // A knot repeated `order` times inside the range is a jump, which
+        // no chord across it can follow.
+        let curve = self.curve();
+        let order = curve.order as usize;
+        let knots = curve.knots;
+        let jumps = knots.windows(order).any(|run| {
+            let u = run[0];
+            range[0] < u && u < range[1] && run.iter().all(|&k| k == u)
+        });
+        if jumps {
+            return None;
+        }
+        // Derivatives against the range's own `[0, 1]`, which a range
+        // however long or short leaves representable.
+        let span = range[1] - range[0];
+        let bounds = self.prepare().bounds_per(range, span)?;
+        Some(ChordBound {
+            span,
+            first: bounds.first,
+            second: bounds.second,
+            corner: self.corner(range),
+        })
+    }
+}
+
+impl CubicBasis {
+    /// How far chords between uniform samples of the span with `controls`
+    /// stray from it, over its own `[0, 1]`, as [`ChordBound`] describes;
+    /// nothing is allocated.
+    ///
+    /// The span is the cubic `a u^3 + b u^2 + c u + d` its basis matrix
+    /// gives. `C'' = 6 a u + 2 b` is linear, so its largest length is at an
+    /// end: the bound is exact. `C' = 3 a u^2 + 2 b u + c` is within its
+    /// Bernstein coefficients `c`, `c + b` and `c + 2 b + 3 a`. Both allow
+    /// for rounding in forming the coefficients, in proportion to the
+    /// largest control; a bound whose arithmetic overflows is infinite.
+    #[must_use]
+    pub fn chord_bound<const N: usize>(self, controls: [[f64; N]; 4]) -> ChordBound {
+        let m = self.matrix();
+        let power = |row: [f64; 4]| -> [f64; N] {
+            core::array::from_fn(|k| {
+                row.iter()
+                    .zip(&controls)
+                    .fold(0.0, |sum, (w, control)| sum + w * control[k])
+            })
+        };
+        let (a, b, c) = (power(m[0]), power(m[1]), power(m[2]));
+        let ends = [
+            core::array::from_fn(|k| 2.0 * b[k]),
+            core::array::from_fn(|k| 6.0 * a[k] + 2.0 * b[k]),
+        ];
+        let hodograph = [
+            c,
+            core::array::from_fn(|k| c[k] + b[k]),
+            core::array::from_fn(|k| c[k] + 2.0 * b[k] + 3.0 * a[k]),
+        ];
+        let reach = controls.iter().map(|p| magnitude(*p)).fold(0.0, upper);
+        // Relative to the controls, and absolute for subnormal ones.
+        let allowance = 256.0 * f64::EPSILON * reach + 256.0 * f64::from_bits(1);
+        let bound = |v: &[[f64; N]]| {
+            let largest = v.iter().map(|x| magnitude(*x)).fold(0.0, upper) + allowance;
+            if largest >= 0.0 {
+                largest
+            } else {
+                f64::INFINITY
+            }
+        };
+        ChordBound {
+            span: 1.0,
+            first: bound(&hodograph),
+            second: bound(&ends),
+            corner: None,
+        }
+    }
+}
+
+/// How far chords between uniform samples over a range of a curve stray
+/// from it, as [`ValidNurbs::chord_bound`] finds it.
+///
+/// Where the curve's tangent turns smoothly, a chord `h` long in the
+/// parameter strays at most `h^2 / 8` times the largest `|C''|`; across a
+/// possible corner, every point is within half a step of a sample, so at
+/// most `h / 2` times the largest `|C'|`. Both hold up to rounding.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct ChordBound {
+    /// The range's length in the curve's parameter.
+    span: f64,
+    /// The largest `|C'|` and `|C''|` against the range's own `[0, 1]`:
+    /// the curve's, times the span and its square.
+    first: f64,
+    second: f64,
+    corner: Option<f64>,
+}
+
+impl ChordBound {
+    /// The farthest a chord between samples `step` apart in the parameter
+    /// strays from the curve.
+    #[must_use]
+    pub fn deviation(&self, step: f64) -> f64 {
+        self.deviation_over(step / self.span)
+    }
+
+    /// The deviation for samples `fraction` of the range apart.
+    fn deviation_over(&self, fraction: f64) -> f64 {
+        if self.corner.is_some() {
+            0.5 * fraction * self.first
+        } else {
+            // One factor at a time, so neither overflows nor underflows on
+            // the way where the product does not.
+            0.125 * fraction * (fraction * self.second)
+        }
+    }
+
+    /// The fewest uniform steps over the range whose chords all stray at
+    /// most `tolerance`, found by bisection on the count, at most 32
+    /// trials; `None` unless `tolerance` is positive and some count up to
+    /// the largest `u32` suffices.
+    #[must_use]
+    pub fn steps(&self, tolerance: f64) -> Option<u32> {
+        if tolerance.is_nan() || tolerance <= 0.0 {
+            return None;
+        }
+        let fits = |steps: u32| self.deviation_over(1.0 / f64::from(steps)) <= tolerance;
+        if !fits(u32::MAX) {
+            return None;
+        }
+        // The fewest that fit lie in `(low, high]`.
+        let (mut low, mut high) = (0_u32, u32::MAX);
+        while high - low > 1 {
+            let middle = low + (high - low) / 2;
+            if fits(middle) {
+                high = middle;
+            } else {
+                low = middle;
+            }
+        }
+        Some(high)
+    }
+
+    /// A knot inside the range where the tangent may jump, which the
+    /// bound allows for.
+    #[must_use]
+    pub fn corner(&self) -> Option<f64> {
+        self.corner
     }
 }
 
@@ -431,6 +614,58 @@ fn upper(a: f64, b: f64) -> f64 {
     } else {
         a.max(b)
     }
+}
+
+/// A span's first and second derivative bounds, `[first, second]`
+/// against its own `[0, 1]`, against a parameter of which `unit` spans one:
+/// divided by `width / unit` and by its square. That ratio over- or
+/// underflows for a width and unit far apart where the results do not, so
+/// it is never formed: the mantissas divide, and the exponents' difference
+/// scales by powers of two, which are exact. With `unit` 1 the results are
+/// `first / width` and `second / width / width` exactly.
+fn per_unit([first, second]: [f64; 2], width: f64, unit: f64) -> [f64; 2] {
+    let (width_mantissa, width_exponent) = decompose(width);
+    let (unit_mantissa, unit_exponent) = decompose(unit);
+    let ratio = width_mantissa / unit_mantissa;
+    let exponent = unit_exponent - width_exponent;
+    [
+        times_power_of_two(first / ratio, exponent),
+        times_power_of_two(second / ratio / ratio, 2 * exponent),
+    ]
+}
+
+/// A positive finite `x` as `m 2^e`, `m` in `[1, 2)`.
+fn decompose(x: f64) -> (f64, i64) {
+    if x < f64::MIN_POSITIVE {
+        let (m, e) = decompose(x * f64::from_bits((1023 + 64) << 52));
+        return (m, e - 64);
+    }
+    let biased = (x.to_bits() >> 52) & 0x7FF;
+    let mantissa = f64::from_bits((x.to_bits() & 0x000F_FFFF_FFFF_FFFF) | (1023 << 52));
+    (mantissa, biased.cast_signed() - 1023)
+}
+
+/// `x 2^e`, in steps of at most `2^1000`, so no step overflows or
+/// underflows where the result does not.
+fn times_power_of_two(mut x: f64, mut e: i64) -> f64 {
+    let (up, down) = (
+        f64::from_bits((1023 + 1000) << 52),
+        f64::from_bits((1023 - 1000) << 52),
+    );
+    while e > 1000 {
+        x *= up;
+        e -= 1000;
+    }
+    while e < -1000 {
+        x *= down;
+        e += 1000;
+    }
+    #[expect(
+        clippy::cast_sign_loss,
+        reason = "e + 1023 lies in [23, 2023] after the steps above"
+    )]
+    let last = f64::from_bits(((e + 1023) as u64) << 52);
+    x * last
 }
 
 /// The power of two `2^-e` for the exponent `e` of a positive normal `x`
@@ -916,5 +1151,227 @@ mod tests {
         // The range up to the jump holds the piece before it.
         let bounds = jump.range_bounds([0.0, 1.0]).unwrap();
         assert_eq!(bounds.bounds[1][0], 1.0);
+    }
+
+    /// The farthest the polyline through `steps` uniform samples of `at`
+    /// over `[0, 1]` strays from the curve, measured densely.
+    fn chord_error(at: impl Fn(f64) -> [f64; 3], steps: u32) -> f64 {
+        let mut worst = 0.0_f64;
+        for k in 0..steps {
+            let (t0, t1) = (
+                f64::from(k) / f64::from(steps),
+                f64::from(k + 1) / f64::from(steps),
+            );
+            let (a, b) = (at(t0), at(t1));
+            for i in 1..64 {
+                let t = t0 + (t1 - t0) * f64::from(i) / 64.0;
+                let p = at(t);
+                let d = sub(b, a);
+                let s = (exedra_math::dot(sub(p, a), d) / exedra_math::dot(d, d)).clamp(0.0, 1.0);
+                let off = norm(sub(p, [a[0] + s * d[0], a[1] + s * d[1], a[2] + s * d[2]]));
+                worst = worst.max(off);
+            }
+        }
+        worst
+    }
+
+    #[test]
+    fn uniform_chords_meet_their_tolerance() {
+        use crate::CubicBasis;
+        let controls = [
+            [0.0, 0.0, 0.0],
+            [1.0, 3.0, 0.5],
+            [3.0, -2.0, 1.0],
+            [4.0, 1.0, 0.0],
+        ];
+        for basis in [
+            CubicBasis::Bezier,
+            CubicBasis::BSpline,
+            CubicBasis::CatmullRom,
+            CubicBasis::Hermite,
+        ] {
+            let bound = basis.chord_bound(controls);
+            for tolerance in [0.1, 1e-3, 1e-6] {
+                let steps = bound.steps(tolerance).unwrap();
+                assert!(bound.deviation(1.0 / f64::from(steps)) <= tolerance);
+                let error = chord_error(|u| basis.evaluate(controls, u), steps);
+                assert!(error <= tolerance, "{basis:?} {tolerance}: {error}");
+                // Not wildly more than needed.
+                if steps > 4 {
+                    let fewer = chord_error(|u| basis.evaluate(controls, u), steps / 4);
+                    assert!(fewer > tolerance, "{basis:?} {tolerance}: {steps} steps");
+                }
+            }
+        }
+        // A cubic Bezier's second derivative bound is exact: 6 times its
+        // largest control second difference.
+        let bound = CubicBasis::Bezier.chord_bound(controls);
+        assert!((bound.deviation(1.0) * 8.0 / 6.0 - 67.25_f64.sqrt()).abs() < 1e-9);
+        assert_eq!(bound.steps(0.0), None);
+        assert_eq!(bound.steps(f64::NAN), None);
+        assert_eq!(
+            CubicBasis::Bezier
+                .chord_bound([[f64::MAX; 3]; 4])
+                .steps(1.0),
+            None
+        );
+    }
+
+    #[test]
+    fn chords_across_a_corner_are_bounded_by_speed() {
+        // A quadratic with a double knot at 1: a corner there.
+        let curve = NurbsCurve::new(
+            3,
+            vec![0.0, 0.0, 0.0, 1.0, 1.0, 2.0, 2.0, 2.0],
+            vec![
+                [0.0; 3],
+                [1.0, 2.0, 0.0],
+                [2.0, 0.0, 0.0],
+                [3.0, 2.0, 0.0],
+                [4.0, 0.0, 0.0],
+            ],
+            None,
+        )
+        .unwrap();
+        let view = curve.view();
+        assert_eq!(view.corner([0.0, 2.0]), Some(1.0));
+        assert_eq!(view.corner([0.0, 1.0]), None);
+        let bound = view.chord_bound([0.0, 2.0]).unwrap();
+        assert_eq!(bound.corner(), Some(1.0));
+        for tolerance in [0.1, 1e-3] {
+            // An odd count puts no sample on the corner.
+            let steps = bound.steps(tolerance).unwrap() | 1;
+            let error = chord_error(|u| view.evaluate(2.0 * u), steps);
+            assert!(error <= tolerance, "{tolerance}: {error}");
+        }
+        // Either side alone turns smoothly.
+        let side = view.chord_bound([0.0, 1.0]).unwrap();
+        assert_eq!(side.corner(), None);
+        let steps = side.steps(1e-3).unwrap();
+        assert!(chord_error(|u| view.evaluate(u), steps) <= 1e-3);
+    }
+
+    #[test]
+    fn chord_counts_survive_extreme_scales_and_refuse_jumps() {
+        // A slight curve over a vast parameter range: one chord suffices,
+        // and finding so takes no long correction.
+        let vast = NurbsCurve::<2>::new(
+            3,
+            vec![0.0, 0.0, 0.0, 1e200, 1e200, 1e200],
+            vec![[0.0, 0.0], [0.0, 1e100], [1e100, 0.0]],
+            None,
+        )
+        .unwrap();
+        let bound = vast.view().chord_bound([0.0, 1e200]).unwrap();
+        let steps = bound.steps(1e100).unwrap();
+        assert!(steps <= 2 && bound.deviation(1e200 / f64::from(steps)) <= 1e100);
+        // Constant pieces between jumps: no chord across one follows it.
+        let jumps = NurbsCurve::<2>::new(
+            2,
+            vec![0.0, 0.0, 1.0, 1.0, 2.0, 2.0, 3.0, 3.0],
+            vec![
+                [0.0, 0.0],
+                [0.0, 0.0],
+                [0.0, 1.0],
+                [0.0, 1.0],
+                [1.0, 0.0],
+                [1.0, 0.0],
+            ],
+            None,
+        )
+        .unwrap();
+        assert_eq!(jumps.view().chord_bound([0.0, 3.0]), None);
+        assert!(jumps.view().chord_bound([1.0, 2.0]).is_some());
+        // Subnormal controls keep an absolute allowance: this span's middle
+        // is 9/8 of the least subnormal above its chord.
+        let q = f64::from_bits(1);
+        let tiny = crate::CubicBasis::CatmullRom.chord_bound([[-8.0 * q], [q], [q], [-8.0 * q]]);
+        assert!(tiny.deviation(1.0) >= 9.0 / 8.0 * q, "{tiny:?}");
+        assert!(tiny.steps(q).is_none_or(|steps| steps > 1));
+    }
+
+    #[test]
+    fn step_counts_are_the_fewest_up_to_the_largest_u32() {
+        use crate::CubicBasis;
+        let flat = CubicBasis::Bezier.chord_bound([[0.0], [0.0], [1.0], [1.0]]);
+        assert_eq!(flat.steps(flat.deviation(1.0 / 3.0)), Some(3));
+        let most = CubicBasis::Bezier.chord_bound([[-2.0], [-2.0], [-2.0], [1.0]]);
+        let steps = most
+            .steps(most.deviation(1.0 / f64::from(u32::MAX)))
+            .unwrap();
+        assert!(steps >= u32::MAX - 4, "{steps}");
+    }
+
+    #[test]
+    fn chord_counts_hold_over_vast_ranges() {
+        // A parabola over a range of 1e200: its curve-parameter second
+        // derivative underflows, but its chords still stray.
+        let vast = NurbsCurve::new(
+            3,
+            vec![0.0, 0.0, 0.0, 1e200, 1e200, 1e200],
+            vec![[0.0; 3], [0.0, 1.0, 0.0], [1.0, 0.0, 0.0]],
+            None,
+        )
+        .unwrap();
+        let view = vast.view();
+        let steps = view.chord_bound([0.0, 1e200]).unwrap().steps(1e-3).unwrap();
+        assert!(
+            chord_error(|u| view.evaluate(u * 1e200), steps) <= 1e-3,
+            "{steps}"
+        );
+        // A cornered line whose speed bound is near the bottom of `f64`:
+        // about 1e5 steps, not the largest `u32`.
+        let slow = NurbsCurve::<1>::new(
+            2,
+            vec![0.0, 0.0, 1e200, 2e200, 2e200],
+            vec![[0.0], [1e-110], [0.0]],
+            None,
+        )
+        .unwrap();
+        let steps = slow
+            .view()
+            .chord_bound([0.0, 2e200])
+            .unwrap()
+            .steps(1e-115)
+            .unwrap();
+        assert!((50_000..=200_000).contains(&steps), "{steps}");
+    }
+
+    #[test]
+    fn chord_counts_survive_spans_far_from_their_range() {
+        // A span 2^600 long sampled over 2^-424 of it: the ratio of the
+        // two overflows, but the bounds do not.
+        let span = 2.0_f64.powi(600);
+        let reach = 2.0_f64.powi(1018);
+        let wide = NurbsCurve::new(
+            3,
+            vec![0.0, 0.0, 0.0, span, span, span],
+            vec![[0.0; 3], [reach, 0.0, 0.0], [0.0, reach, 0.0]],
+            None,
+        )
+        .unwrap();
+        let bound = wide.view().chord_bound([0.0, 2.0_f64.powi(-424)]).unwrap();
+        assert!(
+            bound
+                .steps(2.0_f64.powi(-1040))
+                .is_none_or(|steps| steps >= 16)
+        );
+        // A span 2^-600 wide beside one of 2^600: the ratio underflows, but
+        // one chord within 2^300 still suffices.
+        let narrow = NurbsCurve::<1>::new(
+            2,
+            vec![
+                0.0,
+                0.0,
+                2.0_f64.powi(-600),
+                2.0_f64.powi(600),
+                2.0_f64.powi(600),
+            ],
+            vec![[0.0], [2.0_f64.powi(-900)], [0.0]],
+            None,
+        )
+        .unwrap();
+        let bound = narrow.view().chord_bound([0.0, 2.0_f64.powi(600)]).unwrap();
+        assert_eq!(bound.steps(2.0_f64.powi(300)), Some(1));
     }
 }

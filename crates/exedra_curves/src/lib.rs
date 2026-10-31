@@ -172,7 +172,7 @@ pub use measure::{
     chain_lengths_into, chain_station_at_length,
 };
 pub use nurbs::{Nurbs, NurbsCurve, NurbsError, NurbsSamples, PreparedNurbs, ValidNurbs};
-pub use query::{Closest, RangeBounds};
+pub use query::{ChordBound, Closest, RangeBounds};
 pub use sample::{
     ControlOutOfRange, Span, Station, sample, sample_derivative, sample_derivative_into,
     sample_into, sample_linear, sample_linear_into, stations, stations_into,
