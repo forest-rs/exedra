@@ -50,6 +50,7 @@ mod blend;
 mod bounds;
 pub mod claims;
 mod combine;
+mod expr;
 mod field;
 mod formula;
 pub mod number;
@@ -62,6 +63,7 @@ pub use blend::SmoothUnionN;
 pub use bounds::{Aabb, Aabb2};
 pub use claims::{Claims, Metric, ProfileClaims, Support};
 pub use combine::{Difference, Intersection, SmoothUnion, Tagged, Union};
+pub use expr::{Expr, ProfileExpr};
 pub use field::{Crease, ScalarField, Tie};
 pub use formula::{Formula, Opaque, Profile};
 pub use number::{Dual, Interval, Number};
@@ -165,5 +167,10 @@ pub(crate) fn check_direction(
     value: [f64; 3],
 ) -> Result<[f64; 3], FieldError> {
     check_finite(parameter, value)?;
+    // A unit vector is kept exactly, so a direction read back from a field
+    // rebuilds the same field.
+    if exedra_math::is_unit(value, 4.0 * f64::EPSILON) {
+        return Ok(value);
+    }
     exedra_math::normalize(value).ok_or(FieldError::DegenerateDirection { parameter })
 }

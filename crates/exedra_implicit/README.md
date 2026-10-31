@@ -74,6 +74,14 @@ Built-in fields state them from their parameters, and combinators derive
 theirs from their parts' through the arithmetic they apply, so claims are
 never stated by hand for a composite.
 
+## Fields as data
+
+`Expr` is a field as a value: a tree of the built-in shapes, `ProfileExpr`
+profiles, combinations, placements and tags, each variant holding the type it
+names. It evaluates exactly as those types do, so it can be built at run
+time, stored, compared, and serialized by a consumer, as constructive recipes
+do for their implicit leaves.
+
 ## Built-in fields
 
 - Shapes, exact distances with checked parameters: `Sphere`, `Cuboid`,

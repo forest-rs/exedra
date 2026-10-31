@@ -173,8 +173,17 @@ impl<F> Placed<F> {
 
 /// `placement` with nearly orthonormal `axes` made orthonormal: the first
 /// axis kept in direction, the second made perpendicular to it, and the
-/// third their cross product.
+/// third their cross product. Axes already orthonormal to within rounding
+/// are kept as they are, so a placement made rigid stays exactly the same.
 fn rigid(placement: &Placement3, axes: [[f64; 3]; 3]) -> Placement3 {
+    let rounding = 16.0 * f64::EPSILON;
+    if axes
+        .iter()
+        .all(|axis| exedra_math::is_unit(*axis, rounding))
+        && exedra_math::is_orthogonal_frame(axes, rounding)
+    {
+        return *placement;
+    }
     let x = exedra_math::normalize(axes[0]).unwrap_or(axes[0]);
     let along = exedra_math::dot(axes[1], x);
     let y = exedra_math::normalize(core::array::from_fn(|i| axes[1][i] - along * x[i]))
@@ -281,6 +290,33 @@ mod tests {
             assert!(bounds.contains(p), "{bounds:?} misses {x}");
         }
         assert_eq!(placed.placement().rows[0][0], 1.0);
+    }
+
+    #[test]
+    fn rigid_placements_are_kept_exactly() {
+        let sphere = Sphere::new([0.0; 3], 1.0).unwrap();
+        for k in 0..200_u32 {
+            // Axes from the rotation about a scattered unit axis.
+            let t = f64::from(k);
+            let (a, b) = ((t * 0.37).sin(), (t * 0.91).cos());
+            let axis = exedra_math::normalize([a, b, 0.4 + (t * 0.13).sin()]).unwrap();
+            let angle = t * 0.29 - 3.0;
+            let (s, c) = (angle.sin(), angle.cos());
+            let column = |e: [f64; 3]| -> [f64; 3] {
+                let d = exedra_math::dot(axis, e);
+                let x = exedra_math::cross(axis, e);
+                core::array::from_fn(|i| e[i] * c + x[i] * s + axis[i] * d * (1.0 - c))
+            };
+            let placement = Placement3::from_axes(
+                column([1.0, 0.0, 0.0]),
+                column([0.0, 1.0, 0.0]),
+                column([0.0, 0.0, 1.0]),
+                [0.3, -1.0, 2.0],
+            );
+            let once = Placed::new(sphere, placement).unwrap().placement();
+            let twice = Placed::new(sphere, once).unwrap().placement();
+            assert_eq!(once, twice, "{k}");
+        }
     }
 
     #[test]
