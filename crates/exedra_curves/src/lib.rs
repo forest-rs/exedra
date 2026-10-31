@@ -151,6 +151,7 @@
 extern crate alloc;
 
 mod basis;
+mod conic;
 mod frames;
 mod knots;
 mod measure;
