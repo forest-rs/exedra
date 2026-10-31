@@ -925,6 +925,22 @@ fn coordinates(frame: Placement3, p: [f64; 3]) -> [f64; 3] {
     let delta = sub(p, frame.rows.map(|r| r[3]));
     core::array::from_fn(|i| dot(delta, frame.rows.map(|r| r[i])))
 }
+/// The unit normal of the plane a frame's U and V axes span, on which its
+/// points are evaluated: a checked frame's stored Z is only nearly normal
+/// to it, which far from the origin is a measurable tilt.
+fn spanned_normal(frame: Placement3) -> Option<[f64; 3]> {
+    exedra_math::normalize(exedra_math::cross(
+        frame.rows.map(|r| r[0]),
+        frame.rows.map(|r| r[1]),
+    ))
+}
+/// Distance from the plane a frame's U and V axes span through its origin;
+/// infinite where they span none.
+fn plane_distance(frame: Placement3) -> impl Fn([f64; 3]) -> f64 {
+    let normal = spanned_normal(frame);
+    let origin = frame.rows.map(|r| r[3]);
+    move |p| normal.map_or(f64::INFINITY, |n| dot(sub(p, origin), n).abs())
+}
 fn support_gap(curve: &Curve, range: ParameterRange, surface: &Surface) -> f64 {
     if let Surface::Ruled(ruled) = surface {
         // Full-curve comparison against the patch's exact four boundaries.
@@ -950,9 +966,13 @@ fn support_gap(curve: &Curve, range: ParameterRange, surface: &Surface) -> f64 {
             let Some(b) = curve.evaluate(range.bounds()[1]) else {
                 return f64::INFINITY;
             };
+            if let Surface::Plane(_) = surface {
+                let distance = plane_distance(frame);
+                return distance(a.point).max(distance(b.point));
+            }
             let (a, b) = (coordinates(frame, a.point), coordinates(frame, b.point));
             match surface {
-                Surface::Ruled(_) => unreachable!(),
+                Surface::Ruled(_) | Surface::Plane(_) => unreachable!(),
                 Surface::Sphere(_) => f64::INFINITY,
                 Surface::Torus(t) => {
                     // Distance to a closed set is 1-Lipschitz. Each point of
@@ -965,7 +985,6 @@ fn support_gap(curve: &Curve, range: ParameterRange, surface: &Surface) -> f64 {
                     };
                     gap(a).max(gap(b)) + 0.5 * length(sub(b, a))
                 }
-                Surface::Plane(_) => a[2].abs().max(b[2].abs()),
                 Surface::Cylinder(cylinder) => {
                     let dx = b[0] - a[0];
                     let dy = b[1] - a[1];
@@ -1045,7 +1064,10 @@ fn support_gap(curve: &Curve, range: ParameterRange, surface: &Surface) -> f64 {
                     };
                     orbit.min(meridian)
                 }
-                Surface::Plane(_) => center[2].abs() + circle.radius() * tilt,
+                Surface::Plane(_) => spanned_normal(frame).map_or(f64::INFINITY, |n| {
+                    plane_distance(frame)(cf.rows.map(|r| r[3]))
+                        + circle.radius() * libm::hypot(dot(axis(0), n), dot(axis(1), n))
+                }),
                 Surface::Cylinder(cylinder) => {
                     libm::hypot(center[0], center[1])
                         + (circle.radius() - cylinder.radius()).abs()
@@ -1108,6 +1130,28 @@ pub(crate) mod tests {
             support_gap(&chord, ParameterRange::UNIT, &surface) > 7.0,
             "surface endpoints do not validate the chord interior"
         );
+    }
+
+    #[test]
+    fn plane_support_is_measured_from_the_plane_its_axes_span() {
+        // An accepted frame is only nearly orthonormal: its stored normal
+        // misses the plane its axes span by 5e-13 radians, which a megametre
+        // out is 5e-7 from the plane points are evaluated on.
+        let surface = Surface::plane(Placement3::from_axes(
+            [1.0, 0.0, 5e-13],
+            [0.0, 1.0, 0.0],
+            [0.0, 0.0, 1.0],
+            [0.0; 3],
+        ))
+        .unwrap();
+        let far = [1e6, 0.0, 0.0];
+        let unit = ParameterRange::UNIT;
+        let line = Curve::line(far, [0.0, 1.0, 0.0]).unwrap();
+        let circle = Curve::circle(Placement3::translate(1e6, 0.0, 0.0), 1.0).unwrap();
+        for curve in [line, circle] {
+            let gap = support_gap(&curve, unit, &surface);
+            assert!((4.9e-7..1e-6).contains(&gap), "{curve:?}: {gap}");
+        }
     }
 
     pub(crate) fn cylinder_parts() -> BodyParts {
