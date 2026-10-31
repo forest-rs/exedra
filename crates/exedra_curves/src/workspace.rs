@@ -36,8 +36,10 @@ pub struct Workspace<const N: usize = 3> {
     pub(crate) refined: Vec<Refined<N>>,
     /// Adaptive sampling's next round.
     pub(crate) refining: Vec<Refined<N>>,
-    /// The Bezier control polygon of the interval being tested.
-    pub(crate) polygon: Vec<[f64; N]>,
+    /// The weighted Bezier controls of the interval being bounded.
+    pub(crate) piece: Vec<WeightedPoint<N>>,
+    /// The Bezier coefficients of that interval's tangent numerator.
+    pub(crate) numerator: Vec<[f64; N]>,
 }
 
 impl<const N: usize> Workspace<N> {
@@ -53,7 +55,8 @@ impl<const N: usize> Workspace<N> {
             ring_sides: 0,
             refined: Vec::new(),
             refining: Vec::new(),
-            polygon: Vec::new(),
+            piece: Vec::new(),
+            numerator: Vec::new(),
         }
     }
 }

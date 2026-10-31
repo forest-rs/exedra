@@ -168,7 +168,7 @@ pub use frames::{
     rotation_minimizing_frames_into,
 };
 pub use measure::{
-    AdaptiveReport, Tolerance, adaptive_stations, adaptive_stations_into, chain_lengths,
+    AdaptiveReport, Interval, Tolerance, adaptive_stations, adaptive_stations_into, chain_lengths,
     chain_lengths_into, chain_station_at_length,
 };
 pub use nurbs::{Nurbs, NurbsCurve, NurbsError, NurbsSamples, PreparedNurbs, ValidNurbs};

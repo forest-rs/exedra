@@ -201,12 +201,14 @@ fn borrowed<const N: usize>(order: usize) {
     let mut prepared = valid.prepare();
     let mut samples = NurbsSamples::default();
     let mut lengths = Vec::new();
+    let mut intervals = Vec::new();
     let mut run = || {
         valid.prepare_into(&mut workspace, &mut prepared);
         valid
             .sample_into(None, 8, &mut workspace, &mut samples)
             .unwrap();
         prepared.adaptive_sample_into(tolerance, 4000, &mut workspace, &mut samples);
+        prepared.adaptive_intervals_into(tolerance, 4000, &mut workspace, &mut intervals);
         prepared.lengths_into(4, &mut workspace, &mut lengths);
         if order <= 8 {
             core::hint::black_box(prepared.evaluation(0.5));
