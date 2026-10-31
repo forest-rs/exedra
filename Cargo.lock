@@ -370,6 +370,7 @@ dependencies = [
 name = "exedra_constructive"
 version = "0.1.0"
 dependencies = [
+ "exedra_curves",
  "exedra_implicit",
  "exedra_isosurface",
  "exedra_math",

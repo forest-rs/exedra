@@ -28,6 +28,7 @@ std = [
 ]
 
 [dependencies]
+exedra_curves = { features = ["libm"], workspace = true }
 exedra_implicit = { features = ["libm"], workspace = true }
 exedra_isosurface = { features = ["libm"], workspace = true }
 exedra_math = { features = ["libm"], workspace = true }

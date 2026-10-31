@@ -699,7 +699,10 @@ impl<F, E> Body<F, E> {
                         Curve::Nurbs(nurbs) => {
                             let edge = EdgeId(crate::usize_to_u32(i));
                             let required = nurbs
-                                .edge_count(range, curve_tolerance)
+                                .curve()
+                                .view()
+                                .chord_bound(range.bounds())
+                                .and_then(|chords| chords.steps(curve_tolerance))
                                 .ok_or(RealizationError::Sampling {
                                     edge,
                                     error: CircularSamplingError::EdgeCountOverflow,
@@ -1010,7 +1013,10 @@ impl<F, E> Body<F, E> {
             }
             if let Curve::Nurbs(nurbs) = curve {
                 max_parameter_step = max_parameter_step.max((max - previous_parameter).abs());
-                curve_deviation = curve_deviation.max(nurbs.chord_bound(range, max_parameter_step));
+                let chords = nurbs.curve().view().chord_bound(range.bounds());
+                curve_deviation = curve_deviation.max(
+                    chords.map_or(f64::INFINITY, |chords| chords.deviation(max_parameter_step)),
+                );
             }
             if let Some(radius) = curve.sampling_radius() {
                 // Absolute parameter origins can make nominally equal steps

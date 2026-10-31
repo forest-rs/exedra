@@ -299,8 +299,10 @@ mod tests {
                         let band = usize::from(span.band);
                         let p = if smooth {
                             lerp(
-                                super::super::point(super::super::controls(&sections, band, 0), v),
-                                super::super::point(super::super::controls(&sections, band, 1), v),
+                                exedra_curves::CubicBasis::Bezier
+                                    .evaluate(super::super::controls(&sections, band, 0), v),
+                                exedra_curves::CubicBasis::Bezier
+                                    .evaluate(super::super::controls(&sections, band, 1), v),
                                 u,
                             )
                         } else {

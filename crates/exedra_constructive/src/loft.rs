@@ -11,7 +11,8 @@
 use crate::tessellate::ProfileBoundaryEdge;
 use alloc::boxed::Box;
 use alloc::vec::Vec;
-use exedra_math::{add, dot, lerp, norm, scale, sub};
+use exedra_curves::CubicBasis;
+use exedra_math::{add, dot, scale, sub};
 
 mod correspondence;
 pub use correspondence::{
@@ -212,13 +213,6 @@ fn controls(sections: &[Vec<[f64; 3]>], band: usize, vertex: usize) -> [[f64; 3]
     ]
 }
 
-fn point(c: [[f64; 3]; 4], t: f64) -> [f64; 3] {
-    let a = lerp(c[0], c[1], t);
-    let b = lerp(c[1], c[2], t);
-    let d = lerp(c[2], c[3], t);
-    lerp(lerp(a, b, t), lerp(b, d, t), t)
-}
-
 pub(crate) fn sample(
     sections: &[Vec<[f64; 3]>],
     policy: LoftSamplingPolicy,
@@ -238,7 +232,7 @@ pub(crate) fn sample(
     let mut spans = Vec::new();
     for band in 0..sections.len() - 1 {
         let mut curves = Vec::with_capacity(count as usize);
-        let mut error = 0.0_f64;
+        let mut bounds = Vec::with_capacity(count as usize);
         let mut magnitude = 0.0_f64;
         for vertex in 0..count as usize {
             let c = controls(sections, band, vertex);
@@ -264,11 +258,11 @@ pub(crate) fn sample(
                     });
                 }
             }
-            for triple in c.windows(3) {
-                // max |P''| / 8 bounds deviation from a uniform chord.
-                let second = sub(sub(triple[2], triple[1]), sub(triple[1], triple[0]));
-                error = error.max(0.75 * norm(second));
+            let bound = CubicBasis::Bezier.chord_bound(c);
+            if !bound.deviation(1.0).is_finite() {
+                return Err(LoftError::NumericLimit);
             }
+            bounds.push(bound);
             for x in c.iter().flatten() {
                 magnitude = magnitude.max(x.abs());
             }
@@ -276,37 +270,36 @@ pub(crate) fn sample(
         }
         let rounding = magnitude * (128.0 * f64::EPSILON);
         let available = policy.chord_tolerance - rounding;
-        if !error.is_finite() || available <= 0.0 {
+        if available <= 0.0 {
             return Err(LoftError::NumericLimit);
         }
-        let required = libm::ceil(libm::sqrt(error / available)).max(1.0);
-        if required > f64::from(policy.max_band_edges) {
-            return Err(LoftError::BudgetExceeded);
+        // One count for every trajectory, so each ring lies at one
+        // parameter of all of them.
+        let mut edges = 1;
+        for bound in &bounds {
+            edges = edges.max(bound.steps(available).ok_or(LoftError::BudgetExceeded)?);
         }
-        #[expect(
-            clippy::cast_possible_truncation,
-            clippy::cast_sign_loss,
-            reason = "positive count bounded by the u16 policy limit"
-        )]
-        let mut edges = required as u32;
-        // Preserve the bound even if the square root rounded down at an integer.
-        while error / (f64::from(edges) * f64::from(edges)) + rounding > policy.chord_tolerance {
-            edges += 1;
-            if edges > policy.max_band_edges {
-                return Err(LoftError::BudgetExceeded);
-            }
+        if edges > policy.max_band_edges {
+            return Err(LoftError::BudgetExceeded);
         }
         let vertices = (rings.len() as u64 + u64::from(edges)) * u64::from(count);
         if vertices > u64::from(policy.max_vertices) {
             return Err(LoftError::BudgetExceeded);
         }
-        let bound = error / (f64::from(edges) * f64::from(edges)) + rounding;
+        let step = 1.0 / f64::from(edges);
+        let bound = bounds
+            .iter()
+            .fold(0.0, |worst: f64, b| worst.max(b.deviation(step)))
+            + rounding;
         for step in 1..=edges {
             let t = f64::from(step) / f64::from(edges);
             let ring = if step == edges {
                 sections[band + 1].clone()
             } else {
-                curves.iter().map(|&c| point(c, t)).collect()
+                curves
+                    .iter()
+                    .map(|&c| CubicBasis::Bezier.evaluate(c, t))
+                    .collect()
             };
             rings.push(ring);
             spans.push(LoftSpan {
@@ -332,6 +325,7 @@ pub(crate) fn sample(
 mod tests {
     use super::*;
     use alloc::vec;
+    use exedra_math::{lerp, norm};
 
     #[test]
     fn trajectories_interpolate_sections_with_shared_derivatives_and_bounded_chords() {
@@ -363,7 +357,9 @@ mod tests {
                 let t = f64::from(step) / 16.0;
                 let parameter = span.parameter[0] + t * (span.parameter[1] - span.parameter[0]);
                 let chord = lerp(sampled.rings[i][0], sampled.rings[i + 1][0], t);
-                assert!(norm(sub(point(c, parameter), chord)) <= span.chord_bound);
+                assert!(
+                    norm(sub(CubicBasis::Bezier.evaluate(c, parameter), chord)) <= span.chord_bound
+                );
                 assert!(span.chord_bound <= policy.chord_tolerance);
             }
         }
