@@ -8,6 +8,7 @@ use super::{
 };
 use crate::path::{DiscretizedPath, PathClosure, PathJoin, PathStation, same_tangent};
 use alloc::vec::Vec;
+use exedra_math::path::double_reflection;
 use exedra_math::{add, cross, dot, scale, sub};
 
 fn station_frame(
@@ -58,17 +59,14 @@ pub(super) fn frames(
         let next = stations[1];
         // Double-reflection transport within an analytic span, to the incoming
         // tangent at its endpoint. An authored corner then uses shortest rotation.
-        let chord = sweep_direction(previous.point, next.point)?;
-        let reflected_x = sub(x, scale(chord, 2.0 * dot(chord, x)));
-        let reflected_t = sub(
+        sweep_direction(previous.point, next.point)?;
+        x = double_reflection(
+            previous.point,
+            x,
             previous.tangent,
-            scale(chord, 2.0 * dot(chord, previous.tangent)),
+            next.point,
+            next.incoming_tangent,
         );
-        x = if let Some(normal) = unit_vector(sub(next.incoming_tangent, reflected_t)) {
-            sub(reflected_x, scale(normal, 2.0 * dot(normal, reflected_x)))
-        } else {
-            reflected_x
-        };
         x = initial_section_x(next.incoming_tangent, x)?;
         let frame = station_frame(next, index + 1, x, joins)?;
         if !same_tangent(next.incoming_tangent, next.tangent) {
