@@ -608,7 +608,7 @@ fn largest<const M: usize>(v: &[[f64; M]]) -> f64 {
 
 /// The larger of two bounds, infinite if either is NaN, so arithmetic
 /// that failed bounds nothing rather than vanishing from a maximum.
-fn upper(a: f64, b: f64) -> f64 {
+pub(crate) fn upper(a: f64, b: f64) -> f64 {
     if a.is_nan() || b.is_nan() {
         f64::INFINITY
     } else {
@@ -694,7 +694,7 @@ fn product<const N: usize>(a: &[[f64; N]], b: &[[f64; 1]]) -> Vec<[f64; N]> {
 }
 
 /// `n` choose `k`, exact for the small degrees curves take.
-fn binomial(n: usize, k: usize) -> f64 {
+pub(crate) fn binomial(n: usize, k: usize) -> f64 {
     (0..k).fold(1.0, |b, i| b * (n - i) as f64 / (i + 1) as f64)
 }
 
