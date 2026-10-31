@@ -424,6 +424,7 @@ impl core::fmt::Display for FeatureLabel {
                 seg,
             } => write!(f, "loft_wall {band} {loop_index} {seg}"),
             Feature::Imported => write!(f, "imported"),
+            Feature::ImplicitRegion { region } => write!(f, "implicit_region {region}"),
             Feature::PrimitiveRegion { region } => write!(f, "primitive_region {region}"),
             Feature::BooleanFace { operand } => write!(f, "boolean_face {operand}"),
             Feature::BooleanSeam => write!(f, "boolean_seam"),

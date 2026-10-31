@@ -3,6 +3,19 @@
 Constructive geometry head: an immutable, content-addressed recipe IR with
 deterministic tessellation into Exedra meshes.
 
+`NodeKind::Implicit { field, bounds, placement }` is a solid given by an
+`exedra_implicit::Expr` field: shapes, profiles, sharp and smooth combinations,
+placements and `Tagged` parts, as data. Evaluation meshes it by restricted
+Delaunay refinement (`exedra_isosurface`) within `bounds`, or the box the
+field's claims bound it by, at `EvalPolicy::implicit` resolution: `cells`
+along the longest side, 32 by default, so one policy suits leaves in any units.
+Creases stay sharp and are marked so; faces carry the regions of tagged parts
+as face regions and `Feature::ImplicitRegion` provenance. Each leaf's meshing
+report is in `GeometryReport::implicit_meshes`, cache hits included, and an
+incomplete mesh adds an `eval.implicit.incomplete` warning. Text and JSON
+interchange encode the field as a tree, rebuilt through the field types'
+constructors.
+
 `NodeKind::UvMap { child, mapping, options }` authors either built-in corner UV
 channel on imported or constructed meshes, including complete groups.
 `RecipeBuilder::map_uv` supplies default channel and angular policies. Mapping

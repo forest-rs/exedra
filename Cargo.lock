@@ -165,6 +165,7 @@ name = "constructive_gallery"
 version = "0.0.0"
 dependencies = [
  "exedra_constructive",
+ "exedra_implicit",
  "exedra_mesh",
  "exedra_mesh_ops",
  "exedra_testkit",
@@ -368,6 +369,8 @@ dependencies = [
 name = "exedra_constructive"
 version = "0.1.0"
 dependencies = [
+ "exedra_implicit",
+ "exedra_isosurface",
  "exedra_math",
  "exedra_mesh",
  "exedra_mesh_ops",

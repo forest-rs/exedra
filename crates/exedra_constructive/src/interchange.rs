@@ -31,6 +31,7 @@ use alloc::boxed::Box;
 use alloc::string::String;
 use alloc::vec::Vec;
 
+use exedra_implicit::{Expr, ProfileExpr};
 use serde::{Deserialize, Serialize};
 
 use crate::chart::{ChartError, ChartTransform, LoftStations, SurfaceChart};
@@ -1150,6 +1151,192 @@ pub enum NodeKindDto {
         /// Placement.
         placement: PlacementDto,
     },
+    /// A solid given by an implicit field.
+    Implicit {
+        /// The field, in the leaf's local frame.
+        field: ImplicitDto,
+        /// The region meshed as `[min, max]`; absent to take the field's
+        /// claimed bounds.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        bounds: Option<[[f64; 3]; 2]>,
+        /// Placement.
+        placement: PlacementDto,
+    },
+}
+
+/// An implicit field: a shape, a profile lifted into space, or a
+/// combination or placement of other fields.
+#[derive(Clone, Debug, Serialize, Deserialize)]
+#[serde(tag = "shape", rename_all = "snake_case")]
+pub enum ImplicitDto {
+    /// A ball.
+    Sphere {
+        /// Center.
+        center: [f64; 3],
+        /// Radius; positive.
+        radius: f64,
+    },
+    /// A box.
+    Cuboid {
+        /// Center.
+        center: [f64; 3],
+        /// Half its extent along each axis; positive.
+        half_extents: [f64; 3],
+    },
+    /// A finite cylinder.
+    Cylinder {
+        /// Center.
+        center: [f64; 3],
+        /// Axis direction.
+        axis: [f64; 3],
+        /// Radius; positive.
+        radius: f64,
+        /// Half its length along the axis; positive.
+        half_height: f64,
+    },
+    /// A torus.
+    Torus {
+        /// Center.
+        center: [f64; 3],
+        /// Axis direction.
+        axis: [f64; 3],
+        /// Distance from the axis to the tube's middle; positive.
+        major_radius: f64,
+        /// The tube's radius; positive.
+        minor_radius: f64,
+    },
+    /// The solid behind a plane.
+    HalfSpace {
+        /// A point on the plane.
+        point: [f64; 3],
+        /// Outward normal.
+        normal: [f64; 3],
+    },
+    /// Everything within a radius of a segment.
+    Capsule {
+        /// One end.
+        a: [f64; 3],
+        /// The other end.
+        b: [f64; 3],
+        /// Radius; positive.
+        radius: f64,
+    },
+    /// The hull of two balls.
+    RoundCone {
+        /// The first ball's center.
+        a: [f64; 3],
+        /// The second ball's center.
+        b: [f64; 3],
+        /// The first ball's radius; not negative.
+        radius_a: f64,
+        /// The second ball's radius; not negative.
+        radius_b: f64,
+    },
+    /// A profile extruded along `z`.
+    Extrude {
+        /// The profile.
+        profile: ImplicitProfileDto,
+        /// Half the extrusion's length; positive.
+        half_height: f64,
+    },
+    /// A profile, in the radius-height plane, revolved about `y`.
+    Revolve {
+        /// The profile.
+        profile: ImplicitProfileDto,
+    },
+    /// Everything inside either part.
+    Union {
+        /// One part.
+        left: Box<Self>,
+        /// The other part.
+        right: Box<Self>,
+    },
+    /// Everything inside both parts.
+    Intersection {
+        /// One part.
+        left: Box<Self>,
+        /// The other part.
+        right: Box<Self>,
+    },
+    /// Everything inside `left` and outside `right`.
+    Difference {
+        /// The part cut from.
+        left: Box<Self>,
+        /// The part cut away.
+        right: Box<Self>,
+    },
+    /// Two parts unioned with their crease rounded over `radius`.
+    SmoothUnion {
+        /// One part.
+        left: Box<Self>,
+        /// The other part.
+        right: Box<Self>,
+        /// Blend radius; positive.
+        radius: f64,
+    },
+    /// Any number of parts blended symmetrically over `radius`.
+    Blend {
+        /// The parts.
+        parts: Vec<Self>,
+        /// Blend radius; positive.
+        radius: f64,
+    },
+    /// A part moved by `offset`.
+    Translate {
+        /// The part.
+        field: Box<Self>,
+        /// Offset.
+        offset: [f64; 3],
+    },
+    /// A part scaled about the origin.
+    Scale {
+        /// The part.
+        field: Box<Self>,
+        /// Scale factor; positive.
+        factor: f64,
+    },
+    /// A part turned and moved by a rigid placement.
+    Placed {
+        /// The part.
+        field: Box<Self>,
+        /// Rigid placement.
+        placement: PlacementDto,
+    },
+    /// A part labelled with a face region.
+    Tagged {
+        /// The part.
+        field: Box<Self>,
+        /// Region; zero means none.
+        region: u32,
+    },
+}
+
+/// A two-dimensional profile for [`ImplicitDto::Extrude`] and
+/// [`ImplicitDto::Revolve`].
+#[derive(Clone, Debug, Serialize, Deserialize)]
+#[serde(tag = "profile", rename_all = "snake_case")]
+pub enum ImplicitProfileDto {
+    /// A disk.
+    Circle {
+        /// Center.
+        center: [f64; 2],
+        /// Radius; positive.
+        radius: f64,
+    },
+    /// An axis-aligned rectangle.
+    Rectangle {
+        /// Center.
+        center: [f64; 2],
+        /// Half its extent along each axis; positive.
+        half_extents: [f64; 2],
+    },
+    /// The half plane behind a line.
+    HalfPlane {
+        /// A point on the line.
+        point: [f64; 2],
+        /// Outward normal.
+        normal: [f64; 2],
+    },
 }
 
 /// Typed interchange failure.
@@ -1169,6 +1356,8 @@ pub enum InterchangeError {
     Recipe(RecipeError),
     /// An imported mesh failed to rebuild.
     InvalidImport,
+    /// An implicit field's parameters were refused on rebuild.
+    InvalidImplicit(exedra_implicit::FieldError),
 }
 
 impl core::fmt::Display for InterchangeError {
@@ -1179,6 +1368,7 @@ impl core::fmt::Display for InterchangeError {
             Self::Profile(e) => write!(f, "profile validation failed: {e}"),
             Self::Recipe(e) => write!(f, "recipe validation failed: {e}"),
             Self::InvalidImport => write!(f, "imported mesh failed to rebuild"),
+            Self::InvalidImplicit(e) => write!(f, "implicit field failed to rebuild: {e}"),
         }
     }
 }
@@ -1645,7 +1835,223 @@ fn kind_dto(kind: &NodeKind) -> NodeKindDto {
             thickness: *thickness,
             placement: placement_dto(placement),
         },
+        NodeKind::Implicit {
+            field,
+            bounds,
+            placement,
+        } => NodeKindDto::Implicit {
+            field: implicit_dto(field),
+            bounds: bounds.map(|b| [b.min, b.max]),
+            placement: placement_dto(placement),
+        },
     }
+}
+
+fn implicit_dto(field: &Expr) -> ImplicitDto {
+    let boxed = |field: &Expr| Box::new(implicit_dto(field));
+    match field {
+        Expr::Sphere(s) => ImplicitDto::Sphere {
+            center: s.center(),
+            radius: s.radius(),
+        },
+        Expr::Cuboid(c) => ImplicitDto::Cuboid {
+            center: c.center(),
+            half_extents: c.half_extents(),
+        },
+        Expr::Cylinder(c) => ImplicitDto::Cylinder {
+            center: c.center(),
+            axis: c.axis(),
+            radius: c.radius(),
+            half_height: c.half_height(),
+        },
+        Expr::Torus(t) => ImplicitDto::Torus {
+            center: t.center(),
+            axis: t.axis(),
+            major_radius: t.major_radius(),
+            minor_radius: t.minor_radius(),
+        },
+        Expr::HalfSpace(h) => ImplicitDto::HalfSpace {
+            point: h.point(),
+            normal: h.normal(),
+        },
+        Expr::Capsule(c) => ImplicitDto::Capsule {
+            a: c.a(),
+            b: c.b(),
+            radius: c.radius(),
+        },
+        Expr::RoundCone(c) => ImplicitDto::RoundCone {
+            a: c.a(),
+            b: c.b(),
+            radius_a: c.radius_a(),
+            radius_b: c.radius_b(),
+        },
+        Expr::Extrude(e) => ImplicitDto::Extrude {
+            profile: implicit_profile_dto(e.profile()),
+            half_height: e.half_height(),
+        },
+        Expr::Revolve(r) => ImplicitDto::Revolve {
+            profile: implicit_profile_dto(r.profile()),
+        },
+        Expr::Union(u) => ImplicitDto::Union {
+            left: boxed(&u.left),
+            right: boxed(&u.right),
+        },
+        Expr::Intersection(i) => ImplicitDto::Intersection {
+            left: boxed(&i.left),
+            right: boxed(&i.right),
+        },
+        Expr::Difference(d) => ImplicitDto::Difference {
+            left: boxed(&d.left),
+            right: boxed(&d.right),
+        },
+        Expr::SmoothUnion(s) => ImplicitDto::SmoothUnion {
+            left: boxed(s.left()),
+            right: boxed(s.right()),
+            radius: s.radius(),
+        },
+        Expr::Blend(b) => ImplicitDto::Blend {
+            parts: b.parts().iter().map(implicit_dto).collect(),
+            radius: b.radius(),
+        },
+        Expr::Translate(t) => ImplicitDto::Translate {
+            field: boxed(t.field()),
+            offset: t.offset(),
+        },
+        Expr::Scale(s) => ImplicitDto::Scale {
+            field: boxed(s.field()),
+            factor: s.factor(),
+        },
+        Expr::Placed(p) => ImplicitDto::Placed {
+            field: boxed(p.field()),
+            placement: placement_dto(&p.placement()),
+        },
+        Expr::Tagged(t) => ImplicitDto::Tagged {
+            field: boxed(&t.field),
+            region: t.region,
+        },
+    }
+}
+
+fn implicit_profile_dto(profile: &ProfileExpr) -> ImplicitProfileDto {
+    match profile {
+        ProfileExpr::Circle(c) => ImplicitProfileDto::Circle {
+            center: c.center(),
+            radius: c.radius(),
+        },
+        ProfileExpr::Rectangle(r) => ImplicitProfileDto::Rectangle {
+            center: r.center(),
+            half_extents: r.half_extents(),
+        },
+        ProfileExpr::HalfPlane(h) => ImplicitProfileDto::HalfPlane {
+            point: h.point(),
+            normal: h.normal(),
+        },
+    }
+}
+
+fn implicit_value(dto: &ImplicitDto) -> Result<Expr, InterchangeError> {
+    use exedra_implicit as im;
+    let field = |dto: &ImplicitDto| implicit_value(dto);
+    let refused = InterchangeError::InvalidImplicit;
+    Ok(match dto {
+        ImplicitDto::Sphere { center, radius } => {
+            Expr::from(im::Sphere::new(*center, *radius).map_err(refused)?)
+        }
+        ImplicitDto::Cuboid {
+            center,
+            half_extents,
+        } => Expr::from(im::Cuboid::new(*center, *half_extents).map_err(refused)?),
+        ImplicitDto::Cylinder {
+            center,
+            axis,
+            radius,
+            half_height,
+        } => Expr::from(im::Cylinder::new(*center, *axis, *radius, *half_height).map_err(refused)?),
+        ImplicitDto::Torus {
+            center,
+            axis,
+            major_radius,
+            minor_radius,
+        } => Expr::from(
+            im::Torus::new(*center, *axis, *major_radius, *minor_radius).map_err(refused)?,
+        ),
+        ImplicitDto::HalfSpace { point, normal } => {
+            Expr::from(im::HalfSpace::new(*point, *normal).map_err(refused)?)
+        }
+        ImplicitDto::Capsule { a, b, radius } => {
+            Expr::from(im::Capsule::new(*a, *b, *radius).map_err(refused)?)
+        }
+        ImplicitDto::RoundCone {
+            a,
+            b,
+            radius_a,
+            radius_b,
+        } => Expr::from(im::RoundCone::new(*a, *b, *radius_a, *radius_b).map_err(refused)?),
+        ImplicitDto::Extrude {
+            profile,
+            half_height,
+        } => Expr::from(
+            im::Extrude::new(implicit_profile_value(profile)?, *half_height).map_err(refused)?,
+        ),
+        ImplicitDto::Revolve { profile } => {
+            Expr::from(im::Revolve::new(implicit_profile_value(profile)?))
+        }
+        ImplicitDto::Union { left, right } => {
+            Expr::from(im::Union::new(field(left)?, field(right)?))
+        }
+        ImplicitDto::Intersection { left, right } => {
+            Expr::from(im::Intersection::new(field(left)?, field(right)?))
+        }
+        ImplicitDto::Difference { left, right } => {
+            Expr::from(im::Difference::new(field(left)?, field(right)?))
+        }
+        ImplicitDto::SmoothUnion {
+            left,
+            right,
+            radius,
+        } => {
+            Expr::from(im::SmoothUnion::new(field(left)?, field(right)?, *radius).map_err(refused)?)
+        }
+        ImplicitDto::Blend { parts, radius } => {
+            let parts = parts.iter().map(field).collect::<Result<Vec<_>, _>>()?;
+            Expr::from(im::SmoothUnionN::new(parts, *radius).map_err(refused)?)
+        }
+        ImplicitDto::Translate {
+            field: part,
+            offset,
+        } => Expr::from(im::Translate::new(field(part)?, *offset).map_err(refused)?),
+        ImplicitDto::Scale {
+            field: part,
+            factor,
+        } => Expr::from(im::Scale::new(field(part)?, *factor).map_err(refused)?),
+        ImplicitDto::Placed {
+            field: part,
+            placement,
+        } => {
+            Expr::from(im::Placed::new(field(part)?, placement_value(*placement)).map_err(refused)?)
+        }
+        ImplicitDto::Tagged {
+            field: part,
+            region,
+        } => Expr::from(im::Tagged::new(field(part)?, *region)),
+    })
+}
+
+fn implicit_profile_value(dto: &ImplicitProfileDto) -> Result<ProfileExpr, InterchangeError> {
+    use exedra_implicit as im;
+    let refused = InterchangeError::InvalidImplicit;
+    Ok(match dto {
+        ImplicitProfileDto::Circle { center, radius } => {
+            ProfileExpr::from(im::Circle::new(*center, *radius).map_err(refused)?)
+        }
+        ImplicitProfileDto::Rectangle {
+            center,
+            half_extents,
+        } => ProfileExpr::from(im::Rectangle::new(*center, *half_extents).map_err(refused)?),
+        ImplicitProfileDto::HalfPlane { point, normal } => {
+            ProfileExpr::from(im::HalfPlane::new(*point, *normal).map_err(refused)?)
+        }
+    })
 }
 
 /// Rebuilds a validated recipe from its interchange document.
@@ -2109,6 +2515,21 @@ fn kind_value(dto: &NodeKindDto) -> Result<NodeKind, InterchangeError> {
             thickness: *thickness,
             placement: placement_value(*placement),
         },
+        NodeKindDto::Implicit {
+            field,
+            bounds,
+            placement,
+        } => NodeKind::Implicit {
+            field: implicit_value(field)?,
+            bounds: match bounds {
+                None => None,
+                Some([min, max]) => Some(
+                    exedra_implicit::Aabb::new(*min, *max)
+                        .ok_or(InterchangeError::UnknownValue { field: "bounds" })?,
+                ),
+            },
+            placement: placement_value(*placement),
+        },
     })
 }
 
@@ -2336,6 +2757,28 @@ mod tests {
             rebuilt.recipe_fingerprint(),
             "the wire must preserve content identity exactly"
         );
+    }
+
+    #[test]
+    fn implicit_fields_as_deep_as_allowed_round_trip() {
+        use exedra_implicit::{Expr, Sphere, Tagged};
+        let field = (1..crate::implicit::MAX_IMPLICIT_NESTING).fold(
+            Expr::from(Sphere::new([0.0; 3], 1.0).expect("ball")),
+            |field, _| Expr::from(Tagged::new(field, 1)),
+        );
+        let mut b = RecipeBuilder::new();
+        let leaf = b
+            .add_node(NodeKind::Implicit {
+                field,
+                bounds: None,
+                placement: Placement3::IDENTITY,
+            })
+            .expect("within the limit");
+        let recipe = b.finish(leaf).expect("valid");
+        let json = serde_json::to_string(&to_dto(&recipe)).expect("serializes");
+        let parsed: RecipeDto = serde_json::from_str(&json).expect("parses");
+        let rebuilt = from_dto(&parsed).expect("rebuilds");
+        assert_eq!(recipe.recipe_fingerprint(), rebuilt.recipe_fingerprint());
     }
 
     #[test]

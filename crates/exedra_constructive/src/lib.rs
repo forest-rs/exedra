@@ -12,8 +12,8 @@
 //! The crate owns:
 //! - kurbo-backed 2D profiles closed by construction,
 //! - the constructive node set (primitives, extrude, revolve, loft, sweep,
-//!   planar faces, grids, stretch, CSG, transforms, instances) and its
-//!   content-addressed identity,
+//!   planar faces, grids, implicit fields, stretch, CSG, transforms,
+//!   instances) and its content-addressed identity,
 //! - deterministic evaluation and tessellation with source maps and reports,
 //! - evaluated-body plane sections and capped cuts preserving surface attribution,
 //! - revision-checked planar workplanes with authored origin and in-plane axes.
@@ -94,6 +94,7 @@ pub mod extrude;
 mod goldens;
 #[cfg(test)]
 mod hostile;
+pub mod implicit;
 mod import_mesh;
 pub mod interchange;
 pub mod ir;
