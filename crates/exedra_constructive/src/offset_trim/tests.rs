@@ -4,8 +4,8 @@
 use super::super::{OffsetBudget, OffsetPolicy};
 use super::*;
 
-fn crossing(scale: f64) -> System {
-    System::Curves(
+fn crossing(scale: f64) -> (Curve, Curve) {
+    (
         Curve::line(Point::new(-scale, 0.0), Point::new(scale, 0.0)),
         Curve::cubic(CubicBez::new(
             (0.0, -scale),
@@ -19,12 +19,13 @@ fn crossing(scale: f64) -> System {
 fn isolated_crossings_at_multiple_scales() {
     for scale in [1e-6, 1.0, 1e6] {
         let mut context = OffsetContext::default();
-        let roots =
-            solve::roots(crossing(scale), scale * 1e-7, &mut context, None, 0).expect("crossing");
-        assert_eq!(roots.len(), 1);
-        assert!(roots[0].point.distance(Point::ZERO) <= roots[0].bound);
-        assert!(roots[0].bound <= scale * 1e-7);
-        for t in roots[0].parameters {
+        let (a, b) = crossing(scale);
+        let system = System::Pieces(a.piece(), b.piece());
+        let found = roots(system, scale * 1e-7, &mut context, None, 0).expect("crossing");
+        assert_eq!(found.len(), 1);
+        assert!(crossing_point(&found[0]).distance(Point::ZERO) <= found[0].bound);
+        assert!(found[0].bound <= scale * 1e-7);
+        for t in found[0].parameters {
             assert!((t - 0.5).abs() < 1e-6);
         }
     }
@@ -32,32 +33,30 @@ fn isolated_crossings_at_multiple_scales() {
 #[test]
 fn circle_crossings_are_both_reported() {
     let line = Curve::line(Point::new(-2.0, 0.0), Point::new(2.0, 0.0));
-    let roots = solve::roots(
-        System::Circle(line, Point::ZERO, 1.0),
+    let found = roots(
+        System::Circle(line.piece(), [0.0; 2], 1.0),
         1e-6,
         &mut OffsetContext::default(),
         None,
         0,
     )
     .expect("circle roots");
-    assert_eq!(roots.len(), 2);
-    for r in roots {
-        assert!((r.point.to_vec2().hypot() - 1.0).abs() <= r.bound);
+    assert_eq!(found.len(), 2);
+    for r in found {
+        assert!((crossing_point(&r).to_vec2().hypot() - 1.0).abs() <= r.bound);
     }
 }
 #[test]
 fn tangencies_endpoints_and_coincidence_are_refused() {
     let horizontal = Curve::line(Point::new(-2.0, 1.0), Point::new(2.0, 1.0));
+    let vertical = Curve::line(Point::new(2.0, 0.0), Point::new(2.0, 2.0));
     for system in [
-        System::Circle(horizontal, Point::ZERO, 1.0),
-        System::Curves(horizontal, horizontal),
-        System::Curves(
-            horizontal,
-            Curve::line(Point::new(2.0, 0.0), Point::new(2.0, 2.0)),
-        ),
+        System::Circle(horizontal.piece(), [0.0; 2], 1.0),
+        System::Pieces(horizontal.piece(), horizontal.piece()),
+        System::Pieces(horizontal.piece(), vertical.piece()),
     ] {
         assert!(matches!(
-            solve::roots(system, 1e-6, &mut OffsetContext::default(), None, 0),
+            roots(system, 1e-6, &mut OffsetContext::default(), None, 0),
             Err(ProfileError::OffsetTrimUnresolved { .. }
                 | ProfileError::OffsetBudgetExceeded {
                     budget: OffsetBudget::TrimSteps,
@@ -75,8 +74,15 @@ fn trim_budget_is_charged_before_search() {
         }),
         ..Default::default()
     };
+    let (a, b) = crossing(1.0);
     assert!(matches!(
-        solve::roots(crossing(1.0), 1e-6, &mut context, None, 0),
+        roots(
+            System::Pieces(a.piece(), b.piece()),
+            1e-6,
+            &mut context,
+            None,
+            0
+        ),
         Err(ProfileError::OffsetBudgetExceeded {
             budget: OffsetBudget::TrimSteps,
             maximum: 0

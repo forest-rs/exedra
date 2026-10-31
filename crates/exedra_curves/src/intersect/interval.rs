@@ -1,52 +1,59 @@
 // Copyright 2026 the Exedra Authors
 // SPDX-License-Identifier: Apache-2.0 OR MIT
 
-//! Private outward-rounded intervals for polynomial intersection isolation.
+//! Outward-rounded intervals for certified intersection isolation.
 
 use core::ops::{Add, Mul, Neg, Sub};
 
 #[derive(Clone, Copy, Debug)]
-pub(super) struct I {
-    pub(super) lo: f64,
-    pub(super) hi: f64,
+pub(crate) struct I {
+    pub(crate) lo: f64,
+    pub(crate) hi: f64,
 }
 impl I {
-    pub(super) const ZERO: Self = Self::p(0.0);
-    pub(super) const ONE: Self = Self::p(1.0);
-    pub(super) const UNIT: Self = Self { lo: 0.0, hi: 1.0 };
-    pub(super) const fn p(x: f64) -> Self {
+    pub(crate) const ZERO: Self = Self::p(0.0);
+    pub(crate) const ONE: Self = Self::p(1.0);
+    pub(crate) const UNIT: Self = Self { lo: 0.0, hi: 1.0 };
+    pub(crate) const fn p(x: f64) -> Self {
         Self { lo: x, hi: x }
     }
-    pub(super) fn valid(self) -> bool {
+    pub(crate) fn valid(self) -> bool {
         self.lo.is_finite() && self.hi.is_finite() && self.lo <= self.hi
     }
-    pub(super) fn width(self) -> f64 {
+    pub(crate) fn width(self) -> f64 {
         self.hi - self.lo
     }
-    pub(super) fn mid(self) -> f64 {
+    pub(crate) fn mid(self) -> f64 {
         self.lo * 0.5 + self.hi * 0.5
     }
-    pub(super) fn contains(self, other: Self) -> bool {
+    pub(crate) fn contains(self, other: Self) -> bool {
         self.lo <= other.lo && other.hi <= self.hi
     }
-    pub(super) fn interior(self, other: Self) -> bool {
+    pub(crate) fn interior(self, other: Self) -> bool {
         self.lo < other.lo && other.hi < self.hi
     }
-    pub(super) fn intersect(self, other: Self) -> Option<Self> {
+    pub(crate) fn intersect(self, other: Self) -> Option<Self> {
         let lo = self.lo.max(other.lo);
         let hi = self.hi.min(other.hi);
         (lo <= hi).then_some(Self { lo, hi })
     }
-    pub(super) fn union(self, other: Self) -> Self {
+    pub(crate) fn union(self, other: Self) -> Self {
         Self {
             lo: self.lo.min(other.lo),
             hi: self.hi.max(other.hi),
         }
     }
-    pub(super) fn excludes_zero(self) -> bool {
+    pub(crate) fn excludes_zero(self) -> bool {
         self.lo > 0.0 || self.hi < 0.0
     }
-    pub(super) fn square(self) -> Self {
+    /// `1 / self` for an interval that excludes zero.
+    pub(crate) fn recip(self) -> Self {
+        Self {
+            lo: (1.0 / self.hi).next_down(),
+            hi: (1.0 / self.lo).next_up(),
+        }
+    }
+    pub(crate) fn square(self) -> Self {
         let a = self.lo * self.lo;
         let b = self.hi * self.hi;
         Self {

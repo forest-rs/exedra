@@ -44,6 +44,10 @@
 //!   [`PreparedNurbs::adaptive_sample`]): arc length by stated
 //!   Gauss-Legendre quadrature with the parameter at a length, and sampling
 //!   refined to a chord or angle [`Tolerance`] under a cap, reported.
+//! - **Intersections** ([`intersect`]): crossings of planar Bezier pieces,
+//!   polynomial or rational, and of a piece with a circle, isolated by
+//!   outward-rounded interval subdivision and each proven unique within a
+//!   stated bound, or refused where the arithmetic cannot settle them.
 //! - **Paths** ([`path`]): the owned and borrowed sweep paths of lines,
 //!   arcs and cubics that Exedra's heads share, and the double-reflection
 //!   step that frames them.
@@ -160,6 +164,7 @@ extern crate alloc;
 mod basis;
 mod conic;
 mod frames;
+pub mod intersect;
 mod knots;
 mod measure;
 mod nurbs;

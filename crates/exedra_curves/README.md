@@ -34,6 +34,9 @@ Current scope:
   allowed for and reported (`PreparedNurbs::adaptive_intervals`);
 - `ChordBound`: the fewest uniform steps keeping every chord of a NURBS
   range or a cubic span within a tolerance;
+- `intersect`: certified crossings of planar Bezier pieces, polynomial or
+  rational, and of a piece with a circle, each proven unique within a
+  stated bound or refused, under a caller's step budget;
 - `path`: the owned `Path3` and borrowed `CurvePathView` sweep paths of
   lines, arcs and cubics that Exedra's geometry heads share, with their
   closure and join intent;

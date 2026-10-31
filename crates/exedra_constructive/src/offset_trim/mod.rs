@@ -3,14 +3,68 @@
 
 //! Local intersections and retained parameter cuts on fitted offset runs.
 
-mod interval;
-mod solve;
-
-use super::{Corner, OffsetContext, OffsetTrim, Piece, PieceKind, wrap};
+use super::{Corner, OffsetBudget, OffsetContext, OffsetTrim, Piece, PieceKind, wrap};
 use crate::profile::{ProfileError, Seg2, SegKind};
 use alloc::vec::Vec;
+use exedra_curves::intersect::{self, Crossing, IntersectError, System};
 use kurbo::{CubicBez, ParamCurve, Point};
-use solve::{Curve, System};
+
+/// A line or cubic of a fitted offset run, as `exedra_curves` intersects it.
+#[derive(Clone, Copy)]
+struct Curve {
+    points: [[f64; 2]; 4],
+    count: usize,
+}
+
+impl Curve {
+    fn line(a: Point, b: Point) -> Self {
+        Self {
+            points: [[a.x, a.y], [b.x, b.y], [0.0; 2], [0.0; 2]],
+            count: 2,
+        }
+    }
+
+    fn cubic(c: CubicBez) -> Self {
+        Self {
+            points: [c.p0, c.p1, c.p2, c.p3].map(|p| [p.x, p.y]),
+            count: 4,
+        }
+    }
+
+    fn piece(&self) -> intersect::Piece<'_> {
+        intersect::Piece::Polynomial(&self.points[..self.count])
+    }
+
+    fn point(&self, t: f64) -> Point {
+        let [x, y] = self.piece().point_at(t).expect("lines and cubics evaluate");
+        Point::new(x, y)
+    }
+}
+
+/// Every crossing of `system`, charging each step to the trim budget.
+fn roots(
+    system: System<'_>,
+    tolerance: f64,
+    context: &mut OffsetContext,
+    hole: Option<usize>,
+    seg: usize,
+) -> Result<Vec<Crossing>, ProfileError> {
+    let mut charged = Ok(());
+    let found = intersect::crossings(system, tolerance, || {
+        charged = context.charge(OffsetBudget::TrimSteps, 1);
+        charged.is_ok()
+    });
+    charged?;
+    found.map_err(|error| match error {
+        IntersectError::Unresolved | IntersectError::Budget => {
+            ProfileError::OffsetTrimUnresolved { hole, seg }
+        }
+    })
+}
+
+fn crossing_point(root: &Crossing) -> Point {
+    Point::new(root.point[0], root.point[1])
+}
 
 #[derive(Clone, Copy)]
 pub(super) struct Cut {
@@ -137,62 +191,54 @@ pub(super) fn corner(
         Ok(())
     };
     if let PieceKind::Arc { center, radius, .. } = before.kind {
-        for (j, &curve) in second.iter().enumerate() {
-            for root in solve::roots(
-                System::Circle(curve, center, radius),
-                tolerance,
-                context,
-                hole,
-                seg,
-            )? {
-                if let Some((t, bounds)) = arc_parameter(before, root.point, root.bound, hole, seg)?
-                {
+        for (j, curve) in second.iter().enumerate() {
+            let system = System::Circle(curve.piece(), [center.x, center.y], radius);
+            for root in roots(system, tolerance, context, hole, seg)? {
+                let point = crossing_point(&root);
+                if let Some((t, bounds)) = arc_parameter(before, point, root.bound, hole, seg)? {
                     accept(
                         [0, j],
                         [t, root.parameters[0]],
-                        [bounds, root.parameter_bounds()[0]],
-                        root.point,
+                        [bounds, root.enclosure[0]],
+                        point,
                         root.bound,
-                        curve.point(root.parameters[0]).distance(root.point),
+                        curve.point(root.parameters[0]).distance(point),
                     )?;
                 }
             }
         }
     } else if let PieceKind::Arc { center, radius, .. } = after.kind {
-        for (i, &curve) in first.iter().enumerate() {
-            for root in solve::roots(
-                System::Circle(curve, center, radius),
-                tolerance,
-                context,
-                hole,
-                seg,
-            )? {
-                if let Some((t, bounds)) = arc_parameter(after, root.point, root.bound, hole, seg)?
-                {
+        for (i, curve) in first.iter().enumerate() {
+            let system = System::Circle(curve.piece(), [center.x, center.y], radius);
+            for root in roots(system, tolerance, context, hole, seg)? {
+                let point = crossing_point(&root);
+                if let Some((t, bounds)) = arc_parameter(after, point, root.bound, hole, seg)? {
                     accept(
                         [i, 0],
                         [root.parameters[0], t],
-                        [root.parameter_bounds()[0], bounds],
-                        root.point,
+                        [root.enclosure[0], bounds],
+                        point,
                         root.bound,
-                        curve.point(root.parameters[0]).distance(root.point),
+                        curve.point(root.parameters[0]).distance(point),
                     )?;
                 }
             }
         }
     } else {
-        for (i, &a) in first.iter().enumerate() {
-            for (j, &b) in second.iter().enumerate() {
-                for root in solve::roots(System::Curves(a, b), tolerance, context, hole, seg)? {
+        for (i, a) in first.iter().enumerate() {
+            for (j, b) in second.iter().enumerate() {
+                let system = System::Pieces(a.piece(), b.piece());
+                for root in roots(system, tolerance, context, hole, seg)? {
+                    let point = crossing_point(&root);
                     let adjustment = a
                         .point(root.parameters[0])
-                        .distance(root.point)
-                        .max(b.point(root.parameters[1]).distance(root.point));
+                        .distance(point)
+                        .max(b.point(root.parameters[1]).distance(point));
                     accept(
                         [i, j],
                         root.parameters,
-                        root.parameter_bounds(),
-                        root.point,
+                        root.enclosure,
+                        point,
                         root.bound,
                         adjustment,
                     )?;
