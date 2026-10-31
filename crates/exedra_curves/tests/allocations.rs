@@ -2,7 +2,8 @@
 // SPDX-License-Identifier: Apache-2.0 OR MIT
 
 //! The `_into` functions allocate nothing once their buffers and
-//! workspace have grown, whatever the curve's order.
+//! workspace have grown, whatever the curve's order, and borrowing and
+//! validating a curve allocates nothing at all, in the plane or in space.
 
 #![expect(
     unsafe_code,
@@ -91,14 +92,12 @@ fn warmed_calls_allocate_nothing() {
     let mut frames: Vec<Frame> = Vec::new();
     let mut mesh = SweptMesh::default();
     let mut stations = Vec::new();
-    let mut lengths = Vec::new();
     let controls: Vec<[f64; 3]> = (0..8).map(|i| [i as f64, (i % 2) as f64, 0.0]).collect();
     let spans: Vec<[u32; 4]> = (0..5).map(|s| [s, s + 1, s + 2, s + 3]).collect();
     for order in [4, 9, 17] {
         let prepared = curve(order, order + 6);
         let mut run = || {
             prepared.adaptive_sample_into(tolerance, 4000, &mut workspace, &mut samples);
-            prepared.lengths_into(4, &mut workspace, &mut lengths);
             rotation_minimizing_frames_into(
                 &samples.points,
                 None,
@@ -129,10 +128,6 @@ fn warmed_calls_allocate_nothing() {
         });
         assert_eq!(counted, 0, "adaptive sampling at order {order}");
         let counted = allocations(|| {
-            prepared.lengths_into(4, &mut workspace, &mut lengths);
-        });
-        assert_eq!(counted, 0, "lengths at order {order}");
-        let counted = allocations(|| {
             rotation_minimizing_frames_into(
                 &samples.points,
                 None,
@@ -158,6 +153,74 @@ fn warmed_calls_allocate_nothing() {
             .unwrap();
         });
         assert_eq!(counted, 0, "adaptive stations");
+    }
+}
+
+/// Borrows and validates a curve of `order` in `N` dimensions, evaluates
+/// it, which keeps its scratch on the stack up to order 8, then runs every
+/// `_into` on it twice, counting the second run.
+fn borrowed<const N: usize>(order: usize) {
+    let controls = order + 5;
+    let points: Vec<[f64; N]> = (0..controls)
+        .map(|i| core::array::from_fn(|axis| ((i * (axis + 2)) as f64 * 0.7).sin()))
+        .collect();
+    let weights: Vec<f64> = (0..controls).map(|i| 1.0 + 0.25 * (i % 3) as f64).collect();
+    let interior = controls - order;
+    let knots: Vec<f64> = std::iter::repeat_n(0.0, order)
+        .chain((1..=interior).map(|k| k as f64))
+        .chain(std::iter::repeat_n(interior as f64 + 1.0, order))
+        .collect();
+    let order = u32::try_from(order).unwrap();
+    let counted = allocations(|| {
+        let valid = Nurbs {
+            order,
+            knots: &knots,
+            points: &points,
+            weights: Some(&weights),
+        }
+        .validate()
+        .unwrap();
+        if order <= 8 {
+            core::hint::black_box(valid.evaluation(0.5));
+        }
+    });
+    assert_eq!(counted, 0, "borrowing at order {order} in {N}D");
+    let valid = Nurbs {
+        order,
+        knots: &knots,
+        points: &points,
+        weights: Some(&weights),
+    }
+    .validate()
+    .unwrap();
+    let tolerance = Tolerance {
+        chord: 1e-3,
+        angle: 0.2,
+    };
+    let mut workspace = Workspace::new();
+    let mut prepared = valid.prepare();
+    let mut samples = NurbsSamples::default();
+    let mut lengths = Vec::new();
+    let mut run = || {
+        valid.prepare_into(&mut workspace, &mut prepared);
+        valid
+            .sample_into(None, 8, &mut workspace, &mut samples)
+            .unwrap();
+        prepared.adaptive_sample_into(tolerance, 4000, &mut workspace, &mut samples);
+        prepared.lengths_into(4, &mut workspace, &mut lengths);
+        if order <= 8 {
+            core::hint::black_box(prepared.evaluation(0.5));
+        }
+    };
+    run();
+    assert_eq!(allocations(run), 0, "warmed calls at order {order} in {N}D");
+}
+
+#[test]
+fn borrowed_curves_allocate_nothing_in_the_plane_or_in_space() {
+    for order in [2, 4, 9, 17] {
+        borrowed::<2>(order);
+        borrowed::<3>(order);
     }
 }
 

@@ -12,7 +12,8 @@ Current scope:
 - spans as four control indices chosen by the caller, `stations` at an
   explicit count per span, and `sample`, `sample_derivative` and
   `sample_linear` at those stations;
-- `Nurbs`: rational B-splines of any order, validated once into a
+- `Nurbs`: rational B-splines of any order in any dimension (space curves by
+  default, plane curves for profiles and trims), validated once into a
   `ValidNurbs`, evaluated with derivatives by de Boor's algorithm over
   homogeneous controls, sampled per nonempty knot span of a parameter range
   with the jumps at full-multiplicity knots sampled on both sides and marked

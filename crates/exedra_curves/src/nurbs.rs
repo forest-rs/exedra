@@ -5,9 +5,11 @@
 
 use alloc::vec::Vec;
 
+use crate::vector::WeightedPoint;
 use crate::{CurveEvaluation, Workspace};
 
-/// One rational B-spline curve, borrowed.
+/// One rational B-spline curve in `N` dimensions, borrowed: a plane
+/// curve for `N = 2`, a space curve for the default `N = 3`.
 ///
 /// A curve of `points.len()` controls and `order` (degree + 1) has
 /// `points.len() + order` nondecreasing knots, and is defined over the
@@ -25,13 +27,13 @@ use crate::{CurveEvaluation, Workspace};
 /// property P2.5): the curve may jump there. Such a curve is valid; its
 /// samples mark each jump ([`NurbsSamples::breaks`]).
 #[derive(Clone, Copy, Debug)]
-pub struct Nurbs<'a> {
+pub struct Nurbs<'a, const N: usize = 3> {
     /// Degree + 1, at least 2.
     pub order: u32,
     /// The knot vector, `points.len() + order` long, nondecreasing.
     pub knots: &'a [f64],
     /// The controls.
-    pub points: &'a [[f64; 3]],
+    pub points: &'a [[f64; N]],
     /// One positive weight per control, or `None` for all 1.
     pub weights: Option<&'a [f64]>,
 }
@@ -59,7 +61,8 @@ pub enum NurbsError {
     KnotCount {
         /// The knots given.
         knots: usize,
-        /// The knots needed.
+        /// The knots needed, or `usize::MAX` when that many cannot be
+        /// counted.
         expected: usize,
     },
     /// A knot is smaller than the one before it, or not finite, or the
@@ -132,12 +135,12 @@ impl core::error::Error for NurbsError {}
 /// reuses one through [`Default`] and the `_into` functions.
 #[derive(Clone, Debug, Default, PartialEq)]
 #[non_exhaustive]
-pub struct NurbsSamples {
+pub struct NurbsSamples<const N: usize = 3> {
     /// The parameters, nondecreasing: a parameter repeats only at a
     /// [break](Self::breaks).
     pub params: Vec<f64>,
     /// The points, one per parameter.
-    pub points: Vec<[f64; 3]>,
+    pub points: Vec<[f64; N]>,
     /// The knot spans sampled: nonempty knot intervals meeting the range.
     pub spans: u32,
     /// The indices of the samples that start a new piece, increasing:
@@ -167,21 +170,19 @@ const MAX_WEIGHT: f64 = f64::from_bits(0x4FF0_0000_0000_0000); // 2^256
 
 /// Runs `f` on a zeroed scratch buffer of `len` homogeneous points, on the
 /// stack up to [`INLINE_SCRATCH`].
-pub(crate) fn with_scratch<R>(len: usize, f: impl FnOnce(&mut [[f64; 4]]) -> R) -> R {
+pub(crate) fn with_scratch<const N: usize, R>(
+    len: usize,
+    f: impl FnOnce(&mut [WeightedPoint<N>]) -> R,
+) -> R {
     if len <= INLINE_SCRATCH {
-        let mut inline = [[0.0; 4]; INLINE_SCRATCH];
+        let mut inline = [WeightedPoint::ZERO; INLINE_SCRATCH];
         f(&mut inline[..len])
     } else {
-        f(&mut alloc::vec![[0.0; 4]; len])
+        f(&mut alloc::vec![WeightedPoint::ZERO; len])
     }
 }
 
-/// `(1 - u) a + u b`, per coordinate.
-fn lerp(a: [f64; 4], b: [f64; 4], u: f64) -> [f64; 4] {
-    core::array::from_fn(|c| (1.0 - u) * a[c] + u * b[c])
-}
-
-impl<'a> Nurbs<'a> {
+impl<'a, const N: usize> Nurbs<'a, N> {
     /// Checks the order, knots, weights and controls, and returns the
     /// curve as a [`ValidNurbs`] that evaluates and samples it; what that
     /// guarantees is listed there. One pass over the inputs, here rather
@@ -190,7 +191,7 @@ impl<'a> Nurbs<'a> {
     /// # Errors
     ///
     /// The first [`NurbsError`] found, in the order of its variants.
-    pub fn validate(&self) -> Result<ValidNurbs<'a>, NurbsError> {
+    pub fn validate(&self) -> Result<ValidNurbs<'a, N>, NurbsError> {
         let order = self.order;
         if order < 2 {
             return Err(NurbsError::Order { order });
@@ -199,8 +200,10 @@ impl<'a> Nurbs<'a> {
         if n < order as usize {
             return Err(NurbsError::TooFewPoints { points: n, order });
         }
-        let expected = n + order as usize;
-        if self.knots.len() != expected {
+        // Zero-dimensional controls occupy no memory, so `n` can be near
+        // `usize::MAX`; a knot count no slice can reach saturates.
+        let expected = n.saturating_add(order as usize);
+        if self.knots.len() != expected || expected == usize::MAX {
             return Err(NurbsError::KnotCount {
                 knots: self.knots.len(),
                 expected,
@@ -231,12 +234,12 @@ impl<'a> Nurbs<'a> {
                 return Err(NurbsError::Weight { index });
             }
         }
-        // The homogeneous controls `(w x, w y, w z, w)` de Boor's scheme
-        // combines; without weights, the coordinates themselves.
+        // The weighted controls de Boor's scheme combines; without
+        // weights, the coordinates themselves.
         let mut weights = self.weights.unwrap_or(&[]).iter();
-        for (index, &[x, y, z]) in self.points.iter().enumerate() {
+        for (index, point) in self.points.iter().enumerate() {
             let w = weights.next().copied().unwrap_or(1.0);
-            if !(w * x).is_finite() || !(w * y).is_finite() || !(w * z).is_finite() {
+            if !point.iter().all(|c| (w * c).is_finite()) {
                 return Err(NurbsError::Point { index });
             }
         }
@@ -258,7 +261,7 @@ impl<'a> Nurbs<'a> {
 /// - finite, nondecreasing knots whose whole span (last minus first) is
 ///   finite, and a domain of positive length;
 /// - weights, when given, one per control, in `[2^-256, 2^256]`;
-/// - finite homogeneous controls `(w x, w y, w z, w)`.
+/// - finite weighted controls `w P`.
 ///
 /// De Boor's scheme and blossoming then combine finite values with ratios
 /// in `[0, 1]`, so the homogeneous results are finite, and the weight an
@@ -267,14 +270,14 @@ impl<'a> Nurbs<'a> {
 /// last place. A point is then a convex combination of the controls, so it
 /// is finite too.
 #[derive(Clone, Copy, Debug)]
-pub struct ValidNurbs<'a> {
-    curve: Nurbs<'a>,
+pub struct ValidNurbs<'a, const N: usize = 3> {
+    curve: Nurbs<'a, N>,
 }
 
-impl<'a> ValidNurbs<'a> {
+impl<'a, const N: usize> ValidNurbs<'a, N> {
     /// The curve's description.
     #[must_use]
-    pub fn curve(&self) -> Nurbs<'a> {
+    pub fn curve(&self) -> Nurbs<'a, N> {
         self.curve
     }
 
@@ -304,7 +307,7 @@ impl<'a> ValidNurbs<'a> {
     /// and A4.1, with de Boor's triangular scheme, section 3.3). No
     /// allocation up to order 8.
     #[must_use]
-    pub fn evaluate(&self, t: f64) -> [f64; 3] {
+    pub fn evaluate(&self, t: f64) -> [f64; N] {
         let t = self.clamp(t);
         let k = self.span_at(t);
         with_scratch(self.curve.order as usize, |d| self.de_boor(k, t, d))
@@ -325,7 +328,7 @@ impl<'a> ValidNurbs<'a> {
     /// [`Self::evaluate`] to rounding, not bit for bit. No allocation up to
     /// order 8.
     #[must_use]
-    pub fn evaluation(&self, t: f64) -> CurveEvaluation<3> {
+    pub fn evaluation(&self, t: f64) -> CurveEvaluation<N> {
         let t = self.clamp(t);
         let k = self.span_at(t);
         let knots = self.curve.knots;
@@ -363,22 +366,26 @@ impl<'a> ValidNurbs<'a> {
         k
     }
 
-    /// Loads span `k`'s `order` homogeneous controls into `d`.
-    fn load(&self, k: usize, d: &mut [[f64; 4]]) {
+    /// Loads span `k`'s `order` weighted controls into `d`.
+    pub(crate) fn load(&self, k: usize, d: &mut [WeightedPoint<N>]) {
         let p = self.curve.order as usize - 1;
         for (j, slot) in d.iter_mut().enumerate() {
             let index = j + k - p;
             let w = self.curve.weights.map_or(1.0, |weights| weights[index]);
-            let [x, y, z] = self.curve.points[index];
-            *slot = [w * x, w * y, w * z, w];
+            *slot = WeightedPoint::new(self.curve.points[index], w);
         }
     }
 
     /// De Boor's triangular scheme over `d`, loaded with span `k`'s
     /// controls, with parameter `t(r)` at level `r`: the piece's point at
     /// `t` when every level takes `t`, its blossom otherwise. Returns the
-    /// homogeneous result.
-    fn de_boor_levels(&self, k: usize, d: &mut [[f64; 4]], t: impl Fn(usize) -> f64) -> [f64; 4] {
+    /// weighted result.
+    pub(crate) fn de_boor_levels(
+        &self,
+        k: usize,
+        d: &mut [WeightedPoint<N>],
+        t: impl Fn(usize) -> f64,
+    ) -> WeightedPoint<N> {
         let p = self.curve.order as usize - 1;
         let knots = self.curve.knots;
         for r in 1..=p {
@@ -389,7 +396,7 @@ impl<'a> ValidNurbs<'a> {
                 let left = knots[j + k - p];
                 let right = knots[j + 1 + k - r];
                 let alpha = (t - left) / (right - left);
-                d[j] = lerp(d[j - 1], d[j], alpha);
+                d[j] = WeightedPoint::lerp(d[j - 1], d[j], alpha);
             }
         }
         d[p]
@@ -397,16 +404,20 @@ impl<'a> ValidNurbs<'a> {
 
     /// The point at `t` of the polynomial piece of knot span `k`, with `d`
     /// of length `order` as scratch.
-    fn de_boor(&self, k: usize, t: f64, d: &mut [[f64; 4]]) -> [f64; 3] {
+    fn de_boor(&self, k: usize, t: f64, d: &mut [WeightedPoint<N>]) -> [f64; N] {
         self.load(k, d);
-        let [x, y, z, w] = self.de_boor_levels(k, d, |_| t);
-        [x / w, y / w, z / w]
+        self.de_boor_levels(k, d, |_| t).point()
     }
 
-    /// The homogeneous Bezier controls of knot span `k`'s piece into
-    /// `out`: control `i` is the blossom at `p - i` copies of the span's
-    /// start and `i` of its end. `scratch` and `out` are `order` long.
-    fn bezier_span(&self, k: usize, out: &mut [[f64; 4]], scratch: &mut [[f64; 4]]) {
+    /// The weighted Bezier controls of knot span `k`'s piece into `out`:
+    /// control `i` is the blossom at `p - i` copies of the span's start and
+    /// `i` of its end. `scratch` and `out` are `order` long.
+    fn bezier_span(
+        &self,
+        k: usize,
+        out: &mut [WeightedPoint<N>],
+        scratch: &mut [WeightedPoint<N>],
+    ) {
         let p = self.curve.order as usize - 1;
         let (a, b) = (self.curve.knots[k], self.curve.knots[k + 1]);
         for (i, slot) in out.iter_mut().enumerate() {
@@ -436,7 +447,7 @@ impl<'a> ValidNurbs<'a> {
         &self,
         range: Option<[f64; 2]>,
         per_span: u32,
-    ) -> Result<NurbsSamples, NurbsError> {
+    ) -> Result<NurbsSamples<N>, NurbsError> {
         let mut out = NurbsSamples::default();
         self.sample_with(range, per_span, &mut Vec::new(), &mut out)?;
         Ok(out)
@@ -452,8 +463,8 @@ impl<'a> ValidNurbs<'a> {
         &self,
         range: Option<[f64; 2]>,
         per_span: u32,
-        workspace: &mut Workspace,
-        out: &mut NurbsSamples,
+        workspace: &mut Workspace<N>,
+        out: &mut NurbsSamples<N>,
     ) -> Result<(), NurbsError> {
         self.sample_with(range, per_span, &mut workspace.homogeneous, out)
     }
@@ -462,8 +473,8 @@ impl<'a> ValidNurbs<'a> {
         &self,
         range: Option<[f64; 2]>,
         per_span: u32,
-        scratch: &mut Vec<[f64; 4]>,
-        out: &mut NurbsSamples,
+        scratch: &mut Vec<WeightedPoint<N>>,
+        out: &mut NurbsSamples<N>,
     ) -> Result<(), NurbsError> {
         out.params.clear();
         out.points.clear();
@@ -483,7 +494,7 @@ impl<'a> ValidNurbs<'a> {
         let order = curve.order as usize;
         let p = order - 1;
         scratch.clear();
-        scratch.resize(order, [0.0; 4]);
+        scratch.resize(order, WeightedPoint::ZERO);
         let mut previous: Option<usize> = None;
         for i in p..curve.points.len() {
             let (a, b) = (curve.knots[i].max(from), curve.knots[i + 1].min(to));
@@ -517,7 +528,7 @@ impl<'a> ValidNurbs<'a> {
     /// The curve's nonempty knot spans in Bezier form, for repeated
     /// evaluation: see [`PreparedNurbs`].
     #[must_use]
-    pub fn prepare(&self) -> PreparedNurbs {
+    pub fn prepare(&self) -> PreparedNurbs<N> {
         let mut out = PreparedNurbs {
             order: 0,
             bounds: Vec::new(),
@@ -530,7 +541,7 @@ impl<'a> ValidNurbs<'a> {
 
     /// [`Self::prepare`] into an existing [`PreparedNurbs`], reusing its
     /// buffers, with `workspace` as scratch.
-    pub fn prepare_into(&self, workspace: &mut Workspace, out: &mut PreparedNurbs) {
+    pub fn prepare_into(&self, workspace: &mut Workspace<N>, out: &mut PreparedNurbs<N>) {
         let curve = &self.curve;
         let order = curve.order as usize;
         let p = order - 1;
@@ -540,7 +551,7 @@ impl<'a> ValidNurbs<'a> {
         out.breaks.clear();
         let scratch = &mut workspace.homogeneous;
         scratch.clear();
-        scratch.resize(order, [0.0; 4]);
+        scratch.resize(order, WeightedPoint::ZERO);
         let mut previous: Option<usize> = None;
         for k in p..curve.points.len() {
             if curve.knots[k] >= curve.knots[k + 1] {
@@ -553,7 +564,7 @@ impl<'a> ValidNurbs<'a> {
             }
             out.bounds.push(curve.knots[k]);
             let first = out.controls.len();
-            out.controls.resize(first + order, [0.0; 4]);
+            out.controls.resize(first + order, WeightedPoint::ZERO);
             self.bezier_span(k, &mut out.controls[first..], scratch);
             previous = Some(k);
         }
@@ -572,14 +583,14 @@ impl<'a> ValidNurbs<'a> {
 /// keeps them. [`Self::view`] lends it as the [`ValidNurbs`] that
 /// evaluates, samples and prepares it, with no checks repeated.
 #[derive(Clone, Debug, PartialEq)]
-pub struct NurbsCurve {
+pub struct NurbsCurve<const N: usize = 3> {
     order: u32,
     knots: Vec<f64>,
-    points: Vec<[f64; 3]>,
+    points: Vec<[f64; N]>,
     weights: Option<Vec<f64>>,
 }
 
-impl NurbsCurve {
+impl<const N: usize> NurbsCurve<N> {
     /// A curve of `order` (degree + 1), checked as [`Nurbs::validate`]
     /// checks it.
     ///
@@ -589,7 +600,7 @@ impl NurbsCurve {
     pub fn new(
         order: u32,
         knots: Vec<f64>,
-        points: Vec<[f64; 3]>,
+        points: Vec<[f64; N]>,
         weights: Option<Vec<f64>>,
     ) -> Result<Self, NurbsError> {
         Nurbs {
@@ -610,7 +621,7 @@ impl NurbsCurve {
     /// The curve as the [`ValidNurbs`] that evaluates, samples and
     /// prepares it.
     #[must_use]
-    pub fn view(&self) -> ValidNurbs<'_> {
+    pub fn view(&self) -> ValidNurbs<'_, N> {
         ValidNurbs {
             curve: Nurbs {
                 order: self.order,
@@ -635,7 +646,7 @@ impl NurbsCurve {
 
     /// The controls.
     #[must_use]
-    pub fn points(&self) -> &[[f64; 3]] {
+    pub fn points(&self) -> &[[f64; N]] {
         &self.points
     }
 
@@ -652,11 +663,11 @@ impl NurbsCurve {
     }
 }
 
-impl ValidNurbs<'_> {
+impl<const N: usize> ValidNurbs<'_, N> {
     /// The curve copied into a [`NurbsCurve`] of its own, with no checks
     /// repeated.
     #[must_use]
-    pub fn to_curve(&self) -> NurbsCurve {
+    pub fn to_curve(&self) -> NurbsCurve<N> {
         NurbsCurve {
             order: self.curve.order,
             knots: self.curve.knots.to_vec(),
@@ -667,61 +678,78 @@ impl ValidNurbs<'_> {
 }
 
 /// The point and derivatives with respect to `t` at `t` of the rational
-/// Bezier piece with homogeneous `controls` over `[a, b]`, with `scratch`
-/// as long as `controls`.
-fn span_evaluation(
-    controls: &[[f64; 4]],
+/// Bezier piece with weighted `controls` over `[a, b]`, with `scratch` as
+/// long as `controls`.
+fn span_evaluation<const N: usize>(
+    controls: &[WeightedPoint<N>],
     a: f64,
     b: f64,
     t: f64,
-    scratch: &mut [[f64; 4]],
-) -> CurveEvaluation<3> {
+    scratch: &mut [WeightedPoint<N>],
+) -> CurveEvaluation<N> {
     let u = (t - a) / (b - a);
     let [h, d1, d2] = de_casteljau(controls, u, scratch);
     // Derivatives with respect to `u`, then to `t = a + (b - a) u`:
     // divided by the width rather than multiplied by its reciprocal, which
     // overflows for a span narrower than `1 / f64::MAX`.
     let width = b - a;
-    let d1 = d1.map(|v| v / width);
-    let d2 = d2.map(|v| v / width / width);
-    rational(h, d1, d2)
+    rational(h, d1.divided(width), d2.divided(width).divided(width))
 }
 
-/// The homogeneous point, first and second derivatives with respect to
-/// `u` of the Bezier curve of `controls` (degree `p = len - 1`) at `u`:
-/// de Casteljau's scheme down to three points `R0..R2`, whose second
+/// The weighted point, first and second derivatives with respect to `u`
+/// of the Bezier curve of `controls` (degree `p = len - 1`) at `u`: de
+/// Casteljau's scheme down to three points `R0..R2`, whose second
 /// difference is `p (p - 1)` times the second derivative, then to two
 /// `S0, S1`, whose difference is `p` times the first (Piegl and Tiller,
 /// section 1.4, equations 1.9 and 1.10).
-fn de_casteljau(controls: &[[f64; 4]], u: f64, scratch: &mut [[f64; 4]]) -> [[f64; 4]; 3] {
+fn de_casteljau<const N: usize>(
+    controls: &[WeightedPoint<N>],
+    u: f64,
+    scratch: &mut [WeightedPoint<N>],
+) -> [WeightedPoint<N>; 3] {
     let p = controls.len() - 1;
     scratch.copy_from_slice(controls);
     let mut count = p + 1;
     while count > 3 {
         for j in 0..count - 1 {
-            scratch[j] = lerp(scratch[j], scratch[j + 1], u);
+            scratch[j] = WeightedPoint::lerp(scratch[j], scratch[j + 1], u);
         }
         count -= 1;
     }
     let pf = p as f64;
     let (s0, s1, second) = if count == 3 {
         let [r0, r1, r2] = [scratch[0], scratch[1], scratch[2]];
-        let second = core::array::from_fn(|c| pf * (pf - 1.0) * (r2[c] - 2.0 * r1[c] + r0[c]));
-        (lerp(r0, r1, u), lerp(r1, r2, u), second)
+        let second = WeightedPoint {
+            weighted: core::array::from_fn(|c| {
+                pf * (pf - 1.0) * (r2.weighted[c] - 2.0 * r1.weighted[c] + r0.weighted[c])
+            }),
+            weight: pf * (pf - 1.0) * (r2.weight - 2.0 * r1.weight + r0.weight),
+        };
+        (
+            WeightedPoint::lerp(r0, r1, u),
+            WeightedPoint::lerp(r1, r2, u),
+            second,
+        )
     } else {
-        (scratch[0], scratch[1], [0.0; 4])
+        (scratch[0], scratch[1], WeightedPoint::ZERO)
     };
-    let first = core::array::from_fn(|c| pf * (s1[c] - s0[c]));
-    [lerp(s0, s1, u), first, second]
+    let first = WeightedPoint::times(WeightedPoint::minus(s1, s0), pf);
+    [WeightedPoint::lerp(s0, s1, u), first, second]
 }
 
-/// The rational point and derivatives from homogeneous ones (Piegl and
+/// The rational point and derivatives from weighted ones (Piegl and
 /// Tiller, algorithm A4.2).
-fn rational(h: [f64; 4], d1: [f64; 4], d2: [f64; 4]) -> CurveEvaluation<3> {
-    let w = h[3];
-    let point: [f64; 3] = core::array::from_fn(|c| h[c] / w);
-    let first: [f64; 3] = core::array::from_fn(|c| (d1[c] - d1[3] * point[c]) / w);
-    let second = core::array::from_fn(|c| (d2[c] - 2.0 * d1[3] * first[c] - d2[3] * point[c]) / w);
+fn rational<const N: usize>(
+    h: WeightedPoint<N>,
+    d1: WeightedPoint<N>,
+    d2: WeightedPoint<N>,
+) -> CurveEvaluation<N> {
+    let w = h.weight;
+    let point = h.point();
+    let first: [f64; N] = core::array::from_fn(|c| (d1.weighted[c] - d1.weight * point[c]) / w);
+    let second = core::array::from_fn(|c| {
+        (d2.weighted[c] - 2.0 * d1.weight * first[c] - d2.weight * point[c]) / w
+    });
     CurveEvaluation {
         point,
         first,
@@ -729,8 +757,8 @@ fn rational(h: [f64; 4], d1: [f64; 4], d2: [f64; 4]) -> CurveEvaluation<3> {
     }
 }
 
-/// A validated curve's nonempty knot spans, each as the homogeneous
-/// Bezier controls of its polynomial piece, for repeated evaluation
+/// A validated curve's nonempty knot spans, each as the weighted Bezier
+/// controls of its polynomial piece, for repeated evaluation
 /// without knot arithmetic.
 ///
 /// Preparing costs `O(order^3)` per span once; evaluating then costs one
@@ -745,17 +773,17 @@ fn rational(h: [f64; 4], d1: [f64; 4], d2: [f64; 4]) -> CurveEvaluation<3> {
 /// [`Self::evaluation_in`] evaluates a named span up to either end, so
 /// both sides of a break are reachable.
 #[derive(Clone, Debug, PartialEq)]
-pub struct PreparedNurbs {
+pub struct PreparedNurbs<const N: usize = 3> {
     order: usize,
     /// Each span's start, then the domain's end: `spans + 1` values.
     bounds: Vec<f64>,
-    /// `order` homogeneous controls per span, `(w x, w y, w z, w)`.
-    controls: Vec<[f64; 4]>,
+    /// `order` weighted controls per span.
+    controls: Vec<WeightedPoint<N>>,
     /// Spans that start a new piece.
     breaks: Vec<usize>,
 }
 
-impl PreparedNurbs {
+impl<const N: usize> PreparedNurbs<N> {
     /// The curve's order, degree + 1.
     #[must_use]
     pub fn order(&self) -> usize {
@@ -780,20 +808,20 @@ impl PreparedNurbs {
         (span < self.spans()).then(|| [self.bounds[span], self.bounds[span + 1]])
     }
 
-    /// Span `span`'s homogeneous Bezier controls `(w x, w y, w z, w)`,
+    /// Span `span`'s weighted Bezier controls,
     /// [`Self::order`] of them, over [`Self::span_domain`]; `None` past the
     /// last span.
     #[must_use]
-    pub fn span_controls(&self, span: usize) -> Option<&[[f64; 4]]> {
+    pub fn span_controls(&self, span: usize) -> Option<&[WeightedPoint<N>]> {
         (span < self.spans()).then(|| &self.controls[span * self.order..(span + 1) * self.order])
     }
 
-    /// Every span's homogeneous Bezier controls, contiguous: [`Self::order`]
+    /// Every span's weighted Bezier controls, contiguous: [`Self::order`]
     /// per span, in span order, as [`Self::span_controls`] gives them one
     /// span at a time. With [`Self::bounds`] this is the whole prepared
     /// curve as plain arrays, ready to copy to another evaluator.
     #[must_use]
-    pub fn controls(&self) -> &[[f64; 4]] {
+    pub fn controls(&self) -> &[WeightedPoint<N>] {
         &self.controls
     }
 
@@ -823,7 +851,7 @@ impl PreparedNurbs {
 
     /// The curve's point at `t` ([`Self::evaluation`]'s point).
     #[must_use]
-    pub fn evaluate(&self, t: f64) -> [f64; 3] {
+    pub fn evaluate(&self, t: f64) -> [f64; N] {
         self.evaluation(t).point
     }
 
@@ -832,7 +860,7 @@ impl PreparedNurbs {
     /// the span's Bezier controls, then Piegl and Tiller's algorithm A4.2
     /// for the rational point and derivatives. No allocation up to order 8.
     #[must_use]
-    pub fn evaluation(&self, t: f64) -> CurveEvaluation<3> {
+    pub fn evaluation(&self, t: f64) -> CurveEvaluation<N> {
         let t = self.clamp(t);
         self.in_span(self.span_at(t), t)
     }
@@ -842,7 +870,7 @@ impl PreparedNurbs {
     /// the piece's own limit, so both sides of a break, and one-sided
     /// derivatives at a corner, are reachable. `None` past the last span.
     #[must_use]
-    pub fn evaluation_in(&self, span: usize, t: f64) -> Option<CurveEvaluation<3>> {
+    pub fn evaluation_in(&self, span: usize, t: f64) -> Option<CurveEvaluation<N>> {
         let [a, b] = self.span_domain(span)?;
         Some(self.in_span(span, t.max(a).min(b)))
     }
@@ -852,7 +880,7 @@ impl PreparedNurbs {
         t.max(start).min(end)
     }
 
-    fn in_span(&self, span: usize, t: f64) -> CurveEvaluation<3> {
+    fn in_span(&self, span: usize, t: f64) -> CurveEvaluation<N> {
         with_scratch(self.order, |scratch| self.in_span_with(span, t, scratch))
     }
 
@@ -862,8 +890,8 @@ impl PreparedNurbs {
         &self,
         span: usize,
         t: f64,
-        scratch: &mut [[f64; 4]],
-    ) -> CurveEvaluation<3> {
+        scratch: &mut [WeightedPoint<N>],
+    ) -> CurveEvaluation<N> {
         let (a, b) = (self.bounds[span], self.bounds[span + 1]);
         let first = span * self.order;
         let controls = &self.controls[first..first + self.order];
@@ -1189,7 +1217,7 @@ mod tests {
         // A span's Bezier controls start and end on the curve.
         let [a, b] = prepared.span_domain(1).unwrap();
         let controls = prepared.span_controls(1).unwrap();
-        let ends = [controls[0], controls[3]].map(|[x, y, z, w]| [x / w, y / w, z / w]);
+        let ends = [controls[0], controls[3]].map(|c| c.point());
         assert!(near(ends[0], curve.evaluate(a), 1e-13));
         assert!(near(ends[1], curve.evaluate(b), 1e-13));
         // Preparing into an existing one reuses it.
@@ -1289,6 +1317,23 @@ mod tests {
             .err(),
             Some(NurbsError::Knots { index: 5 })
         );
+        // Zero-dimensional controls take no memory, so no knot slice can
+        // be as long as their count asks.
+        let empty: &[[f64; 0]] = &[[]; usize::MAX - 1];
+        assert_eq!(
+            Nurbs {
+                order: 2,
+                knots: &[],
+                points: empty,
+                weights: None,
+            }
+            .validate()
+            .err(),
+            Some(NurbsError::KnotCount {
+                knots: 0,
+                expected: usize::MAX
+            })
+        );
     }
 
     #[test]
@@ -1339,5 +1384,36 @@ mod tests {
         // Accessors past the last span answer `None`, however far past.
         assert!(valid.prepare().span_controls(usize::MAX / 2).is_none());
         assert!(valid.prepare().span_controls(usize::MAX).is_none());
+    }
+
+    #[test]
+    fn plane_curves_take_every_path_space_curves_do() {
+        // The quarter circle in the plane, and the same in space.
+        let (points, knots, weights) = quarter();
+        let flat: Vec<[f64; 2]> = points.iter().map(|p| [p[0], p[1]]).collect();
+        let plane = NurbsCurve::new(3, knots.to_vec(), flat, Some(weights.to_vec())).unwrap();
+        let space =
+            NurbsCurve::new(3, knots.to_vec(), points.to_vec(), Some(weights.to_vec())).unwrap();
+        let (plane, space) = (plane.view(), space.view());
+        for k in 0..=10 {
+            let t = f64::from(k) / 10.0;
+            let (a, b) = (plane.evaluation(t), space.evaluation(t));
+            assert_eq!(a.point, [b.point[0], b.point[1]]);
+            assert_eq!(a.first, [b.first[0], b.first[1]]);
+            assert_eq!(a.second, [b.second[0], b.second[1]]);
+        }
+        let samples = plane.sample(None, 4).unwrap();
+        assert_eq!(samples.points.len(), 5);
+        let (prepared, solid) = (plane.prepare(), space.prepare());
+        let (p, q) = (prepared.evaluate(0.3), solid.evaluate(0.3));
+        assert_eq!(p, [q[0], q[1]]);
+        let tolerance = crate::Tolerance {
+            chord: 1e-4,
+            angle: 0.2,
+        };
+        let (flat, report) = prepared.adaptive_sample(tolerance, 1000);
+        let (round, same) = solid.adaptive_sample(tolerance, 1000);
+        assert_eq!((flat.params, report), (round.params, same));
+        assert_eq!(prepared.lengths(4), solid.lengths(4));
     }
 }

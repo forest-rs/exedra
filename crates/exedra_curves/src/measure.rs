@@ -5,10 +5,11 @@
 
 use alloc::vec::Vec;
 
-use exedra_math::{Real, add, dot, norm, scale, sub};
+use exedra_math::Real;
 
 use crate::nurbs::with_scratch;
 use crate::sample::span_controls;
+use crate::vector::{WeightedPoint, add, dot, norm, scale, sub};
 use crate::{ControlOutOfRange, CubicBasis, NurbsSamples, PreparedNurbs, Span, Station, Workspace};
 
 /// Five-point Gauss-Legendre nodes on `[-1, 1]` (Abramowitz and Stegun,
@@ -295,7 +296,7 @@ fn span_index(span: usize) -> u32 {
     u32::try_from(span).unwrap_or(u32::MAX)
 }
 
-impl PreparedNurbs {
+impl<const N: usize> PreparedNurbs<N> {
     /// The arc length of prepared span `span`, by five-point
     /// Gauss-Legendre quadrature on `pieces` equal parts, as
     /// [`CubicBasis::arc_length`] describes; `None` past the last span.
@@ -309,7 +310,7 @@ impl PreparedNurbs {
 
     /// As [`Self::span_length`] for a span that exists, with `scratch`,
     /// `order` long, for de Casteljau's scheme.
-    fn span_length_with(&self, span: usize, pieces: u32, scratch: &mut [[f64; 4]]) -> f64 {
+    fn span_length_with(&self, span: usize, pieces: u32, scratch: &mut [WeightedPoint<N>]) -> f64 {
         let [a, b] = self.span_domain(span).unwrap_or(self.domain());
         integrate(&mut self.speed(span, scratch), a, b, pieces)
     }
@@ -326,12 +327,12 @@ impl PreparedNurbs {
 
     /// [`Self::lengths`] into a caller's buffer, which is cleared first,
     /// with `workspace` for scratch.
-    pub fn lengths_into(&self, pieces: u32, workspace: &mut Workspace, out: &mut Vec<f64>) {
+    pub fn lengths_into(&self, pieces: u32, workspace: &mut Workspace<N>, out: &mut Vec<f64>) {
         out.clear();
         out.reserve(self.spans() + 1);
         let scratch = &mut workspace.evaluation;
         scratch.clear();
-        scratch.resize(self.order(), [0.0; 4]);
+        scratch.resize(self.order(), WeightedPoint::ZERO);
         let mut total = 0.0;
         out.push(total);
         for span in 0..self.spans() {
@@ -366,7 +367,7 @@ impl PreparedNurbs {
     fn speed<'s>(
         &'s self,
         span: usize,
-        scratch: &'s mut [[f64; 4]],
+        scratch: &'s mut [WeightedPoint<N>],
     ) -> impl FnMut(f64) -> f64 + 's {
         let [a, b] = self.span_domain(span).unwrap_or(self.domain());
         move |t| norm(self.in_span_with(span, t.max(a).min(b), scratch).first)
@@ -428,11 +429,11 @@ pub struct AdaptiveReport {
 /// One sample of a curve being refined: where, and what the curve is
 /// there.
 #[derive(Clone, Copy, Debug)]
-pub(crate) struct Refined {
+pub(crate) struct Refined<const N: usize> {
     span: u32,
     u: f64,
-    point: [f64; 3],
-    derivative: [f64; 3],
+    point: [f64; N],
+    derivative: [f64; N],
     /// Whether the interval from this sample to the next passed.
     settled: bool,
 }
@@ -451,15 +452,15 @@ const NARROWEST: f64 = 1.0 / 1_099_511_627_776.0; // 2^-40
     clippy::too_many_arguments,
     reason = "the curve's two callbacks, the limits, and three reused buffers"
 )]
-fn refine<E>(
+fn refine<const N: usize, E>(
     spans: u32,
     dropped: u32,
-    mut eval: impl FnMut(u32, f64) -> Result<([f64; 3], [f64; 3]), E>,
-    mut polygon: impl FnMut(&Refined, &Refined, &mut Vec<[f64; 3]>),
+    mut eval: impl FnMut(u32, f64) -> Result<([f64; N], [f64; N]), E>,
+    mut polygon: impl FnMut(&Refined<N>, &Refined<N>, &mut Vec<[f64; N]>),
     tolerance: Tolerance,
     max: u32,
-    [list, next]: [&mut Vec<Refined>; 2],
-    controls: &mut Vec<[f64; 3]>,
+    [list, next]: [&mut Vec<Refined<N>>; 2],
+    controls: &mut Vec<[f64; N]>,
 ) -> Result<AdaptiveReport, E> {
     let mut sample = |span: u32, u: f64| {
         eval(span, u).map(|(point, derivative)| Refined {
@@ -486,7 +487,7 @@ fn refine<E>(
         Real::sin_cos(angle).1
     });
     let mut report = AdaptiveReport::default();
-    let count = |list: &Vec<Refined>| (list.len() as u64).saturating_sub(u64::from(dropped));
+    let count = |list: &Vec<Refined<N>>| (list.len() as u64).saturating_sub(u64::from(dropped));
     loop {
         next.clear();
         let mut failing = 0_u64;
@@ -531,7 +532,7 @@ fn refine<E>(
 /// Whether the piece with Bezier control polygon `controls` may stray
 /// more than `chord` from its chord, or turn by more than the angle whose
 /// cosine is `cos_limit`.
-fn fails(controls: &[[f64; 3]], chord: f64, cos_limit: Option<f64>) -> bool {
+fn fails<const N: usize>(controls: &[[f64; N]], chord: f64, cos_limit: Option<f64>) -> bool {
     let (Some(&first), Some(&last)) = (controls.first(), controls.last()) else {
         return false;
     };
@@ -575,8 +576,8 @@ fn fails(controls: &[[f64; 3]], chord: f64, cos_limit: Option<f64>) -> bool {
 
 /// `v`'s direction, scaled by its largest component before normalizing so
 /// that tiny and huge vectors alike keep it; `None` for a zero vector.
-fn direction(v: [f64; 3]) -> Option<[f64; 3]> {
-    let largest = v[0].abs().max(v[1].abs()).max(v[2].abs());
+fn direction<const N: usize>(v: [f64; N]) -> Option<[f64; N]> {
+    let largest = v.iter().fold(0.0_f64, |m, c| m.max(c.abs()));
     if largest == 0.0 || !largest.is_finite() {
         return None;
     }
@@ -694,7 +695,7 @@ pub fn adaptive_stations_into(
     Ok(report)
 }
 
-impl PreparedNurbs {
+impl<const N: usize> PreparedNurbs<N> {
     /// Samples the whole curve refined until each interval meets
     /// `tolerance`, as [`adaptive_stations`] refines a chain: each prepared
     /// span starts as its two ends, and intervals split at their parameter
@@ -708,7 +709,7 @@ impl PreparedNurbs {
         &self,
         tolerance: Tolerance,
         max_samples: u32,
-    ) -> (NurbsSamples, AdaptiveReport) {
+    ) -> (NurbsSamples<N>, AdaptiveReport) {
         let mut out = NurbsSamples::default();
         let report =
             self.adaptive_sample_into(tolerance, max_samples, &mut Workspace::new(), &mut out);
@@ -721,8 +722,8 @@ impl PreparedNurbs {
         &self,
         tolerance: Tolerance,
         max_samples: u32,
-        workspace: &mut Workspace,
-        out: &mut NurbsSamples,
+        workspace: &mut Workspace<N>,
+        out: &mut NurbsSamples<N>,
     ) -> AdaptiveReport {
         out.params.clear();
         out.points.clear();
@@ -737,8 +738,8 @@ impl PreparedNurbs {
         let scratch = &mut workspace.homogeneous;
         let evaluation = &mut workspace.evaluation;
         evaluation.clear();
-        evaluation.resize(self.order(), [0.0; 4]);
-        let refined = refine::<core::convert::Infallible>(
+        evaluation.resize(self.order(), WeightedPoint::ZERO);
+        let refined = refine::<N, core::convert::Infallible>(
             spans,
             dropped,
             |span, u| {
@@ -764,12 +765,10 @@ impl PreparedNurbs {
                     for r in 1..order {
                         let t = if r < order - i { a.u } else { b.u };
                         for j in 0..order - r {
-                            let (p, q) = (scratch[j], scratch[j + 1]);
-                            scratch[j] = core::array::from_fn(|c| (1.0 - t) * p[c] + t * q[c]);
+                            scratch[j] = WeightedPoint::lerp(scratch[j], scratch[j + 1], t);
                         }
                     }
-                    let [x, y, z, w] = scratch[0];
-                    polygon.push([x / w, y / w, z / w]);
+                    polygon.push(scratch[0].point());
                 }
             },
             tolerance,
