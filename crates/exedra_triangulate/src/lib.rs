@@ -296,10 +296,32 @@ fn restore_boundary_samples(input: &PolygonInput<'_>, triangles: &mut Vec<[u32; 
     if retained.iter().all(|&present| present) {
         return;
     }
-    let mut owners = BTreeMap::new();
+    // Only directed ring edges need owners. A vertex has exactly one outgoing
+    // boundary edge, so dense input-index tables replace a tree containing all
+    // three directed edges of every triangle. Splits update the two local
+    // triangles in constant time without allocating tree nodes.
+    let mut next = alloc::vec![u32::MAX; input.vertex_count()];
+    let mut base = 0_u32;
+    for ring in core::iter::once(input.outer).chain(input.holes.iter().copied()) {
+        let len = len_u32(ring.len());
+        for from in 0..len {
+            if !retained[(base + from) as usize] {
+                continue;
+            }
+            let mut to = (from + 1) % len;
+            while !retained[(base + to) as usize] {
+                to = (to + 1) % len;
+            }
+            next[(base + from) as usize] = base + to;
+        }
+        base += len;
+    }
+    let mut owners = alloc::vec![usize::MAX; input.vertex_count()];
     for (index, &[a, b, c]) in triangles.iter().enumerate() {
         for (from, to) in [(a, b), (b, c), (c, a)] {
-            owners.insert((from, to), index);
+            if next[from as usize] == to {
+                owners[from as usize] = index;
+            }
         }
     }
     let mut base = 0_u32;
@@ -322,7 +344,8 @@ fn restore_boundary_samples(input: &PolygonInput<'_>, triangles: &mut Vec<[u32; 
                     && ring[sample as usize] != ring[to as usize]
                 {
                     let (a, b, v) = (base + previous, base + to, base + sample);
-                    let index = owners.remove(&(a, b)).expect("accepted boundary edge");
+                    let index = owners[a as usize];
+                    assert_ne!(index, usize::MAX, "accepted boundary edge has an owner");
                     let c = *triangles[index]
                         .iter()
                         .find(|&&v| v != a && v != b)
@@ -330,7 +353,9 @@ fn restore_boundary_samples(input: &PolygonInput<'_>, triangles: &mut Vec<[u32; 
                     let added = triangles.len();
                     triangles[index] = [a, v, c];
                     triangles.push([v, b, c]);
-                    for (edge, owner) in [
+                    next[a as usize] = v;
+                    next[v as usize] = b;
+                    for ((from, to), owner) in [
                         ((a, v), index),
                         ((v, c), index),
                         ((c, a), index),
@@ -338,7 +363,9 @@ fn restore_boundary_samples(input: &PolygonInput<'_>, triangles: &mut Vec<[u32; 
                         ((b, c), added),
                         ((c, v), added),
                     ] {
-                        owners.insert(edge, owner);
+                        if next[from as usize] == to {
+                            owners[from as usize] = owner;
+                        }
                     }
                     previous = sample;
                 }

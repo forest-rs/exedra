@@ -107,6 +107,7 @@ struct Refiner<'a> {
     unsplittable: BTreeSet<Edge>,
     bad: BTreeSet<(Reverse<u64>, u32)>,
     origins: Vec<SteinerOrigin>,
+    legalization_stack: Vec<u32>,
     ratio2_bound: f64,
     max_steiner: usize,
     max_candidates: u32,
@@ -127,6 +128,7 @@ impl<'a> Refiner<'a> {
             unsplittable: BTreeSet::new(),
             bad: BTreeSet::new(),
             origins: Vec::new(),
+            legalization_stack: Vec::new(),
             ratio2_bound: params.max_radius_edge_ratio * params.max_radius_edge_ratio,
             max_steiner: params.max_steiner_points as usize,
             max_candidates: params.max_candidate_insertions,
@@ -569,7 +571,7 @@ impl<'a> Refiner<'a> {
         for created in [t0, t1, t2] {
             self.register(created);
         }
-        self.legalize(p, alloc::vec![t0, t1, t2]);
+        self.legalize(p, &[t0, t1, t2]);
     }
 
     /// Splits the interior edge opposite `slot` of `tri` and its neighbor
@@ -606,7 +608,7 @@ impl<'a> Refiner<'a> {
         for created in [ta, tb, tc, td] {
             self.register(created);
         }
-        self.legalize(p, alloc::vec![ta, tb, tc, td]);
+        self.legalize(p, &[ta, tb, tc, td]);
     }
 
     fn split_segment_midpoint(&mut self, edge: Edge) {
@@ -677,12 +679,17 @@ impl<'a> Refiner<'a> {
         );
         self.register(t1);
         self.register(t2);
-        self.legalize(m, alloc::vec![t1, t2]);
+        self.legalize(m, &[t1, t2]);
     }
 
     /// Lawson legalization of the edges opposite `p` in the given triangles,
     /// using the crate's cocircular tie rule.
-    fn legalize(&mut self, p: u32, mut stack: Vec<u32>) {
+    fn legalize(&mut self, p: u32, seeds: &[u32]) {
+        // Retain the largest local worklist across insertions, rather than
+        // allocating and growing a fresh tiny vector for every generated point.
+        let mut stack = core::mem::take(&mut self.legalization_stack);
+        stack.clear();
+        stack.extend_from_slice(seeds);
         while let Some(tri) = stack.pop() {
             let k = self.slot_of(tri, p);
             let neighbor = self.adj[tri as usize][k as usize];
@@ -727,6 +734,7 @@ impl<'a> Refiner<'a> {
             stack.push(tri);
             stack.push(neighbor);
         }
+        self.legalization_stack = stack;
     }
 }
 
