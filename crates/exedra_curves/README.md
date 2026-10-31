@@ -18,6 +18,11 @@ Current scope:
   with the jumps at full-multiplicity knots sampled on both sides and marked
   as breaks, and prepared as per-span Bezier controls (`PreparedNurbs`) for
   repeated evaluation;
+- `rotation_minimizing_frames` and `rotation_minimizing_frames_along`: the
+  double-reflection transport `exedra_math::path::double_reflection` that
+  the constructive sweeps use too, along estimated or supplied tangents,
+  with repeated points, cusps and a closed loop's signed seam twist
+  reported;
 - an `_into` form of every allocating function, filling a caller's buffers
   with a reusable `Workspace` for scratch, so a retained caller allocates
   nothing in steady state.
@@ -25,8 +30,9 @@ Current scope:
 The crate is format-free: which controls form which span (stepping,
 wrapping, end conditions), how a format lays out per-control data, and how
 finely to sample are the caller's. The crate documentation states its
-contracts: explicit counts, discontinuous NURBS sampled on both sides of
-each break, and which results are bitwise deterministic across platforms.
+contracts: explicit counts, reported (not repaired) degeneracy,
+discontinuous NURBS sampled on both sides of each break, and which results
+are bitwise deterministic across platforms.
 
 ```rust
 use exedra_curves::{Nurbs, CubicBasis, sample, stations};

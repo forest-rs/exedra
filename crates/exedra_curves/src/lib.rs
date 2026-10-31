@@ -1,13 +1,13 @@
 // Copyright 2026 the Exedra Authors
 // SPDX-License-Identifier: Apache-2.0 OR MIT
 
-//! Deterministic curve geometry: cubic and rational B-spline evaluation and
-//! explicit sampling.
+//! Deterministic curve geometry: cubic and rational B-spline evaluation,
+//! explicit sampling and rotation-minimizing frames.
 //!
 //! The crate knows curves as mathematics and nothing of any scene format: a
 //! caller (a USD reader, a procedural generator) decides which controls
 //! form which spans, how its per-control data is laid out, and how finely
-//! to sample; this crate evaluates.
+//! to sample; this crate evaluates and frames.
 //!
 //! - **Cubic bases** ([`CubicBasis`]): Bezier, uniform B-spline,
 //!   Catmull-Rom and Hermite, as their explicit basis matrices (the
@@ -25,6 +25,11 @@
 //!   of times per nonempty knot span with the jumps at full-multiplicity
 //!   knots sampled on both sides and marked, and prepared as per-span
 //!   Bezier controls for repeated evaluation.
+//! - **Frames** ([`rotation_minimizing_frames`],
+//!   [`rotation_minimizing_frames_along`]): the double-reflection transport
+//!   shared with Exedra's sweeps (`exedra_math::path::double_reflection`),
+//!   along estimated or supplied tangents, with repeated points, cusps and
+//!   a closed loop's signed seam twist reported.
 //! - **Reusable buffers**: every allocating function has an `_into` form
 //!   that fills a caller's buffers, and those that need scratch take a
 //!   [`Workspace`], so a caller that keeps them allocates nothing once they
@@ -48,8 +53,8 @@
 //! controls form a span (`OpenUSD`'s segment counts and `vstep`, periodic
 //! wrapping, pinned end conditions) and how per-control data follows a
 //! curve (primvar interpolation classes). The reader builds [`Span`]s and
-//! joints from those rules; the evaluation here is the same mathematics for
-//! every format and for procedural generators.
+//! joints from those rules; the evaluation and framing here are the same
+//! mathematics for every format and for procedural generators.
 //!
 //! # Contracts
 //!
@@ -58,9 +63,17 @@
 //! - **Stated parameters.** Every derivative is with respect to the
 //!   parameter its function names: a cubic span's `u`, or a NURBS curve's
 //!   `t`.
+//! - **Degeneracy is reported, not repaired.** Repeated points, cusps and a
+//!   closed loop's signed seam twist are counted in [`FrameReport`];
+//!   nothing is moved, dropped or untwisted.
+//! - **Parallel means within `2^-26` radians.** A seed or transported
+//!   normal is made perpendicular to a tangent only when its perpendicular
+//!   part exceeds `sqrt(EPSILON)` of its length; below that the part is
+//!   rounding, and the documented fallback applies. Two directions
+//!   reversing to within the same angle are a cusp.
 //! - **Inputs are checked where they enter.** [`Nurbs::validate`] checks a
-//!   curve's knots, weights and controls once; sampling propagates a
-//!   non-finite value rather than scanning on every call.
+//!   curve's knots, weights and controls once; sampling and framing
+//!   propagate a non-finite value rather than scanning on every call.
 //! - **NURBS are validated once.** [`Nurbs::validate`] returns the
 //!   [`ValidNurbs`] that evaluates and samples, with finite knots, weights
 //!   and weighted controls; an interior knot of multiplicity `order` or
@@ -68,13 +81,13 @@
 //!   both sides of it and lists the break ([`NurbsSamples::breaks`]), so no
 //!   caller joins across a jump unknowingly.
 //!
-//! Not provided: adaptive or tolerance-driven sampling and arc length. Each
-//! would be a new, explicit option rather than a change of these functions'
-//! results.
+//! Not provided: adaptive or tolerance-driven sampling, arc length, and
+//! distributing a closed loop's seam twist. Each would be a new, explicit
+//! option rather than a change of these functions' results.
 //!
 //! # Determinism
 //!
-//! Evaluation and sampling use only additions, subtractions,
+//! Evaluation, sampling, and frames use only additions, subtractions,
 //! multiplications, divisions and square roots, in a documented fixed
 //! order. IEEE 754 rounds each of those correctly and Rust does not fuse
 //! them, so equal inputs give equal bits on every platform and under either
@@ -95,11 +108,16 @@
 extern crate alloc;
 
 mod basis;
+mod frames;
 mod nurbs;
 mod sample;
 mod workspace;
 
 pub use basis::{CubicBasis, CurveEvaluation};
+pub use frames::{
+    Frame, FrameReport, TangentCount, rotation_minimizing_frames, rotation_minimizing_frames_along,
+    rotation_minimizing_frames_into,
+};
 pub use nurbs::{Nurbs, NurbsError, NurbsSamples, PreparedNurbs, ValidNurbs};
 pub use sample::{
     ControlOutOfRange, Span, Station, sample, sample_derivative, sample_derivative_into,

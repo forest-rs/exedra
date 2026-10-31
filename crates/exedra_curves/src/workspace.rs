@@ -17,6 +17,10 @@ use alloc::vec::Vec;
 pub struct Workspace {
     /// Homogeneous NURBS controls for de Boor's scheme and blossoming.
     pub(crate) homogeneous: Vec<[f64; 4]>,
+    /// Chord directions of a framed curve, `None` where points repeat.
+    pub(crate) directions: Vec<Option<[f64; 3]>>,
+    /// The first direction leaving each framed point.
+    pub(crate) outgoing: Vec<Option<[f64; 3]>>,
 }
 
 impl Workspace {
@@ -25,6 +29,8 @@ impl Workspace {
     pub const fn new() -> Self {
         Self {
             homogeneous: Vec::new(),
+            directions: Vec::new(),
+            outgoing: Vec::new(),
         }
     }
 }
