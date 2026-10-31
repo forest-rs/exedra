@@ -3086,62 +3086,25 @@ pub fn sample_sweep_frames(
     frames.into_guide()
 }
 
-/// Per-ring frames along a polyline: miter tangents plus a
-/// rotation-minimizing normal transported by the double-reflection method
-/// (pure arithmetic and square roots — deterministic).
+/// Per-ring frames along a polyline: `exedra_curves`' rotation-minimizing
+/// frames, with bisector tangents and the double-reflection method (pure
+/// arithmetic and square roots — deterministic). A point where the path
+/// doubles back, so its chords' directions cancel to within their
+/// rounding, has no bisector and is refused as a typed cusp.
 ///
 /// Right-handedness means a straight +Z path reproduces the extrude
 /// orientation exactly.
 fn sweep_frames(points: &[[f64; 3]]) -> Result<Vec<SweepFrame>, TessellateError> {
-    let n = points.len();
-    let mut dirs: Vec<[f64; 3]> = Vec::with_capacity(n - 1);
-    for w in points.windows(2) {
-        let d = sub(w[1], w[0]);
-        dirs.push(scale(d, 1.0 / norm(d)));
+    let (frames, report) = exedra_curves::rotation_minimizing_frames(points, false, None);
+    if let Some(point) = report.first_cusp {
+        return Err(TessellateError::PathCusp {
+            point: point as usize,
+        });
     }
-    // Miter tangents: endpoints use their segment, interior points the
-    // bisector; anti-parallel segments have no bisector (typed cusp).
-    let mut tangents: Vec<[f64; 3]> = Vec::with_capacity(n);
-    tangents.push(dirs[0]);
-    for i in 1..n - 1 {
-        let sum = add(dirs[i - 1], dirs[i]);
-        let len = norm(sum);
-        if len <= 1e-12 {
-            return Err(TessellateError::PathCusp { point: i });
-        }
-        tangents.push(scale(sum, 1.0 / len));
-    }
-    tangents.push(dirs[n - 2]);
-
-    // Seed normal: Gram-Schmidt the world axis least aligned with t0
-    // (ties resolve x before y before z) — deterministic, trig-free.
-    let t0 = tangents[0];
-    let abs = [libm::fabs(t0[0]), libm::fabs(t0[1]), libm::fabs(t0[2])];
-    let axis_index = if abs[0] <= abs[1] && abs[0] <= abs[2] {
-        0
-    } else if abs[1] <= abs[2] {
-        1
-    } else {
-        2
-    };
-    let mut axis = [0.0; 3];
-    axis[axis_index] = 1.0;
-    let mut u = sub(axis, scale(t0, dot(axis, t0)));
-    u = scale(u, 1.0 / norm(u));
-
-    let mut frames = Vec::with_capacity(n);
-    let v0 = cross(tangents[0], u);
-    frames.push((points[0], u, v0, tangents[0]));
-    for i in 1..n {
-        // Double reflection (Wang et al.): transport (u, t) from point
-        // i-1 to point i without spin.
-        let (p_prev, u_prev, _, t_prev) = frames[i - 1];
-        let u_i =
-            exedra_math::path::double_reflection(p_prev, u_prev, t_prev, points[i], tangents[i]);
-        let v_i = cross(tangents[i], u_i);
-        frames.push((points[i], u_i, v_i, tangents[i]));
-    }
-    Ok(frames)
+    Ok(frames
+        .into_iter()
+        .map(|f| (f.point, f.normal, f.binormal, f.tangent))
+        .collect())
 }
 
 /// Validates authored parameters without constructing frames or geometry.

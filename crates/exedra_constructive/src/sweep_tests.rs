@@ -544,3 +544,21 @@ fn nearly_collinear_cap_triangulation_retries_without_losing_boundary() {
         assert!(cross(sub(points[1], points[0]), sub(points[2], points[0]))[2] * outward > 0.0);
     }
 }
+
+#[test]
+fn polyline_frames_refuse_cusps_by_the_shared_rule_at_any_scale() {
+    // Doubling back to within 1e-10 radians: the chords' directions cancel
+    // to rounding, so no bisector is trusted.
+    assert!(matches!(
+        sweep_frames(&[[0.0; 3], [1.0, 0.0, 0.0], [0.0, 1e-10, 0.0]]),
+        Err(TessellateError::PathCusp { point: 1 })
+    ));
+    // A path far below `f64`'s square-root range keeps its direction.
+    for length in [1e-155, 1e-300, 1e300] {
+        let frames = sweep_frames(&[[0.0; 3], [length, 0.0, 0.0]]).unwrap();
+        for (_, normal, binormal, tangent) in frames {
+            assert_eq!(tangent, [1.0, 0.0, 0.0]);
+            assert!((norm(normal) - 1.0).abs() < 1e-15 && (norm(binormal) - 1.0).abs() < 1e-15);
+        }
+    }
+}
