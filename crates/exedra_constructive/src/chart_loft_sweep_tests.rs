@@ -448,9 +448,9 @@ fn invalid_loft_metrics_reference_and_chart_rounding_fail_typed() {
 #[test]
 fn existing_metric_fingerprints_stay_unchanged() {
     for (metric, expected) in [
-        (None, 0x8efbc42cc07e643d7475679d9fc9a4a5_u128),
-        (Some(extrusion()), 0x823728a8a6b60e1967ed41c4b10532b4),
-        (Some(revolution()), 0xbb65c071c64227e091468d5a64f701ac),
+        (None, 0x44a209963d40da529a54af29c94e5c72_u128),
+        (Some(extrusion()), 0xe11ae23beb44046d37de965f4cf8ad63),
+        (Some(revolution()), 0xfd395f1a997b3719095b0868281bea7b),
     ] {
         let mut b = RecipeBuilder::new();
         let profile = b.add_profile(builders::rect_from_corner(2.0, 1.0).unwrap());
@@ -479,7 +479,7 @@ fn existing_metric_fingerprints_stay_unchanged() {
         assert_eq!(
             recipe.recipe_fingerprint().0,
             expected,
-            "pre-extension identity at schema 42"
+            "pre-extension identity at schema 43"
         );
     }
 }

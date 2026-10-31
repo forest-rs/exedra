@@ -382,7 +382,7 @@ fn through_bulge([start, via, end]: [Point; 3]) -> Option<f64> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::profile::bulge_arc_center_radius;
+    use crate::profile::bulge_arc;
 
     #[test]
     fn three_point_arcs_take_the_side_of_their_via_point() {
@@ -407,9 +407,8 @@ mod tests {
         let SegKind::Arc { bulge } = cursor.segs[0].kind else {
             panic!("expected an arc");
         };
-        let (center, radius) =
-            bulge_arc_center_radius((1.0, 0.0).into(), (0.0, -1.0).into(), bulge);
-        assert!(center.distance(Point::ORIGIN) < 1e-15 && (radius - 1.0).abs() < 1e-15);
+        let arc = bulge_arc((1.0, 0.0).into(), (0.0, -1.0).into(), bulge).unwrap();
+        assert!(arc.center[0].hypot(arc.center[1]) < 1e-15 && (arc.radius - 1.0).abs() < 1e-15);
         assert!(bulge > 1.0, "three quarters of a turn counter-clockwise");
     }
 

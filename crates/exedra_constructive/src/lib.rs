@@ -144,7 +144,11 @@ pub(crate) fn len_u32(n: usize) -> u32 {
 /// and sweeps frame through its rotation-minimizing frames and the shared
 /// double reflection. Cubic points, path stations and sweep frames may
 /// change; lines and arcs are unchanged.
-pub const EVAL_SCHEMA_VERSION: u32 = 42;
+///
+/// Schema 43 resolves every bulge arc's circle through
+/// `exedra_curves::profile::Arc::from_bulge`: offset arcs' centers and radii
+/// may change in their last bits; discretized arcs are unchanged.
+pub const EVAL_SCHEMA_VERSION: u32 = 43;
 
 #[cfg(test)]
 mod diagonal_boolean_tests;
