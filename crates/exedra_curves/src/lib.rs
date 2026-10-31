@@ -21,11 +21,13 @@
 //!   span, at stations a caller can list before evaluating, so every value
 //!   sampled at the same stations lines up.
 //! - **NURBS** ([`Nurbs`], [`ValidNurbs`], [`PreparedNurbs`]): rational
-//!   B-splines of any order, validated once, evaluated with derivatives by
-//!   de Boor's algorithm over homogeneous controls, sampled a stated number
-//!   of times per nonempty knot span with the jumps at full-multiplicity
-//!   knots sampled on both sides and marked, and prepared as per-span
-//!   Bezier controls for repeated evaluation. A [`Nurbs`] borrows its
+//!   B-splines of any order in any dimension, space curves by default and
+//!   plane curves for profiles and trims, validated once, evaluated with
+//!   derivatives by de Boor's algorithm over [weighted
+//!   controls](WeightedPoint), sampled a stated number of times per
+//!   nonempty knot span with the jumps at full-multiplicity knots sampled on
+//!   both sides and marked, and prepared as per-span Bezier controls for
+//!   repeated evaluation. A [`Nurbs`] borrows its
 //!   caller's buffers, so rebuilding curves allocates nothing; a
 //!   [`NurbsCurve`] owns its own, for curves kept as values.
 //! - **Frames** ([`rotation_minimizing_frames`],
@@ -154,6 +156,7 @@ mod measure;
 mod nurbs;
 mod sample;
 mod sweep;
+mod vector;
 mod workspace;
 
 pub use basis::{CubicBasis, CurveEvaluation};
@@ -171,4 +174,5 @@ pub use sample::{
     sample_into, sample_linear, sample_linear_into, stations, stations_into,
 };
 pub use sweep::{SweepError, SweepReport, SweptMesh, ribbon, ribbon_into, tube, tube_into};
+pub use vector::WeightedPoint;
 pub use workspace::Workspace;
