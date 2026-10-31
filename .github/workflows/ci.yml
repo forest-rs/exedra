@@ -8,7 +8,10 @@ env:
   # If the compilation fails, then the version specified here needs to be bumped up to reality.
   # Be sure to also update the rust-version property in the workspace Cargo.toml file,
   # plus all the README.md files of the affected packages.
-  RUST_MIN_VER: "1.92"
+  RUST_MIN_VER: "1.89"
+  # `exedra_fidget` needs a newer toolchain than the workspace, because Fidget
+  # does; it states its own rust-version and is checked with this one.
+  RUST_FIDGET_MIN_VER: "1.92"
   # List of packages that will be checked with the minimum supported Rust version.
   # This should be limited to packages that are intended for publishing.
   RUST_MIN_VER_PKGS:
@@ -20,7 +23,6 @@ env:
     -p exedra_assembly
     -p exedra_compile
     -p exedra_constructive
-    -p exedra_fidget
     -p exedra_gltf
     -p exedra_implicit
     -p exedra_isosurface
@@ -439,6 +441,30 @@ jobs:
 
       - name: cargo check
         run: cargo hack check ${{ env.RUST_MIN_VER_PKGS }} --locked --optional-deps --each-feature --ignore-unknown-features --features std
+
+  check-msrv-fidget:
+    name: cargo check (msrv) (fidget)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: install fidget msrv toolchain
+        uses: dtolnay/rust-toolchain@master
+        with:
+          toolchain: ${{ env.RUST_FIDGET_MIN_VER }}
+
+      - name: install cargo-hack
+        uses: taiki-e/install-action@v2
+        with:
+          tool: cargo-hack
+
+      - name: restore cache
+        uses: Swatinem/rust-cache@v2
+        with:
+          save-if: ${{ github.event_name != 'merge_group' }}
+
+      - name: cargo check
+        run: cargo hack check -p exedra_fidget --locked --optional-deps --each-feature --ignore-unknown-features --features std
 
   check-msrv-wasm:
     name: cargo check (msrv) (wasm32)
