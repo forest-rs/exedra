@@ -49,8 +49,10 @@ compiler cache.
 
 Download buttons export one named native part per STEP file in millimetres when
 its geometry is supported. Plane, cylinder, cone, sphere and torus supports export
-with supported boundary topology. Ruled supports show the unsupported face/family
-reason; multiple shells require explicit solid/cavity ownership and are refused.
+with supported boundary topology. Ruled supports, such as loft walls, export as
+B-spline surfaces when that is exact: between lines or splines, or arcs of equal
+sweep; other ruled supports show the unsupported face/family reason. Multiple
+shells require explicit solid/cavity ownership and are refused.
 The SDK still returns a typed refusal if export is called directly. Structural
 support does not guarantee final tolerance, topology or budget validation. They do not imply an assembly export and never pass through
 the display mesh. The report includes native support/frame tolerance evidence

@@ -18,7 +18,7 @@ export const galleryCases = [
   { id: "cone", step: "supported", make: (delta=0) => authorPointedCone({radius:25+delta,height:40}) },
   { id: "rail", step: "supported", make: (delta=0) => authorRail({radius:6+delta,bendRadius:40,angle:135,hollow:false}) },
   { id: "hollowRail", step: "supported", make: (delta=0) => authorRail({radius:8+delta,bendRadius:40,angle:135,hollow:true}) },
-  { id: "loft", step: "unsupported", measures:"unavailable", make: (delta=0) => authorVariableLoft({height:120+delta,twist:14,offset:18}) },
+  { id: "loft", step: "supported", measures:"unavailable", make: (delta=0) => authorVariableLoft({height:120+delta,twist:14,offset:18}) },
   { id: "fillet", step: "supported", make: (delta=0) => authorFinishedPlate({size:5+delta,height:30,treatment:"fillet",inner:false}) },
   { id: "chamfer", step: "supported", make: (delta=0) => authorFinishedPlate({size:3+delta,height:30,treatment:"chamfer",inner:true}) },
   { id:"bore", step:"supported", make:(delta=0)=>authorAngledBore({width:100,height:70,thickness:20,radius:8+delta,angle:60,separation:2}) },
