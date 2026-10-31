@@ -5,6 +5,8 @@
 
 use alloc::vec::Vec;
 
+use crate::measure::Refined;
+
 /// Scratch storage for the crate's `_into` functions.
 ///
 /// A caller that evaluates many curves, or the same curves every frame,
@@ -17,6 +19,8 @@ use alloc::vec::Vec;
 pub struct Workspace {
     /// Homogeneous NURBS controls for de Boor's scheme and blossoming.
     pub(crate) homogeneous: Vec<[f64; 4]>,
+    /// De Casteljau's scheme for evaluating a prepared span.
+    pub(crate) evaluation: Vec<[f64; 4]>,
     /// Chord directions of a framed curve, `None` where points repeat.
     pub(crate) directions: Vec<Option<[f64; 3]>>,
     /// The first direction leaving each framed point.
@@ -25,6 +29,12 @@ pub struct Workspace {
     pub(crate) ring: Vec<(f64, f64)>,
     /// The side count `ring` holds, 0 before the first tube.
     pub(crate) ring_sides: u32,
+    /// Adaptive sampling's current samples.
+    pub(crate) refined: Vec<Refined>,
+    /// Adaptive sampling's next round.
+    pub(crate) refining: Vec<Refined>,
+    /// The Bezier control polygon of the interval being tested.
+    pub(crate) polygon: Vec<[f64; 3]>,
 }
 
 impl Workspace {
@@ -33,10 +43,14 @@ impl Workspace {
     pub const fn new() -> Self {
         Self {
             homogeneous: Vec::new(),
+            evaluation: Vec::new(),
             directions: Vec::new(),
             outgoing: Vec::new(),
             ring: Vec::new(),
             ring_sides: 0,
+            refined: Vec::new(),
+            refining: Vec::new(),
+            polygon: Vec::new(),
         }
     }
 }
