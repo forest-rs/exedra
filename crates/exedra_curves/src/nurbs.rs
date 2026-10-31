@@ -563,6 +563,109 @@ impl<'a> ValidNurbs<'a> {
     }
 }
 
+/// A rational B-spline curve that owns its knots, controls and weights,
+/// checked once when made.
+///
+/// [`Nurbs`] borrows a caller's buffers, so a caller rebuilding curves
+/// from its own storage allocates nothing; this type is for curves kept as
+/// values, which are cloned, compared and stored, as a modelling kernel
+/// keeps them. [`Self::view`] lends it as the [`ValidNurbs`] that
+/// evaluates, samples and prepares it, with no checks repeated.
+#[derive(Clone, Debug, PartialEq)]
+pub struct NurbsCurve {
+    order: u32,
+    knots: Vec<f64>,
+    points: Vec<[f64; 3]>,
+    weights: Option<Vec<f64>>,
+}
+
+impl NurbsCurve {
+    /// A curve of `order` (degree + 1), checked as [`Nurbs::validate`]
+    /// checks it.
+    ///
+    /// # Errors
+    ///
+    /// The first [`NurbsError`] found.
+    pub fn new(
+        order: u32,
+        knots: Vec<f64>,
+        points: Vec<[f64; 3]>,
+        weights: Option<Vec<f64>>,
+    ) -> Result<Self, NurbsError> {
+        Nurbs {
+            order,
+            knots: &knots,
+            points: &points,
+            weights: weights.as_deref(),
+        }
+        .validate()?;
+        Ok(Self {
+            order,
+            knots,
+            points,
+            weights,
+        })
+    }
+
+    /// The curve as the [`ValidNurbs`] that evaluates, samples and
+    /// prepares it.
+    #[must_use]
+    pub fn view(&self) -> ValidNurbs<'_> {
+        ValidNurbs {
+            curve: Nurbs {
+                order: self.order,
+                knots: &self.knots,
+                points: &self.points,
+                weights: self.weights.as_deref(),
+            },
+        }
+    }
+
+    /// Degree + 1.
+    #[must_use]
+    pub fn order(&self) -> u32 {
+        self.order
+    }
+
+    /// The knot vector, `points + order` long.
+    #[must_use]
+    pub fn knots(&self) -> &[f64] {
+        &self.knots
+    }
+
+    /// The controls.
+    #[must_use]
+    pub fn points(&self) -> &[[f64; 3]] {
+        &self.points
+    }
+
+    /// One weight per control, or `None` when every weight is 1.
+    #[must_use]
+    pub fn weights(&self) -> Option<&[f64]> {
+        self.weights.as_deref()
+    }
+
+    /// The parameter domain, as [`ValidNurbs::domain`].
+    #[must_use]
+    pub fn domain(&self) -> [f64; 2] {
+        self.view().domain()
+    }
+}
+
+impl ValidNurbs<'_> {
+    /// The curve copied into a [`NurbsCurve`] of its own, with no checks
+    /// repeated.
+    #[must_use]
+    pub fn to_curve(&self) -> NurbsCurve {
+        NurbsCurve {
+            order: self.curve.order,
+            knots: self.curve.knots.to_vec(),
+            points: self.curve.points.to_vec(),
+            weights: self.curve.weights.map(<[f64]>::to_vec),
+        }
+    }
+}
+
 /// The point and derivatives with respect to `t` at `t` of the rational
 /// Bezier piece with homogeneous `controls` over `[a, b]`, with `scratch`
 /// as long as `controls`.
@@ -780,6 +883,34 @@ mod tests {
             [0.0, 0.0, 0.0, 1.0, 1.0, 1.0],
             [1.0, HALF_SQRT2, 1.0],
         )
+    }
+
+    #[test]
+    fn an_owned_curve_is_checked_once_and_lent_as_its_view() {
+        let (points, knots, weights) = quarter();
+        let owned =
+            NurbsCurve::new(3, knots.to_vec(), points.to_vec(), Some(weights.to_vec())).unwrap();
+        let borrowed = Nurbs {
+            order: 3,
+            knots: &knots,
+            points: &points,
+            weights: Some(&weights),
+        }
+        .validate()
+        .unwrap();
+        assert_eq!(owned.view().evaluate(0.3), borrowed.evaluate(0.3));
+        assert_eq!(owned.view().prepare(), borrowed.prepare());
+        assert_eq!(borrowed.to_curve(), owned);
+        assert_eq!(owned.domain(), [0.0, 1.0]);
+        assert_eq!(
+            NurbsCurve::new(
+                3,
+                knots.to_vec(),
+                points.to_vec(),
+                Some(alloc::vec![1.0, 0.0, 1.0])
+            ),
+            Err(NurbsError::Weight { index: 1 })
+        );
     }
 
     #[test]

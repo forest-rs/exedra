@@ -17,7 +17,8 @@ Current scope:
   homogeneous controls, sampled per nonempty knot span of a parameter range
   with the jumps at full-multiplicity knots sampled on both sides and marked
   as breaks, and prepared as per-span Bezier controls (`PreparedNurbs`) for
-  repeated evaluation;
+  repeated evaluation; `Nurbs` borrows a caller's buffers, and `NurbsCurve`
+  owns its own, for curves kept as values;
 - `rotation_minimizing_frames` and `rotation_minimizing_frames_along`: the
   double-reflection transport `exedra_math::path::double_reflection` that
   the constructive sweeps use too, along estimated or supplied tangents,
