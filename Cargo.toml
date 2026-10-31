@@ -7,6 +7,7 @@ members = [
     "benchmarks/assembly_wind_tunnel",
     "benchmarks/boolean_oracle",
     "benchmarks/constructive_wind_tunnel",
+    "benchmarks/exedra_curves_bench",
     "benchmarks/exedra_fidget_bench",
     "benchmarks/exedra_mesh_build_bench",
     "benchmarks/exedra_render_bench",
