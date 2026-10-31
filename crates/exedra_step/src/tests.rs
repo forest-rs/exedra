@@ -319,18 +319,48 @@ fn unsupported_supports_and_open_or_multiple_shells_have_distinct_refusals() {
         &exedra_analytic::body::ValidationPolicy { max_gap: 1e-12 },
     )
     .unwrap();
+    // A patch ruled between two lines is a bilinear B-spline surface.
+    let document = export_body(&ruled, Placement3::IDENTITY, &StepOptions::default()).unwrap();
+    assert!(
+        document
+            .text
+            .contains("B_SPLINE_SURFACE_WITH_KNOTS('',1,1,((#"),
+        "{}",
+        document.text
+    );
+    // Between a line and an arc, the rulings join points at equal angle
+    // and equal length, which no rational surface does with those rows.
+    let line = CurveSpan::new(
+        Curve::line([-1.0, 0.0, -2.0], [2.0, 0.0, 0.0]).unwrap(),
+        ParameterRange::UNIT,
+        false,
+    )
+    .unwrap();
+    // A quarter of a circle of radius sqrt 2 above it, from x = -1 to 1.
+    let arc = CurveSpan::new(
+        Curve::circle(
+            Placement3::from_axes(
+                [-1.0, 0.0, 0.0],
+                [0.0, 0.0, 1.0],
+                [0.0, 1.0, 0.0],
+                [0.0, 0.0, -1.0],
+            ),
+            core::f64::consts::SQRT_2,
+        )
+        .unwrap(),
+        ParameterRange::new(
+            core::f64::consts::FRAC_PI_4,
+            3.0 * core::f64::consts::FRAC_PI_4,
+        )
+        .unwrap(),
+        false,
+    )
+    .unwrap();
     assert!(matches!(
-        check_geometry_support(&ruled),
+        preflight::surface_support(&Surface::ruled(line, arc).unwrap(), FaceId(3)),
         Err(StepError::UnsupportedSurface {
-            face: FaceId(1),
-            family: "ruled"
-        })
-    ));
-    assert!(matches!(
-        export_body(&ruled, Placement3::IDENTITY, &StepOptions::default()),
-        Err(StepError::UnsupportedSurface {
-            face: FaceId(1),
-            family: "ruled"
+            face: FaceId(3),
+            family: "ruled patch no B-spline surface represents exactly"
         })
     ));
     let mut parts = body.clone().into_parts();
@@ -732,4 +762,158 @@ fn cavities_preserve_shells_face_senses_and_material_accuracy_evidence() {
     let ordinary = export_body(&outer, Placement3::IDENTITY, &StepOptions::default()).unwrap();
     assert!(ordinary.report.material_validation.is_none());
     assert!(ordinary.report.correspondence.reversed_faces.is_empty());
+}
+
+/// A prism of unit height over the face between a NURBS edge, over `range`
+/// of `curve` from the origin to `(4, 0, 0)` bulging toward `+y`, and the
+/// line back; its curved wall is ruled between the edge and its copy above.
+fn spline_prism(curve: &exedra_analytic::geometry::NurbsCurve, range: ParameterRange) -> Body {
+    use exedra_analytic::body::{EdgeGeometry, ValidationPolicy};
+    let below = Curve::nurbs(curve.clone()).unwrap();
+    let above = below
+        .transformed(Placement3::translate(0.0, 0.0, 1.0))
+        .unwrap();
+    let wall = Surface::ruled(
+        CurveSpan::new(below.clone(), range, false).unwrap(),
+        CurveSpan::new(above.clone(), range, false).unwrap(),
+    )
+    .unwrap();
+    let edge = |curve: Curve, range: ParameterRange, start: u32, end: u32| Edge {
+        geometry: EdgeGeometry::Curve { curve, range },
+        start: VertexId(start),
+        end: VertexId(end),
+        role: (),
+    };
+    let line = |a: [f64; 3], b: [f64; 3]| {
+        let curve = Curve::line(a, core::array::from_fn(|k| b[k] - a[k])).unwrap();
+        (curve, ParameterRange::UNIT)
+    };
+    let coedge = |edge: u32, reversed: bool| Coedge {
+        edge: EdgeId(edge),
+        reversed,
+    };
+    let plane = |frame: Placement3, v: [f64; 2], sense: Sense, loop_id: u32| Face {
+        surface: Surface::plane(frame).unwrap(),
+        domain: ParameterDomain {
+            u: ParameterRange::new(-1.0, 5.0).unwrap(),
+            v: ParameterRange::new(v[0], v[1]).unwrap(),
+        },
+        sense,
+        loops: vec![LoopId(loop_id)],
+        role: (),
+    };
+    let [a, b, c, d] = [[0.0; 3], [4.0, 0.0, 0.0], [0.0, 0.0, 1.0], [4.0, 0.0, 1.0]];
+    let edges = vec![
+        edge(below, range, 0, 1),
+        edge(above, range, 2, 3),
+        {
+            let (curve, range) = line(b, a);
+            edge(curve, range, 1, 0)
+        },
+        {
+            let (curve, range) = line(d, c);
+            edge(curve, range, 3, 2)
+        },
+        {
+            let (curve, range) = line(a, c);
+            edge(curve, range, 0, 2)
+        },
+        {
+            let (curve, range) = line(b, d);
+            edge(curve, range, 1, 3)
+        },
+    ];
+    let parts: BodyParts<(), ()> = BodyParts {
+        trims: Vec::new(),
+        vertices: vec![a, b, c, d],
+        edges,
+        loops: vec![
+            BoundaryLoop {
+                coedges: vec![coedge(0, false), coedge(2, false)],
+            },
+            BoundaryLoop {
+                coedges: vec![coedge(3, true), coedge(1, true)],
+            },
+            BoundaryLoop {
+                coedges: vec![
+                    coedge(4, false),
+                    coedge(1, false),
+                    coedge(5, true),
+                    coedge(0, true),
+                ],
+            },
+            BoundaryLoop {
+                coedges: vec![
+                    coedge(2, true),
+                    coedge(5, false),
+                    coedge(3, false),
+                    coedge(4, true),
+                ],
+            },
+        ],
+        faces: vec![
+            plane(Placement3::IDENTITY, [-1.0, 3.0], Sense::Reverse, 0),
+            plane(
+                Placement3::translate(0.0, 0.0, 1.0),
+                [-1.0, 3.0],
+                Sense::Forward,
+                1,
+            ),
+            Face {
+                surface: wall,
+                domain: ParameterDomain {
+                    u: ParameterRange::UNIT,
+                    v: ParameterRange::UNIT,
+                },
+                sense: Sense::Reverse,
+                loops: vec![LoopId(2)],
+                role: (),
+            },
+            plane(
+                Placement3::from_axes([1.0, 0.0, 0.0], [0.0, 0.0, 1.0], [0.0, -1.0, 0.0], [0.0; 3]),
+                [-1.0, 2.0],
+                Sense::Forward,
+                3,
+            ),
+        ],
+    };
+    Body::try_from_parts(parts, &ValidationPolicy { max_gap: 1e-9 }).unwrap()
+}
+
+/// The `B_SPLINE_CURVE_WITH_KNOTS` instances a document writes.
+fn spline_curves(text: &str) -> Vec<&str> {
+    text.lines()
+        .filter(|line| line.contains("=B_SPLINE_CURVE_WITH_KNOTS("))
+        .collect()
+}
+
+#[test]
+fn nurbs_edges_are_written_over_their_own_range() {
+    // A closed cubic: over [0, 2] from the origin out to (4, 0, 0) through
+    // +y, and over [2, 4] back through -y. An edge over [0, 2] written as
+    // the whole curve leaves a reader two ways from its start to its end.
+    let loop_curve = exedra_analytic::geometry::NurbsCurve::new(
+        4,
+        vec![0.0, 0.0, 0.0, 0.0, 2.0, 2.0, 2.0, 4.0, 4.0, 4.0, 4.0],
+        vec![
+            [0.0; 3],
+            [0.0, 3.0, 0.0],
+            [4.0, 3.0, 0.0],
+            [4.0, 0.0, 0.0],
+            [4.0, -3.0, 0.0],
+            [0.0, -3.0, 0.0],
+            [0.0; 3],
+        ],
+        None,
+    )
+    .unwrap();
+    let body = spline_prism(&loop_curve, ParameterRange::new(0.0, 2.0).unwrap());
+    let document = export_body(&body, Placement3::IDENTITY, &StepOptions::default()).unwrap();
+    let curves = spline_curves(&document.text);
+    assert_eq!(curves.len(), 2, "{}", document.text);
+    for curve in curves {
+        // One Bezier piece: four controls over [0, 2].
+        assert!(curve.contains(",(4,4),("), "{curve}");
+        assert_eq!(curve.split_once('=').unwrap().1.matches('#').count(), 4);
+    }
 }

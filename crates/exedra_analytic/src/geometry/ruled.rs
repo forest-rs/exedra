@@ -3,7 +3,7 @@
 
 //! Regular ruled patches between two bounded line/circle curves.
 
-use super::{Curve, CurveEvaluation, GeometryError, ParameterRange};
+use super::{Curve, CurveEvaluation, GeometryError, NurbsCurve, ParameterRange};
 use exedra_math::{add, cross, dot, lerp, norm, normalize, scale, sub};
 
 /// A bounded source curve traversed over a normalized parameter in `[0,1]`.
@@ -56,6 +56,45 @@ impl CurveSpan {
         let curve = self.curve.transformed(frame)?;
         Self::new(curve, self.range, self.reversed)
     }
+    /// The span as a NURBS curve over `[0, 1]`, traced in its normalized
+    /// direction: exactly the same points. Lines and NURBS spans keep their
+    /// normalized parameter too; a conic becomes rational quadratic arcs,
+    /// whose parameter is not proportional to angle. `None` where the
+    /// conversion overflows.
+    #[must_use]
+    pub fn nurbs(&self) -> Option<NurbsCurve> {
+        let [lo, hi] = self.range.bounds();
+        let conic = |center: [f64; 3], x: [f64; 3], y: [f64; 3]| {
+            NurbsCurve::arc(center, x, y, [lo, hi])?.with_domain([0.0, 1.0])
+        };
+        let curve = match &self.curve {
+            Curve::Line(_) => NurbsCurve::line(
+                self.curve.evaluate(lo)?.point,
+                self.curve.evaluate(hi)?.point,
+            )?,
+            Curve::Nurbs(n) => n.piece(self.range)?.with_domain([0.0, 1.0])?,
+            Curve::Circle(c) => {
+                let f = c.frame();
+                let axis = |i: usize| scale(f.rows.map(|r| r[i]), c.radius());
+                conic(f.rows.map(|r| r[3]), axis(0), axis(1))?
+            }
+            Curve::Ellipse(e) => {
+                let f = e.frame();
+                let axis = |i: usize, r: f64| scale(f.rows.map(|row| row[i]), r);
+                conic(
+                    f.rows.map(|r| r[3]),
+                    axis(0, e.semi_major()),
+                    axis(1, e.semi_minor()),
+                )?
+            }
+        };
+        Some(if self.reversed {
+            curve.reversed()
+        } else {
+            curve
+        })
+    }
+
     /// Evaluates the bounded curve, with derivatives in normalized parameter units.
     #[must_use]
     pub fn evaluate(&self, fraction: f64) -> Option<CurveEvaluation> {
@@ -296,6 +335,35 @@ impl Ruled {
     #[must_use]
     pub const fn curves(&self) -> &[CurveSpan; 2] {
         &self.curves
+    }
+
+    /// The patch as a B-spline surface, where one traces this patch
+    /// exactly: its two source curves as NURBS of one order over one knot
+    /// vector ([`NurbsCurve::compatible`]), the rows of a surface linear in V.
+    ///
+    /// The rows interpolated at equal parameters trace the patch, each
+    /// ruling joining the same two points, only when both rows keep their
+    /// spans' parameters, as lines and NURBS spans do, or both are conics of
+    /// equal sweep in the same sense, whose arcs share one parameter; and
+    /// when both rows have the same weights, or the rational surface would
+    /// bend its rulings. `None` otherwise. The surface keeps the patch's
+    /// points, not its parameters: for conics, its U at a ruling is the
+    /// arcs' rational parameter, not the patch's angular one.
+    #[must_use]
+    pub fn nurbs_rows(&self) -> Option<[NurbsCurve; 2]> {
+        let [a, b] = &self.curves;
+        let keeps = |s: &CurveSpan| matches!(s.curve, Curve::Line(_) | Curve::Nurbs(_));
+        let conic = |s: &CurveSpan| s.curve.harmonic().is_some();
+        let shared = (keeps(a) && keeps(b))
+            || (conic(a)
+                && conic(b)
+                && a.range.span() == b.range.span()
+                && a.reversed == b.reversed);
+        if !shared {
+            return None;
+        }
+        let (a, b) = a.nurbs()?.compatible(&b.nurbs()?)?;
+        (a.weights() == b.weights()).then_some([a, b])
     }
     pub(super) fn evaluation(&self, uv: [f64; 2]) -> Option<super::SurfaceEvaluation> {
         if !ParameterRange::UNIT.contains(uv[1]) {

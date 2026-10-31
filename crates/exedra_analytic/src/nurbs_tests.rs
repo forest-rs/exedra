@@ -329,3 +329,113 @@ fn a_prism_over_a_spline_is_a_closed_solid() {
         "watertight"
     );
 }
+
+#[test]
+fn ruled_patches_become_b_spline_surfaces_where_one_is_exact() {
+    let range = ParameterRange::new(0.0, 2.0).unwrap();
+    let spline = |z| CurveSpan::new(Curve::nurbs(bulge(z)).unwrap(), range, false).unwrap();
+    let line = |y: f64, z: f64| {
+        CurveSpan::new(
+            Curve::line([0.0, y, z], [4.0, 0.0, 0.0]).unwrap(),
+            ParameterRange::UNIT,
+            false,
+        )
+        .unwrap()
+    };
+    let arc = |radius: f64, z: f64, reversed: bool| {
+        CurveSpan::new(
+            Curve::circle(Placement3::translate(0.0, 0.0, z), radius).unwrap(),
+            ParameterRange::new(0.3, 2.1).unwrap(),
+            reversed,
+        )
+        .unwrap()
+    };
+    // Each with the patch's U at a row parameter: the same for splines and
+    // lines; for arcs, whose rational parameter is not proportional to
+    // angle, the angle the rows reach there.
+    let same = |_: [f64; 3], s: f64| s;
+    let angle = |p: [f64; 3], _: f64| ((libm::atan2(p[1], p[0]) - 0.3) / 1.8).clamp(0.0, 1.0);
+    type PatchU<'a> = &'a dyn Fn([f64; 3], f64) -> f64;
+    let exact: [(Surface, PatchU<'_>); 3] = [
+        (Surface::ruled(spline(0.0), spline(1.0)).unwrap(), &same),
+        (
+            Surface::ruled(line(0.0, 0.0), line(1.0, 2.0)).unwrap(),
+            &same,
+        ),
+        (
+            Surface::ruled(arc(1.0, 0.0, false), arc(0.5, 2.0, false)).unwrap(),
+            &angle,
+        ),
+    ];
+    for (surface, patch_u) in exact {
+        let Surface::Ruled(ruled) = &surface else {
+            unreachable!()
+        };
+        let [a, b] = ruled.nurbs_rows().unwrap();
+        assert_eq!((a.order(), a.knots()), (b.order(), b.knots()));
+        let (a, b) = (a.view(), b.view());
+        for i in 0..=20 {
+            for j in 0..=4 {
+                let (s, v) = (f64::from(i) / 20.0, f64::from(j) / 4.0);
+                let p = a.evaluate(s);
+                let q = b.evaluate(s);
+                let expected = surface.evaluate([patch_u(p, s), v]).unwrap().point;
+                // The rows share their weights, so the rational surface
+                // through them is the interpolation of its rows.
+                let got: [f64; 3] = core::array::from_fn(|k| (1.0 - v) * p[k] + v * q[k]);
+                assert!(norm(sub(got, expected)) < 1e-12, "{s} {v}");
+            }
+        }
+    }
+    // Between a line and an arc, or arcs of different sweep, no surface is
+    // exact.
+    // The chord under the arc, a unit below it.
+    let (start, end) = (
+        [libm::cos(0.3), libm::sin(0.3)],
+        [libm::cos(2.1), libm::sin(2.1)],
+    );
+    let chord = CurveSpan::new(
+        Curve::line(
+            [start[0], start[1], -1.0],
+            [end[0] - start[0], end[1] - start[1], 0.0],
+        )
+        .unwrap(),
+        ParameterRange::UNIT,
+        false,
+    )
+    .unwrap();
+    let line_arc = Surface::ruled(chord, arc(1.0, 0.0, false)).unwrap();
+    let Surface::Ruled(ruled) = line_arc else {
+        unreachable!()
+    };
+    assert!(ruled.nurbs_rows().is_none());
+}
+
+#[test]
+fn b_spline_rows_trace_conic_patches_but_not_their_parameters() {
+    let quarter = ParameterRange::new(0.0, core::f64::consts::FRAC_PI_2).unwrap();
+    let arc = |z| {
+        CurveSpan::new(
+            Curve::circle(Placement3::translate(0.0, 0.0, z), 1.0).unwrap(),
+            quarter,
+            false,
+        )
+        .unwrap()
+    };
+    let surface = Surface::ruled(arc(0.0), arc(1.0)).unwrap();
+    let Surface::Ruled(ruled) = &surface else {
+        unreachable!()
+    };
+    let [a, b] = ruled.nurbs_rows().unwrap();
+    let (s, v) = (0.25, 0.5);
+    let (p, q) = (a.view().evaluate(s), b.view().evaluate(s));
+    let row: [f64; 3] = core::array::from_fn(|k| (1.0 - v) * p[k] + v * q[k]);
+    // The ruling at the rows' parameter is the patch's at the angle it
+    // reaches, a point of the patch ...
+    let angle = libm::atan2(p[1], p[0]) / core::f64::consts::FRAC_PI_2;
+    let traced = surface.evaluate([angle, v]).unwrap().point;
+    assert!(norm(sub(row, traced)) < 1e-12);
+    // ... but not the patch's point at the same parameter.
+    let same = surface.evaluate([s, v]).unwrap().point;
+    assert!(norm(sub(row, same)) > 1e-2, "{}", norm(sub(row, same)));
+}

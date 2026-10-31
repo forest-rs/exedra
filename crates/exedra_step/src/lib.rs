@@ -6,8 +6,9 @@
 //! The exporter owns serialization, explicit exchange units and bounded output.
 //! The analytic head owns geometry and incidence; callers own scene hierarchy,
 //! feature metadata and occurrence placement. Single-shell export supports
-//! planes, cylinders, cones, spheres and regular ring tori,
-//! bounded by lines, circles and ellipses.
+//! planes, cylinders, cones, spheres, regular ring tori, and ruled patches a
+//! B-spline surface represents exactly, bounded by lines, circles, ellipses
+//! and NURBS curves.
 //!
 //! Input incidence and conservative support agreement are checked. Those checks
 //! do not certify general solid validity or trim nesting. Multiple-shell export
@@ -406,7 +407,8 @@ pub fn check_geometry_support<F, E>(body: &Body<F, E>) -> Result<(), StepError> 
 /// Applies the complete rigid occurrence placement in f64. Output units state
 /// the physical meaning of one source coordinate; no implicit conversion occurs.
 /// The exporter preserves shared native topology and serializes supported
-/// elementary surfaces and line/circle/ellipse curves directly. It does not read a display mesh, approximate
+/// elementary surfaces, ruled patches as B-spline surfaces, and line, circle,
+/// ellipse and NURBS curves directly. It does not read a display mesh, approximate
 /// unsupported supports or heal input. Single shells retain local support checks;
 /// multiple shells require a separate exact rectilinear material certificate
 /// establishing a connected solid and disjoint cavity ownership.

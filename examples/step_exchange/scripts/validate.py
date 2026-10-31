@@ -11,7 +11,7 @@ import sys
 
 try:
     from OCP.BRepAdaptor import BRepAdaptor_Surface
-    from OCP.GeomAbs import GeomAbs_Plane, GeomAbs_Cylinder, GeomAbs_Cone, GeomAbs_Torus, GeomAbs_Sphere
+    from OCP.GeomAbs import GeomAbs_Plane, GeomAbs_Cylinder, GeomAbs_Cone, GeomAbs_Torus, GeomAbs_Sphere, GeomAbs_BSplineSurface
     from OCP.TopoDS import TopoDS
     from OCP.Precision import Precision
     from OCP.BRepClass3d import BRepClass3d_SolidClassifier
@@ -153,7 +153,7 @@ def validate(folder, fixture):
     cast_face = getattr(TopoDS, "Face_s", None) or TopoDS.Face
     while surfaces.More():
         support = BRepAdaptor_Surface(cast_face(surfaces.Current()))
-        name = {GeomAbs_Plane:"plane", GeomAbs_Cylinder:"cylinder", GeomAbs_Cone:"cone", GeomAbs_Torus:"torus", GeomAbs_Sphere:"sphere"}.get(support.GetType(),"other")
+        name = {GeomAbs_Plane:"plane", GeomAbs_Cylinder:"cylinder", GeomAbs_Cone:"cone", GeomAbs_Torus:"torus", GeomAbs_Sphere:"sphere", GeomAbs_BSplineSurface:"bspline"}.get(support.GetType(),"other")
         surface_counts[name] = surface_counts.get(name, 0) + 1
         if name == "cone":
             assert 0.0 < support.Cone().SemiAngle() < math.pi/2, "canonical cone angle survives transfer"

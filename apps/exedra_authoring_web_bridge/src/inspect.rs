@@ -213,11 +213,8 @@ mod tests {
         .unwrap();
         let value = metadata(&NativeSource::from(loft), &BTreeMap::new()).unwrap();
         assert_eq!(value["family"], "loft");
-        assert_eq!(value["stepSupport"]["status"], "unsupported");
-        assert_eq!(
-            value["stepSupport"]["diagnostic"]["geometryFamily"],
-            "ruled"
-        );
+        // Its ruled walls export exactly as B-spline surfaces.
+        assert_eq!(value["stepSupport"]["status"], "supported");
         for measure in ["volume", "surfaceArea"] {
             assert_eq!(value["measurements"][measure]["status"], "unavailable");
             assert_eq!(

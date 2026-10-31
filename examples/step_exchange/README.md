@@ -22,6 +22,10 @@ and a hollow spherical sector with oppositely oriented spherical walls. Pole
 correspondence maps to vertices while emitted curve counts remain literal.
 Two oblique-bore fixtures retain ellipse rims and include material witnesses,
 including a rotated occurrence in metre units. The periodic cylinder also exercises quote, backslash, BMP and non-BMP text encoding.
+Two lofts, from a square to a smaller square and from a circle to a smaller
+circle, have walls ruled between lines and between arcs of equal sweep, written as
+B-spline surfaces; the oracle checks they arrive as B-spline surfaces, with their
+closed-form frustum volumes and areas.
 
 ```sh
 cargo run --release -p step_exchange --bin step_exchange -- /tmp/step-fixtures

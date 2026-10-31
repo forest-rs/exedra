@@ -6,6 +6,7 @@
 use exedra_analytic::{
     End,
     extrusion::{Extrusion, Pocket},
+    loft::{Loft, LoftPolicy},
 };
 use exedra_math::Placement3;
 use exedra_profile::{Loop, Profile, ProfilePolicy, SegTag, Segment};
@@ -252,6 +253,7 @@ fn main() -> Result<(), Box<dyn Error>> {
         [[-12.0, -12.0, -2.0], [12.0, 12.0, 2.0]],
     )?;
     supports::export_cases(&output, &mut expected)?;
+    export_lofts(&output, &mut expected)?;
     poles::export_cases(&output, &mut expected)?;
     poles::export_constructed(&output, &mut expected)?;
     poles::export_caps(&output, &mut expected)?;
@@ -303,6 +305,81 @@ fn benchmark(output: &std::path::Path) -> Result<(), Box<dyn Error>> {
         output.join("benchmark.json"),
         serde_json::to_vec_pretty(&report)?,
     )?;
+    Ok(())
+}
+
+/// Lofts between squares and between circles: walls ruled between lines
+/// and between arcs of equal sweep, written as B-spline surfaces, with
+/// closed-form volumes and areas.
+fn export_lofts(
+    output: &std::path::Path,
+    expected: &mut Vec<serde_json::Value>,
+) -> Result<(), Box<dyn Error>> {
+    let policy = LoftPolicy::new(POLICY);
+    let square = |h: f64| -> Result<Profile, Box<dyn Error>> {
+        Ok(Profile::new(rectangle(h, h), vec![], &POLICY)?)
+    };
+    let circle = |r: f64| -> Result<Profile, Box<dyn Error>> {
+        let bulge = std::f64::consts::FRAC_PI_8.tan();
+        let ring = Loop::new(vec![
+            Segment::arc([r, 0.0], bulge),
+            Segment::arc([0.0, r], bulge),
+            Segment::arc([-r, 0.0], bulge),
+            Segment::arc([0.0, -r], bulge),
+        ])?;
+        Ok(Profile::new(ring, vec![], &POLICY)?)
+    };
+    let height = 20.0;
+    let top = Placement3::translate(0.0, 0.0, height);
+    // Frustum walls slope across 5 mm while rising 20 mm.
+    let slant = f64::hypot(height, 5.0);
+    let pi = std::f64::consts::PI;
+    let lofts = [
+        (
+            "square-frustum-loft",
+            Loft::from_profiles(
+                [(Placement3::IDENTITY, square(10.0)?), (top, square(5.0)?)],
+                Placement3::IDENTITY,
+                &policy,
+            )?,
+            // h / 3 (A + a + sqrt(A a)), and two squares and four
+            // trapezoids.
+            height / 3.0 * (400.0 + 100.0 + 200.0),
+            400.0 + 100.0 + 4.0 * 0.5 * (20.0 + 10.0) * slant,
+        ),
+        (
+            "circular-frustum-loft",
+            Loft::from_profiles(
+                [(Placement3::IDENTITY, circle(10.0)?), (top, circle(5.0)?)],
+                Placement3::IDENTITY,
+                &policy,
+            )?,
+            pi * height / 3.0 * (100.0 + 50.0 + 25.0),
+            pi * (100.0 + 25.0) + pi * (10.0 + 5.0) * slant,
+        ),
+    ];
+    for (name, loft, volume, area) in lofts {
+        let document = export_body(
+            loft.body(),
+            Placement3::IDENTITY,
+            &StepOptions {
+                name,
+                timestamp: "2026-01-01T00:00:00Z",
+                ..StepOptions::default()
+            },
+        )?;
+        save(
+            output,
+            expected,
+            name,
+            &document,
+            volume,
+            area,
+            [[-10.0, -10.0, 0.0], [10.0, 10.0, height]],
+        )?;
+        expected.last_mut().expect("loft fixture was just saved")["surface_counts"] =
+            serde_json::json!({"plane": 2, "bspline": 4});
+    }
     Ok(())
 }
 
