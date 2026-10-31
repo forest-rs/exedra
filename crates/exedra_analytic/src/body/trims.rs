@@ -4,9 +4,36 @@
 //! Explicit parameter correspondence, independent of construction provenance.
 
 use super::{Body, BodyError, FaceId, LoopId, ValidationPolicy, ValidationReport};
-use crate::geometry::{Curve, ParameterRange, Surface};
+use crate::geometry::{Curve, GeometryError, ParameterRange, Surface};
 use alloc::vec::Vec;
+use exedra_curves::NurbsCurve;
 use exedra_math::{Placement3, add, norm, scale, sub};
+
+/// The chart curve of a NURBS edge on a plane: the same spline, its
+/// controls in the plane's coordinates.
+pub(crate) fn planar_nurbs(
+    surface: &Surface,
+    nurbs: &crate::geometry::Nurbs,
+    range: ParameterRange,
+) -> Result<TrimCurve, GeometryError> {
+    let Surface::Plane(_) = surface else {
+        return Err(GeometryError::NonFinite);
+    };
+    let c = nurbs.curve();
+    let points = c
+        .points()
+        .iter()
+        .map(|&p| surface.parameters(p).ok_or(GeometryError::NonFinite))
+        .collect::<Result<Vec<_>, _>>()?;
+    let curve = NurbsCurve::new(
+        c.order(),
+        c.knots().to_vec(),
+        points,
+        c.weights().map(<[f64]>::to_vec),
+    )
+    .map_err(GeometryError::Nurbs)?;
+    Ok(TrimCurve::Nurbs { curve, range })
+}
 
 /// A parameter curve in one owning face's chart.
 ///
@@ -39,6 +66,19 @@ pub enum TrimCurve {
         /// Increasing angular interval, in radians.
         range: ParameterRange,
     },
+    /// A rational B-spline in the chart over the increasing `range` of its
+    /// parameter, which edge fractions map onto. It must not jump inside
+    /// the range.
+    ///
+    /// On a plane, the chart curve of a NURBS edge is the same spline with
+    /// its controls in plane coordinates, so the two are compared control
+    /// by control.
+    Nurbs {
+        /// The chart curve.
+        curve: NurbsCurve<2>,
+        /// Increasing interval of the curve's knot domain.
+        range: ParameterRange,
+    },
 }
 impl TrimCurve {
     /// Evaluates at a canonical edge fraction in `[0,1]` without chart wrapping.
@@ -68,6 +108,16 @@ impl TrimCurve {
                 let (s, c) = (libm::sin(t), libm::cos(t));
                 core::array::from_fn(|i| origin[i] + linear[i] * t + cosine[i] * c + sine[i] * s)
             }
+            Self::Nurbs {
+                ref curve, range, ..
+            } => {
+                let t = range.at(fraction)?;
+                let [start, end] = curve.domain();
+                if !(start <= t && t <= end) {
+                    return None;
+                }
+                curve.view().evaluate(t)
+            }
         };
         p.iter().all(|v| v.is_finite()).then_some(p)
     }
@@ -79,6 +129,20 @@ impl TrimCurve {
         let result = match *self {
             Self::Line { start, end } => {
                 core::array::from_fn(|i| [start[i].min(end[i]), start[i].max(end[i])])
+            }
+            Self::Nurbs { ref curve, range } => {
+                // The piece's controls hold it.
+                let piece = curve.segment(range.bounds())?;
+                core::array::from_fn(|i| {
+                    let (lo, hi) = piece
+                        .points()
+                        .iter()
+                        .fold((f64::INFINITY, f64::NEG_INFINITY), |(lo, hi), p| {
+                            (lo.min(p[i]), hi.max(p[i]))
+                        });
+                    let padding = 32.0 * f64::EPSILON * lo.abs().max(hi.abs());
+                    [(lo - padding).next_down(), (hi + padding).next_up()]
+                })
             }
             Self::Harmonic {
                 origin,
@@ -165,10 +229,19 @@ impl TrimCurve {
             } => core::array::from_fn(|i| {
                 (linear[i].abs() + libm::hypot(cosine[i], sine[i])) * range.span()
             }),
+            Self::Nurbs { ref curve, range } => {
+                let speed = curve
+                    .view()
+                    .prepare()
+                    .range_bounds(range.bounds())
+                    .map_or(f64::INFINITY, |b| b.first);
+                [speed * range.span(); 2]
+            }
         }
     }
     fn coefficients(&self) -> Option<Harmonic<2>> {
         match *self {
+            Self::Nurbs { .. } => None,
             Self::Line { start, end } => Some(Harmonic {
                 origin: start,
                 linear: core::array::from_fn(|i| end[i] - start[i]),
@@ -266,25 +339,44 @@ impl<F, E> Body<F, E> {
                     }
                 }
                 let edge = &self.edges()[coedge.edge.index()];
-                let bound = match (&edge.geometry, composed(&face.surface, trim)) {
-                    (super::EdgeGeometry::Curve { curve, range }, Some(actual)) => {
-                        actual.gap(&curve_coefficients(curve, *range))
-                    }
-                    (super::EdgeGeometry::Collapsed, Some(actual)) => {
-                        actual.gap(&Harmonic::point(self.vertices()[edge.start.index()]))
-                    }
-                    // Cone pole position is meaningful although its normal isn't.
-                    (super::EdgeGeometry::Collapsed, None) => match (&face.surface, trim) {
-                        (Surface::Cone(cone), TrimCurve::Line { start, end })
-                            if start[1] == end[1] && Some(start[1]) == cone.apex_parameter() =>
-                        {
-                            cone.apex_point().map_or(f64::INFINITY, |p| {
-                                norm(sub(p, self.vertices()[edge.start.index()]))
-                            })
+                let bound = match (&edge.geometry, trim) {
+                    (
+                        super::EdgeGeometry::Curve { curve, range },
+                        TrimCurve::Nurbs {
+                            curve: trim,
+                            range: trim_range,
+                        },
+                    ) => nurbs_gap(&face.surface, trim, *trim_range, curve, *range),
+                    (_, TrimCurve::Nurbs { .. }) => f64::INFINITY,
+                    _ => match (&edge.geometry, composed(&face.surface, trim)) {
+                        // A NURBS edge corresponds only to a NURBS trim.
+                        (
+                            super::EdgeGeometry::Curve {
+                                curve: Curve::Nurbs(_),
+                                ..
+                            },
+                            _,
+                        ) => f64::INFINITY,
+                        (super::EdgeGeometry::Curve { curve, range }, Some(actual)) => {
+                            actual.gap(&curve_coefficients(curve, *range))
                         }
+                        (super::EdgeGeometry::Collapsed, Some(actual)) => {
+                            actual.gap(&Harmonic::point(self.vertices()[edge.start.index()]))
+                        }
+                        // Cone pole position is meaningful although its normal isn't.
+                        (super::EdgeGeometry::Collapsed, None) => match (&face.surface, trim) {
+                            (Surface::Cone(cone), TrimCurve::Line { start, end })
+                                if start[1] == end[1]
+                                    && Some(start[1]) == cone.apex_parameter() =>
+                            {
+                                cone.apex_point().map_or(f64::INFINITY, |p| {
+                                    norm(sub(p, self.vertices()[edge.start.index()]))
+                                })
+                            }
+                            _ => f64::INFINITY,
+                        },
                         _ => f64::INFINITY,
                     },
-                    _ => f64::INFINITY,
                 };
                 let bound = bound + correspondence_roundoff(&face.surface, trim, edge.regular());
                 if !bound.is_finite() || bound > policy.max_gap {
@@ -357,6 +449,12 @@ fn correspondence_roundoff(
                 .map(f64::abs)
                 .fold(t, f64::max)
         }
+        TrimCurve::Nurbs { ref curve, .. } => curve
+            .points()
+            .iter()
+            .flatten()
+            .map(|v| v.abs())
+            .fold(1.0, f64::max),
     };
     let surface_scale = match surface {
         Surface::Plane(_) => 1.0,
@@ -388,6 +486,13 @@ fn correspondence_roundoff(
                 .chain(l.direction().map(|v| v * t))
                 .map(f64::abs)
                 .fold(1.0, f64::max),
+            Curve::Nurbs(n) => n
+                .curve()
+                .points()
+                .iter()
+                .flatten()
+                .map(|v| v.abs())
+                .fold(1.0, f64::max),
             _ => {
                 let (frame, radii) = curve.harmonic().expect("harmonic");
                 frame
@@ -401,6 +506,41 @@ fn correspondence_roundoff(
         }
     });
     1024.0 * f64::EPSILON * (placement + uv_scale * surface_scale + edge_scale)
+}
+
+/// The farthest a NURBS trim, mapped through its face's surface, strays
+/// from its NURBS edge. On a plane the mapped trim is a NURBS curve whose
+/// controls are the trim's mapped through the plane; with the same order,
+/// knots, weights and range as the edge's, the difference of the two curves
+/// is the NURBS curve of their controls' differences, which no point of it
+/// exceeds. Any other pairing is not certified.
+fn nurbs_gap(
+    surface: &Surface,
+    trim: &NurbsCurve<2>,
+    trim_range: ParameterRange,
+    curve: &Curve,
+    range: ParameterRange,
+) -> f64 {
+    let (Surface::Plane(_), Curve::Nurbs(edge)) = (surface, curve) else {
+        return f64::INFINITY;
+    };
+    let edge = edge.curve();
+    if trim_range != range
+        || trim.order() != edge.order()
+        || trim.knots() != edge.knots()
+        || trim.weights() != edge.weights()
+    {
+        return f64::INFINITY;
+    }
+    trim.points()
+        .iter()
+        .zip(edge.points())
+        .map(|(&uv, &p)| {
+            surface
+                .evaluate(uv)
+                .map_or(f64::INFINITY, |mapped| norm(sub(mapped.point, p)))
+        })
+        .fold(0.0, f64::max)
 }
 
 #[derive(Clone, Copy)]

@@ -148,6 +148,7 @@ fn geometry_chart<F, E>(
                         range,
                     )
                 }
+                Curve::Nurbs(n) => crate::body::planar_nurbs(surface, n, range).ok(),
             }
         })
         .collect()
@@ -317,6 +318,12 @@ pub(super) fn check<F, E>(
                     })
                     .fold(t, f64::max)
             }
+            TrimCurve::Nurbs { ref curve, .. } => curve
+                .points()
+                .iter()
+                .flatten()
+                .map(|v| v.abs())
+                .fold(1.0, f64::max),
         })
         .fold(1.0, f64::max);
     if !coefficient_scale.is_finite()

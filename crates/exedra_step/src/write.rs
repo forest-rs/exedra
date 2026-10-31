@@ -116,6 +116,34 @@ impl fmt::Display for Refs<'_> {
         f.write_str(")")
     }
 }
+/// A parenthesized STEP list of reals.
+struct Reals<'a>(&'a [f64]);
+impl fmt::Display for Reals<'_> {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.write_str("(")?;
+        for (i, &value) in self.0.iter().enumerate() {
+            if i != 0 {
+                f.write_str(",")?;
+            }
+            write!(f, "{}", Real(value))?;
+        }
+        f.write_str(")")
+    }
+}
+/// A parenthesized STEP list of integers.
+struct Integers<'a>(&'a [usize]);
+impl fmt::Display for Integers<'_> {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.write_str("(")?;
+        for (i, &value) in self.0.iter().enumerate() {
+            if i != 0 {
+                f.write_str(",")?;
+            }
+            write!(f, "{value}")?;
+        }
+        f.write_str(")")
+    }
+}
 struct Real(f64);
 impl fmt::Display for Real {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
@@ -225,6 +253,45 @@ pub(super) fn export<F, E>(
                         Real(ellipse.semi_major()),
                         Real(ellipse.semi_minor())
                     ))?
+                }
+            }
+            Curve::Nurbs(nurbs) => {
+                let curve = nurbs.curve();
+                // A placement moves the controls; the weights are unchanged.
+                let points = curve
+                    .points()
+                    .iter()
+                    .map(|&p| out.point(placement.transform_point(p)))
+                    .collect::<Result<Vec<_>, _>>()?;
+                let mut knots: Vec<f64> = Vec::new();
+                let mut multiplicities: Vec<usize> = Vec::new();
+                for &u in curve.knots() {
+                    if knots.last() == Some(&u) {
+                        *multiplicities.last_mut().expect("a knot") += 1;
+                    } else {
+                        knots.push(u);
+                        multiplicities.push(1);
+                    }
+                }
+                let degree = curve.order() - 1;
+                match curve.weights() {
+                    None => out.entity(format_args!(
+                        "B_SPLINE_CURVE_WITH_KNOTS('',{},{},.UNSPECIFIED.,.F.,.F.,{},{},.UNSPECIFIED.)",
+                        degree,
+                        Refs(&points),
+                        Integers(&multiplicities),
+                        Reals(&knots)
+                    ))?,
+                    // A rational curve is a complex instance of its partial
+                    // entities, listed alphabetically.
+                    Some(weights) => out.entity(format_args!(
+                        "(BOUNDED_CURVE() B_SPLINE_CURVE({},{},.UNSPECIFIED.,.F.,.F.) B_SPLINE_CURVE_WITH_KNOTS({},{},.UNSPECIFIED.) CURVE() GEOMETRIC_REPRESENTATION_ITEM() RATIONAL_B_SPLINE_CURVE({}) REPRESENTATION_ITEM(''))",
+                        degree,
+                        Refs(&points),
+                        Integers(&multiplicities),
+                        Reals(&knots),
+                        Reals(weights)
+                    ))?,
                 }
             }
         };

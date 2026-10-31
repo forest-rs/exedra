@@ -316,6 +316,7 @@ dependencies = [
 name = "exedra_analytic"
 version = "0.1.0"
 dependencies = [
+ "exedra_curves",
  "exedra_math",
  "exedra_mesh",
  "exedra_profile",
