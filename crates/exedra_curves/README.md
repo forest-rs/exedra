@@ -51,7 +51,11 @@ Current scope:
   the spans they shape and reframes from the first changed station; new
   widths touch nothing else; each update returns a `PlanWork` count of
   what it redid, bit for bit what a fresh plan would hold. A plan realizes
-  CPU tubes and ribbons through the sweeps above;
+  CPU tubes and ribbons through the sweeps above, or a `GpuCurve` of plain
+  `f32`/`u32` arrays (homogeneous Bezier controls, width and normal
+  coefficients, station frames) whose layout and tessellation steps are
+  documented, reporting which element ranges changed so a renderer uploads
+  only those;
 - an `_into` form of every allocating function, filling a caller's buffers
   with a reusable `Workspace` for scratch, so a retained caller allocates
   nothing in steady state.

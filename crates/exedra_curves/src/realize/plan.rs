@@ -639,6 +639,16 @@ impl RealizationPlan {
         result.map_err(RealizeError::Sweep)
     }
 
+    /// The piece span `s` belongs to.
+    pub(super) fn span_piece(&self, s: usize) -> u32 {
+        self.spans[s].piece
+    }
+
+    /// Span `s`'s first station.
+    pub(super) fn span_first_station(&self, s: usize) -> u32 {
+        self.spans[s].stations[0]
+    }
+
     /// Builds the spans, extraction matrices, pieces, stations and
     /// control-to-span index.
     fn build_topology(&mut self, work: &mut PlanWork) -> Result<(), RealizeError> {
@@ -1320,6 +1330,7 @@ mod tests {
     use alloc::vec::Vec;
 
     use super::*;
+    use crate::realize::GpuSpan;
     use crate::{
         NurbsCurve, Span, rotation_minimizing_frames_along, sample, sample_derivative, stations,
     };
@@ -1522,7 +1533,8 @@ mod tests {
             |p: &RealizationPlan| p.joints.clone(),
             |p: &RealizationPlan| p.width_coefficients.clone(),
             |p: &RealizationPlan| p.normal_coefficients.clone(),
-            |p: &RealizationPlan| p.report().frames
+            |p: &RealizationPlan| p.report().frames,
+            |p: &RealizationPlan| p.gpu([1.0, 2.0, 3.0]).unwrap()
         );
     }
 
@@ -1717,6 +1729,10 @@ mod tests {
         let plan = plan(description, 2);
         let report = plan.report();
         assert_eq!((report.creases, report.gaps), (1, 1));
+        let gpu = plan.gpu([0.0; 3]).unwrap();
+        assert_eq!(gpu.spans[1].flags, GpuSpan::CREASE);
+        assert_eq!(gpu.spans[2].flags, GpuSpan::GAP | GpuSpan::PIECE_END);
+        assert_eq!(gpu.spans[0].flags, GpuSpan::PIECE_START);
     }
 
     #[test]

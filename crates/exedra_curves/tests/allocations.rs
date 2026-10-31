@@ -14,7 +14,7 @@ use std::alloc::{GlobalAlloc, Layout, System};
 use std::cell::Cell;
 
 use exedra_curves::realize::{
-    Attribute, Centerline, CurveDescription, PlanOptions, RealizationPlan,
+    Attribute, Centerline, CurveDescription, GpuCurve, PlanOptions, RealizationPlan,
 };
 use exedra_curves::{
     CubicBasis, Frame, Nurbs, NurbsCurve, NurbsSamples, PreparedNurbs, SweptMesh, Tolerance,
@@ -230,7 +230,7 @@ fn borrowed_curves_allocate_nothing_in_the_plane_or_in_space() {
 }
 
 /// A realization plan's updates and realizations, once warmed, allocate
-/// nothing: moving controls and sweeping, for a cubic
+/// nothing: moving controls, sweeping and writing GPU data, for a cubic
 /// chain and for NURBS curves of low and high order.
 #[test]
 fn warmed_realization_allocates_nothing() {
@@ -270,10 +270,12 @@ fn warmed_realization_allocates_nothing() {
             RealizationPlan::new(description, PlanOptions::new(6), &mut workspace).unwrap();
         let (a, b) = (wavy(n, 0.5), wavy(n, 0.0));
         let mut mesh = SweptMesh::default();
+        let mut gpu = GpuCurve::default();
         let mut run = |points: &[[f64; 3]]| {
             plan.set_points(points, &mut workspace).unwrap();
             plan.tube_into(8, &mut workspace, &mut mesh).unwrap();
             plan.ribbon_into(&mut workspace, &mut mesh).unwrap();
+            core::hint::black_box(plan.gpu_into([0.0; 3], &mut gpu).unwrap());
         };
         run(&a);
         run(&b);

@@ -62,7 +62,8 @@
 //!   pieces, bounds, joints, stations and frames, updates them per field
 //!   (moved controls redo only the spans they shape, new widths touch
 //!   nothing else) with a [`realize::PlanWork`] of what was redone, and
-//!   realizes CPU tubes and ribbons from them.
+//!   realizes CPU tubes and ribbons or [`realize::GpuCurve`] arrays a
+//!   shader tessellates, reporting the element ranges that changed.
 //! - **Reusable buffers**: every allocating function has an `_into` form
 //!   that fills a caller's buffers, and those that need scratch take a
 //!   [`Workspace`], so a caller that keeps them allocates nothing once they
