@@ -131,10 +131,18 @@ pub trait Real:
     /// Uses the same backend as [`Real::sin_cos`].
     #[must_use]
     fn acos(self) -> Self;
+
+    /// Arc sine in radians, in `[-π/2, π/2]`; NaN outside `[-1, 1]`. Near
+    /// zero it keeps the precision [`Real::acos`] loses near one, so small
+    /// angles are best taken as `2 asin(|u - v| / 2)` between unit vectors.
+    ///
+    /// Uses the same backend as [`Real::sin_cos`].
+    #[must_use]
+    fn asin(self) -> Self;
 }
 
 macro_rules! impl_real {
-    ($t:ty, $sqrt:path, $sincos:path, $acos:path) => {
+    ($t:ty, $sqrt:path, $sincos:path, $acos:path, $asin:path) => {
         impl Real for $t {
             const ZERO: Self = 0.0;
             const ONE: Self = 1.0;
@@ -164,6 +172,11 @@ macro_rules! impl_real {
             #[inline]
             fn acos(self) -> Self {
                 $acos(self)
+            }
+
+            #[inline]
+            fn asin(self) -> Self {
+                $asin(self)
             }
         }
     };
@@ -197,8 +210,14 @@ mod backend {
     }
 }
 
-impl_real!(f32, backend::sqrt_f32, trig::sincosf, trig::acosf);
-impl_real!(f64, backend::sqrt_f64, trig::sincos, trig::acos);
+impl_real!(
+    f32,
+    backend::sqrt_f32,
+    trig::sincosf,
+    trig::acosf,
+    trig::asinf
+);
+impl_real!(f64, backend::sqrt_f64, trig::sincos, trig::acos, trig::asin);
 
 /// Componentwise sum `a + b`.
 #[inline]
