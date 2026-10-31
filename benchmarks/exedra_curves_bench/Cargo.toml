@@ -1,0 +1,17 @@
+[package]
+name = "exedra_curves_bench"
+version = "0.0.0"
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+publish = false
+description = "Timing benchmark for exedra_curves sampling, framing, sweeping and measuring"
+keywords = ["benchmark", "curves", "nurbs"]
+categories = ["algorithms"]
+
+[lints]
+workspace = true
+
+[dependencies]
+exedra_curves = { features = ["std"], workspace = true }
