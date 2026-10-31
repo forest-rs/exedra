@@ -29,6 +29,8 @@ pub mod geometry;
 pub mod halfspace;
 pub mod loft;
 pub mod machining;
+#[cfg(test)]
+mod nurbs_tests;
 mod operation_trims;
 mod planar;
 mod profile_geometry;

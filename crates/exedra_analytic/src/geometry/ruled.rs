@@ -53,14 +53,7 @@ impl CurveSpan {
         &self,
         frame: exedra_math::Placement3,
     ) -> Result<Self, GeometryError> {
-        let curve = match &self.curve {
-            Curve::Line(l) => Curve::line(
-                frame.transform_point(l.origin()),
-                super::vector(frame, l.direction()),
-            )?,
-            Curve::Circle(c) => Curve::circle(frame * c.frame(), c.radius())?,
-            Curve::Ellipse(e) => Curve::ellipse(frame * e.frame(), e.semi_major(), e.semi_minor())?,
-        };
+        let curve = self.curve.transformed(frame)?;
         Self::new(curve, self.range, self.reversed)
     }
     /// Evaluates the bounded curve, with derivatives in normalized parameter units.
@@ -81,9 +74,19 @@ impl CurveSpan {
             .all(f64::is_finite)
             .then_some(e)
     }
+    /// Bounds of a NURBS span's piece over its range, in curve units.
+    fn nurbs_bounds(&self) -> Option<exedra_curves::RangeBounds> {
+        let Curve::Nurbs(n) = &self.curve else {
+            return None;
+        };
+        n.curve().view().prepare().range_bounds(self.range.bounds())
+    }
     pub(crate) fn speed(&self) -> f64 {
         match &self.curve {
             Curve::Line(l) => norm(l.direction()) * self.range.span(),
+            Curve::Nurbs(_) => self
+                .nurbs_bounds()
+                .map_or(f64::INFINITY, |b| b.first * self.range.span()),
             curve => {
                 curve.harmonic().expect("harmonic curve").1[0]
                     * self.range.span()
@@ -94,6 +97,9 @@ impl CurveSpan {
     pub(crate) fn second_bound(&self) -> f64 {
         match &self.curve {
             Curve::Line(_) => 0.0,
+            Curve::Nurbs(_) => self.nurbs_bounds().map_or(f64::INFINITY, |b| {
+                b.second * self.range.span() * self.range.span()
+            }),
             curve => {
                 curve.harmonic().expect("harmonic curve").1[0]
                     * self.range.span()
@@ -103,6 +109,15 @@ impl CurveSpan {
         }
     }
     pub(crate) fn magnitude(&self) -> f64 {
+        if let Curve::Nurbs(_) = self.curve {
+            return self.nurbs_bounds().map_or(f64::INFINITY, |b| {
+                b.bounds
+                    .iter()
+                    .flatten()
+                    .map(|v| v.abs())
+                    .fold(0.0, f64::max)
+            });
+        }
         match self.curve.harmonic() {
             Some((frame, radii)) => {
                 frame
@@ -167,6 +182,33 @@ impl CurveSpan {
                                 .map(f64::abs)
                                 .fold(other.range.span(), f64::max))
             }
+            (Curve::Nurbs(a), Curve::Nurbs(b)) => {
+                // Over the same range in the same sense, two splines of one
+                // order, knot vector and weights differ by the spline of
+                // their controls' differences, which no point exceeds.
+                let (a, b) = (a.curve(), b.curve());
+                if self.range != other.range
+                    || self.reversed != other.reversed
+                    || a.order() != b.order()
+                    || a.knots() != b.knots()
+                    || a.weights() != b.weights()
+                {
+                    return f64::INFINITY;
+                }
+                let scale = a
+                    .points()
+                    .iter()
+                    .chain(b.points())
+                    .flatten()
+                    .map(|v| v.abs())
+                    .fold(1.0, f64::max);
+                a.points()
+                    .iter()
+                    .zip(b.points())
+                    .map(|(p, q)| norm(sub(*p, *q)))
+                    .fold(0.0, f64::max)
+                    + 8.0 * f64::EPSILON * scale
+            }
             _ => f64::INFINITY,
         }
     }
@@ -184,6 +226,15 @@ pub struct Ruled {
 }
 impl Ruled {
     pub(super) fn new(a: CurveSpan, b: CurveSpan) -> Result<Self, GeometryError> {
+        // The bounds below take each span's tangent as Lipschitz, with its
+        // second-derivative bound; across a corner it is not.
+        for span in [&a, &b] {
+            if let Curve::Nurbs(n) = &span.curve
+                && let Some(knot) = n.kink(span.range)
+            {
+                return Err(GeometryError::Kinked { knot });
+            }
+        }
         let mut result = Self {
             curves: [a, b],
             mixed_bound: 0.0,

@@ -749,6 +749,13 @@ fn curve_projection(
                     e.semi_minor() * dot(col(e.frame(), 1), n),
                 )
         }
+        // The piece's controls hold it, so none projects lower.
+        Curve::Nurbs(nurbs) => nurbs
+            .piece(range)?
+            .points()
+            .iter()
+            .map(|&p| dot(sub(p, origin), n))
+            .fold(f64::INFINITY, f64::min),
     })
 }
 fn planar_radial_clearance<F, E>(

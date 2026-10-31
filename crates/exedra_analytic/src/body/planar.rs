@@ -70,7 +70,7 @@ impl<F, E> Body<F, E> {
                             clockwise,
                         )
                     }
-                    Curve::Ellipse(_) => return None,
+                    Curve::Ellipse(_) | Curve::Nurbs(_) => return None,
                 };
                 // Resolving now establishes that both authoritative endpoints can
                 // participate in this exact circular representation.

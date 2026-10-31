@@ -293,11 +293,19 @@ pub(super) fn prepare<F, E>(
                 }
                 scale = scale.max(magnitude(l.origin()));
             }
+            Curve::Nurbs(nurbs) => {
+                scale = nurbs
+                    .curve()
+                    .points()
+                    .iter()
+                    .map(|&p| magnitude(p))
+                    .fold(scale, f64::max);
+            }
             curve => {
                 let (frame, radius) = match curve {
                     Curve::Circle(c) => (c.frame(), c.radius()),
                     Curve::Ellipse(e) => (e.frame(), e.semi_major()),
-                    Curve::Line(_) => unreachable!(),
+                    Curve::Line(_) | Curve::Nurbs(_) => unreachable!(),
                 };
                 let span = range.span();
                 let full = (span - core::f64::consts::TAU).abs()

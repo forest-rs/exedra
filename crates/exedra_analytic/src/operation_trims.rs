@@ -2,7 +2,7 @@
 // SPDX-License-Identifier: Apache-2.0 OR MIT
 
 //! Construction of explicit parameter correspondence for native edit results.
-use crate::body::{BodyParts, FaceId, LoopId, LoopTrims, TrimCurve};
+use crate::body::{BodyParts, FaceId, LoopId, LoopTrims, TrimCurve, planar_nurbs};
 use crate::geometry::{Curve, GeometryError, Surface};
 use alloc::vec::Vec;
 use exedra_math::dot;
@@ -66,6 +66,7 @@ pub(crate) fn append_planar_loop<F, E>(
                     range,
                 }
             }
+            Curve::Nurbs(n) => planar_nurbs(surface, n, range)?,
         };
         curves.push(trim);
     }

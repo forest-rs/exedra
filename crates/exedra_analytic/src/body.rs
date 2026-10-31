@@ -14,6 +14,7 @@ mod cylindrical;
 mod planar;
 pub(crate) mod trims;
 pub use cylindrical::{CylindricalBand, CylindricalBandError};
+pub(crate) use trims::planar_nurbs;
 pub use trims::{LoopTrims, TrimCurve};
 
 use crate::geometry::{Curve, ParameterDomain, ParameterRange, Surface, SurfaceEvaluation};
@@ -410,7 +411,9 @@ impl<F, E> Body<F, E> {
     }
 
     /// Exact length of a line or circular edge, in model units; collapsed
-    /// boundaries have zero length. Ellipse lengths require an elliptic integral and currently return `None`.
+    /// boundaries have zero length. Ellipse lengths require an elliptic
+    /// integral and NURBS lengths a quadrature, neither exact, so both
+    /// return `None`.
     #[must_use]
     pub fn edge_length(&self, edge: EdgeId) -> Option<f64> {
         let edge = self.edge(edge)?;
@@ -420,7 +423,7 @@ impl<F, E> Body<F, E> {
         let speed = match curve {
             Curve::Line(line) => length(line.direction()),
             Curve::Circle(circle) => circle.radius(),
-            Curve::Ellipse(_) => return None,
+            Curve::Ellipse(_) | Curve::Nurbs(_) => return None,
         };
         let result = speed * range.span();
         result.is_finite().then_some(result)
@@ -1027,6 +1030,26 @@ fn support_gap(curve: &Curve, range: ParameterRange, surface: &Surface) -> f64 {
             }
         }
         Curve::Ellipse(ellipse) => crate::geometry::ellipse_support_gap(ellipse, surface),
+        Curve::Nurbs(nurbs) => match surface {
+            // The piece of curve lies in the convex hull of its controls, so
+            // none strays from the plane further than the farthest control.
+            Surface::Plane(_) => nurbs.piece(range).map_or(f64::INFINITY, |piece| {
+                let scale = piece
+                    .points()
+                    .iter()
+                    .flatten()
+                    .map(|v| v.abs())
+                    .fold(1.0, f64::max);
+                let distance = plane_distance(frame);
+                piece
+                    .points()
+                    .iter()
+                    .map(|&p| distance(p))
+                    .fold(0.0, f64::max)
+                    + 64.0 * f64::EPSILON * scale
+            }),
+            _ => f64::INFINITY,
+        },
         Curve::Circle(circle) => {
             let cf = circle.frame();
             let center = coordinates(frame, cf.rows.map(|r| r[3]));
@@ -1146,9 +1169,11 @@ pub(crate) mod tests {
         .unwrap();
         let far = [1e6, 0.0, 0.0];
         let unit = ParameterRange::UNIT;
+        let nurbs =
+            Curve::nurbs(crate::geometry::NurbsCurve::line(far, [1e6, 1.0, 0.0]).unwrap()).unwrap();
         let line = Curve::line(far, [0.0, 1.0, 0.0]).unwrap();
         let circle = Curve::circle(Placement3::translate(1e6, 0.0, 0.0), 1.0).unwrap();
-        for curve in [line, circle] {
+        for curve in [nurbs, line, circle] {
             let gap = support_gap(&curve, unit, &surface);
             assert!((4.9e-7..1e-6).contains(&gap), "{curve:?}: {gap}");
         }
