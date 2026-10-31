@@ -21,6 +21,10 @@ pub struct Workspace {
     pub(crate) directions: Vec<Option<[f64; 3]>>,
     /// The first direction leaving each framed point.
     pub(crate) outgoing: Vec<Option<[f64; 3]>>,
+    /// A tube ring's `(cos, sin)` directions, for `ring_sides` sides.
+    pub(crate) ring: Vec<(f64, f64)>,
+    /// The side count `ring` holds, 0 before the first tube.
+    pub(crate) ring_sides: u32,
 }
 
 impl Workspace {
@@ -31,6 +35,8 @@ impl Workspace {
             homogeneous: Vec::new(),
             directions: Vec::new(),
             outgoing: Vec::new(),
+            ring: Vec::new(),
+            ring_sides: 0,
         }
     }
 }
