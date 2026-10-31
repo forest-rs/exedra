@@ -13,9 +13,12 @@
 use std::alloc::{GlobalAlloc, Layout, System};
 use std::cell::Cell;
 
+use exedra_curves::realize::{
+    Attribute, Centerline, CurveDescription, PlanOptions, RealizationPlan,
+};
 use exedra_curves::{
-    CubicBasis, Frame, Nurbs, NurbsSamples, PreparedNurbs, SweptMesh, Tolerance, Workspace,
-    adaptive_stations_into, rotation_minimizing_frames_into, tube_into,
+    CubicBasis, Frame, Nurbs, NurbsCurve, NurbsSamples, PreparedNurbs, SweptMesh, Tolerance,
+    Workspace, adaptive_stations_into, rotation_minimizing_frames_into, tube_into,
 };
 
 /// Counts this thread's allocations, so tests on other threads do not
@@ -223,6 +226,62 @@ fn borrowed_curves_allocate_nothing_in_the_plane_or_in_space() {
     for order in [2, 4, 9, 17] {
         borrowed::<2>(order);
         borrowed::<3>(order);
+    }
+}
+
+/// A realization plan's updates and realizations, once warmed, allocate
+/// nothing: moving controls and sweeping, for a cubic
+/// chain and for NURBS curves of low and high order.
+#[test]
+fn warmed_realization_allocates_nothing() {
+    let wavy = |n: usize, lift: f64| -> Vec<[f64; 3]> {
+        (0..n)
+            .map(|i| [i as f64, ((i * 7) % 5) as f64 * 0.3 + lift, (i % 3) as f64])
+            .collect()
+    };
+    let mut descriptions = vec![CurveDescription {
+        centerline: Centerline::Cubic {
+            basis: CubicBasis::CatmullRom,
+            points: wavy(12, 0.0),
+            spans: (0..9).map(|i| [i, i + 1, i + 2, i + 3]).collect(),
+        },
+        widths: Attribute::Vertex(vec_of(12)),
+        normals: Some(Attribute::Constant([0.0, 0.0, 1.0])),
+        closed: false,
+    }];
+    for order in [4_u32, 17] {
+        let n = 2 * order as usize;
+        let interior = n - order as usize;
+        let mut knots = vec![0.0; order as usize];
+        knots.extend((1..=interior).map(|k| k as f64));
+        knots.extend(vec![(interior + 1) as f64; order as usize]);
+        let curve = NurbsCurve::new(order, knots, wavy(n, 0.0), Some(vec![1.5; n])).unwrap();
+        descriptions.push(CurveDescription {
+            centerline: Centerline::Nurbs(curve),
+            widths: Attribute::Constant(0.1),
+            normals: None,
+            closed: false,
+        });
+    }
+    for description in descriptions {
+        let n = description.centerline.controls();
+        let mut workspace = Workspace::new();
+        let mut plan =
+            RealizationPlan::new(description, PlanOptions::new(6), &mut workspace).unwrap();
+        let (a, b) = (wavy(n, 0.5), wavy(n, 0.0));
+        let mut mesh = SweptMesh::default();
+        let mut run = |points: &[[f64; 3]]| {
+            plan.set_points(points, &mut workspace).unwrap();
+            plan.tube_into(8, &mut workspace, &mut mesh).unwrap();
+            plan.ribbon_into(&mut workspace, &mut mesh).unwrap();
+        };
+        run(&a);
+        run(&b);
+        assert_eq!(
+            allocations(|| run(&a)),
+            0,
+            "warmed realization of {n} controls"
+        );
     }
 }
 

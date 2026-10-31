@@ -2,8 +2,9 @@
 // SPDX-License-Identifier: Apache-2.0 OR MIT
 
 //! Deterministic curve geometry: cubic and rational B-spline evaluation,
-//! explicit sampling, rotation-minimizing frames, tubes and ribbons, and
-//! arc length and tolerance-driven sampling.
+//! explicit sampling, rotation-minimizing frames, tubes and ribbons, arc
+//! length and tolerance-driven sampling, and realization plans that keep
+//! curves ready to draw.
 //!
 //! The crate knows curves as mathematics and nothing of any scene format: a
 //! caller (a USD reader, a procedural generator) decides which controls
@@ -55,6 +56,13 @@
 //!   arcs, validated against an explicit separation, combined as regions,
 //!   finished at their corners, and sampled with deterministic arc counts,
 //!   as Exedra's geometry heads share them.
+//! - **Realization** ([`realize`]): a [`realize::RealizationPlan`] built
+//!   once from an owned [`realize::CurveDescription`] (a cubic chain or a
+//!   [`NurbsCurve`], widths, ribbon normals, closure) keeps per-span Bezier
+//!   pieces, bounds, joints, stations and frames, updates them per field
+//!   (moved controls redo only the spans they shape, new widths touch
+//!   nothing else) with a [`realize::PlanWork`] of what was redone, and
+//!   realizes CPU tubes and ribbons from them.
 //! - **Reusable buffers**: every allocating function has an `_into` form
 //!   that fills a caller's buffers, and those that need scratch take a
 //!   [`Workspace`], so a caller that keeps them allocates nothing once they
@@ -171,6 +179,7 @@ mod nurbs;
 pub mod path;
 pub mod profile;
 mod query;
+pub mod realize;
 mod sample;
 mod sweep;
 mod vector;

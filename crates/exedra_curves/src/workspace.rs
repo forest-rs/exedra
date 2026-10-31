@@ -7,6 +7,7 @@ use alloc::vec::Vec;
 
 use crate::measure::Refined;
 use crate::vector::WeightedPoint;
+use crate::{Frame, SweptMesh};
 
 /// Scratch storage for the crate's `_into` functions, for curves in `N`
 /// dimensions: plane curves for `N = 2`, space curves for the default
@@ -40,6 +41,10 @@ pub struct Workspace<const N: usize = 3> {
     pub(crate) piece: Vec<WeightedPoint<N>>,
     /// The Bezier coefficients of that interval's tangent numerator.
     pub(crate) numerator: Vec<[f64; N]>,
+    /// One piece's frames while a realization plan frames its pieces.
+    pub(crate) frames: Vec<Frame>,
+    /// One piece's sweep while a realization appends its pieces.
+    pub(crate) mesh: SweptMesh,
 }
 
 impl<const N: usize> Workspace<N> {
@@ -57,6 +62,8 @@ impl<const N: usize> Workspace<N> {
             refining: Vec::new(),
             piece: Vec::new(),
             numerator: Vec::new(),
+            frames: Vec::new(),
+            mesh: SweptMesh::new(),
         }
     }
 }

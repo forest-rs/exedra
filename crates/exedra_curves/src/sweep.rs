@@ -34,6 +34,27 @@ pub struct SweptMesh {
     pub report: SweepReport,
 }
 
+impl SweptMesh {
+    /// An empty mesh, as [`Default`] gives, in a `const` context.
+    pub(crate) const fn new() -> Self {
+        Self {
+            positions: Vec::new(),
+            normals: Vec::new(),
+            indices: Vec::new(),
+            ring: 0,
+            report: SweepReport {
+                stations: 0,
+                ring: 0,
+                closed: false,
+                vertices: 0,
+                triangles: 0,
+                collapsed: 0,
+                unoriented: 0,
+            },
+        }
+    }
+}
+
 /// The counts of a [`SweptMesh`], so a caller can check it without
 /// reading its buffers.
 ///
