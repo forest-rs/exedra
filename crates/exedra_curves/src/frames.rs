@@ -270,37 +270,48 @@ fn frame(
         binormal: cross(t0, normal),
     });
     for i in 1..n {
-        let previous = frames[i - 1];
         let tangent = tangent_at(i, &mut report);
-        let moved = crate::path::double_reflection(
-            previous.point,
-            previous.normal,
-            previous.tangent,
-            points[i],
-            tangent,
-        );
-        // Re-orthonormalize against rounding; a repeated point carries the
-        // previous normal, which the new tangent may not be perpendicular to.
-        let normal =
-            perpendicular(moved, tangent).unwrap_or_else(|| least_aligned_perpendicular(tangent));
-        frames.push(Frame {
-            point: points[i],
-            tangent,
-            normal,
-            binormal: cross(tangent, normal),
-        });
+        frames.push(transported(&frames[i - 1], points[i], tangent));
     }
     if closed && n > 1 {
-        let last = frames[n - 1];
-        let around =
-            crate::path::double_reflection(last.point, last.normal, last.tangent, points[0], t0);
-        let around = perpendicular(around, t0).unwrap_or(normal);
-        // Both are unit and perpendicular to `t0`, so their cross product
-        // is `sin(angle) t0`.
-        report.seam_cos = dot(normal, around);
-        report.seam_sin = dot(cross(normal, around), t0);
+        [report.seam_cos, report.seam_sin] = seam(&frames[0], &frames[n - 1]);
     }
     report
+}
+
+/// The frame at `point` with unit `tangent`, carried from `previous` by
+/// the double reflection: one step of [`rotation_minimizing_frames`].
+pub(crate) fn transported(previous: &Frame, point: [f64; 3], tangent: [f64; 3]) -> Frame {
+    let moved = crate::path::double_reflection(
+        previous.point,
+        previous.normal,
+        previous.tangent,
+        point,
+        tangent,
+    );
+    // Re-orthonormalize against rounding; a repeated point carries the
+    // previous normal, which the new tangent may not be perpendicular to.
+    let normal =
+        perpendicular(moved, tangent).unwrap_or_else(|| least_aligned_perpendicular(tangent));
+    Frame {
+        point,
+        tangent,
+        normal,
+        binormal: cross(tangent, normal),
+    }
+}
+
+/// A closed loop's seam twist `[cos, sin]`: the `last` frame carried on
+/// to the `first` station, measured against the first normal
+/// ([`FrameReport::seam_cos`]).
+pub(crate) fn seam(first: &Frame, last: &Frame) -> [f64; 2] {
+    let (normal, t0) = (first.normal, first.tangent);
+    let around =
+        crate::path::double_reflection(last.point, last.normal, last.tangent, first.point, t0);
+    let around = perpendicular(around, t0).unwrap_or(normal);
+    // Both are unit and perpendicular to `t0`, so their cross product is
+    // `sin(angle) t0`.
+    [dot(normal, around), dot(cross(normal, around), t0)]
 }
 
 /// The unit direction of `v`'s part perpendicular to the unit `t`, or
