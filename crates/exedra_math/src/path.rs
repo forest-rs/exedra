@@ -234,6 +234,49 @@ impl Path3 {
     }
 }
 
+/// Transports a section axis one station along a sampled path without spin:
+/// one step of the double-reflection rotation-minimizing frame
+/// ([`FramePolicy::RotationMinimizing`]).
+///
+/// `x` is the section axis at `from`, perpendicular to the unit `tangent`
+/// there; the result is the axis at `to`, perpendicular to the unit
+/// `next_tangent`. The chord `to - from` reflects the frame, and a second
+/// reflection carries the reflected tangent onto `next_tangent`; the second
+/// is skipped when they already agree (`|next_tangent - reflected|^2 <=
+/// 1e-24`). Only additions, multiplications and divisions are used, in a
+/// fixed order, so equal inputs give equal bits on every platform. When
+/// `from == to` there is no chord, nothing moves, and `x` is returned.
+///
+/// Reference: W. Wang, B. Juttler, D. Zheng, Y. Liu, "Computation of Rotation
+/// Minimizing Frames", ACM Transactions on Graphics 27(1), 2008, section 4
+/// (the double reflection method).
+#[must_use]
+pub fn double_reflection(
+    from: [f64; 3],
+    x: [f64; 3],
+    tangent: [f64; 3],
+    to: [f64; 3],
+    next_tangent: [f64; 3],
+) -> [f64; 3] {
+    let v1 = crate::sub(to, from);
+    let c1 = crate::dot(v1, v1);
+    if c1 == 0.0 {
+        return x;
+    }
+    let x_l = crate::sub(x, crate::scale(v1, 2.0 / c1 * crate::dot(v1, x)));
+    let t_l = crate::sub(
+        tangent,
+        crate::scale(v1, 2.0 / c1 * crate::dot(v1, tangent)),
+    );
+    let v2 = crate::sub(next_tangent, t_l);
+    let c2 = crate::dot(v2, v2);
+    if c2 <= 1e-24 {
+        x_l
+    } else {
+        crate::sub(x_l, crate::scale(v2, 2.0 / c2 * crate::dot(v2, x_l)))
+    }
+}
+
 /// Invalid mathematical path construction, independent of sampling policy.
 #[derive(Copy, Clone, Debug, PartialEq)]
 pub enum PathError {
@@ -283,5 +326,38 @@ mod tests {
             "borrow the owned spans without a copy"
         );
         assert!(path.polyline_points().is_none());
+    }
+
+    #[test]
+    fn double_reflection_carries_a_frame_around_a_planar_turn_without_spin() {
+        // A quarter turn in the XY plane: the out-of-plane axis stays put.
+        let x = double_reflection(
+            [0.0, 0.0, 0.0],
+            [0.0, 0.0, 1.0],
+            [1.0, 0.0, 0.0],
+            [1.0, 1.0, 0.0],
+            [0.0, 1.0, 0.0],
+        );
+        assert_eq!(x, [0.0, 0.0, 1.0]);
+        // The in-plane axis turns with the tangent.
+        let y = double_reflection(
+            [0.0, 0.0, 0.0],
+            [0.0, 1.0, 0.0],
+            [1.0, 0.0, 0.0],
+            [1.0, 1.0, 0.0],
+            [0.0, 1.0, 0.0],
+        );
+        assert!((y[0] + 1.0).abs() < 1e-15 && y[1].abs() < 1e-15, "{y:?}");
+        // No chord: nothing moves.
+        assert_eq!(
+            double_reflection(
+                [1.0; 3],
+                [0.0, 1.0, 0.0],
+                [1.0, 0.0, 0.0],
+                [1.0; 3],
+                [0.0, 0.0, 1.0]
+            ),
+            [0.0, 1.0, 0.0]
+        );
     }
 }
