@@ -152,6 +152,7 @@ extern crate alloc;
 
 mod basis;
 mod frames;
+mod knots;
 mod measure;
 mod nurbs;
 mod sample;
