@@ -33,7 +33,48 @@ pub fn scenarios() -> Vec<Scenario> {
         csg_difference(),
         policy_curve(),
         grid_shell(),
+        implicit_bracket(),
     ]
+}
+
+/// A plate with a boss blended onto it and a bore through both, as an
+/// implicit field: the blend is smooth, the plate's edges and the bore's
+/// rims stay sharp, and faces carry the region of the part they lie on.
+fn implicit_bracket() -> Scenario {
+    use exedra_implicit::{Cuboid, Cylinder, Difference, Expr, SmoothUnion, Tagged};
+    const PLATE: u32 = 1;
+    const BOSS: u32 = 2;
+    const BORE: u32 = 3;
+    let plate = Cuboid::new([0.0, 0.0, 6.0], [60.0, 40.0, 6.0]).expect("plate");
+    let boss = Cylinder::new([20.0, 0.0, 20.0], [0.0, 0.0, 1.0], 16.0, 14.0).expect("boss");
+    let bore = Cylinder::new([20.0, 0.0, 20.0], [0.0, 0.0, 1.0], 8.0, 40.0).expect("bore");
+    let field = Expr::from(Difference::new(
+        Expr::from(
+            SmoothUnion::new(
+                Expr::from(Tagged::new(Expr::from(plate), PLATE)),
+                Expr::from(Tagged::new(Expr::from(boss), BOSS)),
+                6.0,
+            )
+            .expect("blend"),
+        ),
+        Expr::from(Tagged::new(Expr::from(bore), BORE)),
+    ));
+    let mut b = RecipeBuilder::new();
+    let src = b.source_ref("gallery:implicit_bracket");
+    let n = b
+        .add_node(
+            Node::new(NodeKind::Implicit {
+                field,
+                bounds: None,
+                placement: Placement3::IDENTITY,
+            })
+            .with_source(src),
+        )
+        .expect("valid implicit leaf");
+    Scenario {
+        name: "implicit_bracket",
+        recipe: b.finish(n).expect("valid recipe"),
+    }
 }
 
 /// A doubly-curved shell: a 5 × 7 control grid with polynomial dome

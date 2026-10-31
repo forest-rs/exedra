@@ -65,6 +65,8 @@ pub fn policy_fingerprint(policy: &EvalPolicy) -> u64 {
     bytes.extend_from_slice(&policy.workplane.min_projection_cos.to_bits().to_le_bytes());
     bytes.extend_from_slice(&policy.workplane.max_faces.to_le_bytes());
     bytes.extend_from_slice(&policy.workplane.max_corners.to_le_bytes());
+    bytes.extend_from_slice(&policy.implicit.cells.to_le_bytes());
+    bytes.extend_from_slice(&(policy.implicit.max_points as u64).to_le_bytes());
     push_refinement_fingerprint(&mut bytes, policy.planar_face_refinement, true);
     // Cap refinement is always interior-only. Its caller-supplied boundary
     // policy cannot affect geometry and therefore must not split cache keys.
@@ -359,6 +361,22 @@ mod tests {
         });
         assert_ne!(a, d, "cap refinement must change the fingerprint");
         assert_ne!(c, d, "the two refinement slots are distinct");
+        for implicit in [
+            crate::implicit::ImplicitPolicy {
+                cells: 16,
+                ..crate::implicit::ImplicitPolicy::default()
+            },
+            crate::implicit::ImplicitPolicy {
+                max_points: 1000,
+                ..crate::implicit::ImplicitPolicy::default()
+            },
+        ] {
+            let e = policy_fingerprint(&EvalPolicy {
+                implicit,
+                ..EvalPolicy::default()
+            });
+            assert_ne!(a, e, "implicit meshing must change the fingerprint");
+        }
 
         let allowed = exedra_triangulate::RefineParams::default();
         let forbidden = allowed.with_boundary_splits(exedra_triangulate::BoundarySplits::Forbidden);

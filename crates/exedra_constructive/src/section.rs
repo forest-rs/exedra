@@ -335,6 +335,7 @@ fn bind_half(source: &TessellatedBody, half: geometry::CutMesh, cap: CutCap) -> 
         sweep_checks: None,
         path_sampling: None,
         loft_sampling: None,
+        implicit: None,
         refinement: None,
     }
 }

@@ -847,6 +847,152 @@ fn dump_kind(line: &mut String, kind: &NodeKind) {
             let _ = write!(line, " placement");
             put_placement(line, placement);
         }
+        NodeKind::Implicit {
+            field,
+            bounds,
+            placement,
+        } => {
+            let _ = write!(line, "implicit bounds");
+            match bounds {
+                Some(b) => put_hexes(line, &[b.min, b.max].concat()),
+                None => line.push_str(" -"),
+            }
+            let _ = write!(line, " placement");
+            put_placement(line, placement);
+            let _ = write!(line, " field");
+            put_implicit(line, field);
+        }
+    }
+}
+
+fn put_hexes(out: &mut String, values: &[f64]) {
+    for &v in values {
+        let _ = write!(out, " {}", hex(v));
+    }
+}
+
+/// Writes `field` in prefix order: each variant's name, then its children
+/// and parameters.
+fn put_implicit(out: &mut String, field: &exedra_implicit::Expr) {
+    use exedra_implicit::Expr;
+    match field {
+        Expr::Sphere(s) => {
+            out.push_str(" sphere");
+            put_hexes(out, &s.center());
+            put_hexes(out, &[s.radius()]);
+        }
+        Expr::Cuboid(c) => {
+            out.push_str(" cuboid");
+            put_hexes(out, &c.center());
+            put_hexes(out, &c.half_extents());
+        }
+        Expr::Cylinder(c) => {
+            out.push_str(" cylinder");
+            put_hexes(out, &c.center());
+            put_hexes(out, &c.axis());
+            put_hexes(out, &[c.radius(), c.half_height()]);
+        }
+        Expr::Torus(t) => {
+            out.push_str(" torus");
+            put_hexes(out, &t.center());
+            put_hexes(out, &t.axis());
+            put_hexes(out, &[t.major_radius(), t.minor_radius()]);
+        }
+        Expr::HalfSpace(h) => {
+            out.push_str(" half_space");
+            put_hexes(out, &h.point());
+            put_hexes(out, &h.normal());
+        }
+        Expr::Capsule(c) => {
+            out.push_str(" capsule");
+            put_hexes(out, &c.a());
+            put_hexes(out, &c.b());
+            put_hexes(out, &[c.radius()]);
+        }
+        Expr::RoundCone(c) => {
+            out.push_str(" round_cone");
+            put_hexes(out, &c.a());
+            put_hexes(out, &c.b());
+            put_hexes(out, &[c.radius_a(), c.radius_b()]);
+        }
+        Expr::Extrude(e) => {
+            out.push_str(" extrude");
+            put_implicit_profile(out, e.profile());
+            put_hexes(out, &[e.half_height()]);
+        }
+        Expr::Revolve(r) => {
+            out.push_str(" revolve");
+            put_implicit_profile(out, r.profile());
+        }
+        Expr::Union(u) => {
+            out.push_str(" union");
+            put_implicit(out, &u.left);
+            put_implicit(out, &u.right);
+        }
+        Expr::Intersection(i) => {
+            out.push_str(" intersection");
+            put_implicit(out, &i.left);
+            put_implicit(out, &i.right);
+        }
+        Expr::Difference(d) => {
+            out.push_str(" difference");
+            put_implicit(out, &d.left);
+            put_implicit(out, &d.right);
+        }
+        Expr::SmoothUnion(u) => {
+            out.push_str(" smooth_union");
+            put_implicit(out, u.left());
+            put_implicit(out, u.right());
+            put_hexes(out, &[u.radius()]);
+        }
+        Expr::Blend(b) => {
+            let _ = write!(out, " blend {}", b.parts().len());
+            for part in b.parts() {
+                put_implicit(out, part);
+            }
+            put_hexes(out, &[b.radius()]);
+        }
+        Expr::Translate(t) => {
+            out.push_str(" translate");
+            put_implicit(out, t.field());
+            put_hexes(out, &t.offset());
+        }
+        Expr::Scale(t) => {
+            out.push_str(" scale");
+            put_implicit(out, t.field());
+            put_hexes(out, &[t.factor()]);
+        }
+        Expr::Placed(t) => {
+            out.push_str(" placed");
+            put_implicit(out, t.field());
+            put_placement(out, &t.placement());
+        }
+        Expr::Tagged(t) => {
+            out.push_str(" tagged");
+            put_implicit(out, &t.field);
+            let _ = write!(out, " {}", t.region);
+        }
+    }
+}
+
+fn put_implicit_profile(out: &mut String, profile: &exedra_implicit::ProfileExpr) {
+    use exedra_implicit::ProfileExpr;
+    match profile {
+        ProfileExpr::Circle(c) => {
+            out.push_str(" circle");
+            put_hexes(out, &c.center());
+            put_hexes(out, &[c.radius()]);
+        }
+        ProfileExpr::Rectangle(r) => {
+            out.push_str(" rectangle");
+            put_hexes(out, &r.center());
+            put_hexes(out, &r.half_extents());
+        }
+        ProfileExpr::HalfPlane(h) => {
+            out.push_str(" half_plane");
+            put_hexes(out, &h.point());
+            put_hexes(out, &h.normal());
+        }
     }
 }
 
@@ -865,6 +1011,13 @@ pub enum TextError {
     Profile(ProfileError),
     /// The rebuilt recipe failed validation.
     Recipe(RecipeError),
+    /// An implicit field's parameters were refused on rebuild.
+    Implicit {
+        /// 1-based line number.
+        line: usize,
+        /// The refusal.
+        error: exedra_implicit::FieldError,
+    },
 }
 
 impl core::fmt::Display for TextError {
@@ -874,6 +1027,9 @@ impl core::fmt::Display for TextError {
             Self::Malformed { line } => write!(f, "malformed line {line}"),
             Self::Profile(e) => write!(f, "profile validation failed: {e}"),
             Self::Recipe(e) => write!(f, "recipe validation failed: {e}"),
+            Self::Implicit { line, error } => {
+                write!(f, "implicit field on line {line} refused: {error}")
+            }
         }
     }
 }
@@ -1267,6 +1423,147 @@ fn expect(
 fn next_f64(tokens: &mut core::str::SplitWhitespace<'_>, line: usize) -> Result<f64, TextError> {
     let token = tokens.next().ok_or(TextError::Malformed { line })?;
     parse_f64(token, line)
+}
+
+fn next_f64s<const N: usize>(
+    tokens: &mut core::str::SplitWhitespace<'_>,
+    line: usize,
+) -> Result<[f64; N], TextError> {
+    let mut values = [0.0; N];
+    for value in &mut values {
+        *value = next_f64(tokens, line)?;
+    }
+    Ok(values)
+}
+
+/// Reads a field written by [`put_implicit`], rebuilding it through its
+/// constructors.
+fn parse_implicit(
+    tokens: &mut core::str::SplitWhitespace<'_>,
+    line: usize,
+) -> Result<exedra_implicit::Expr, TextError> {
+    use exedra_implicit as im;
+    use exedra_implicit::Expr;
+    let refused = |error| TextError::Implicit { line, error };
+    let name = tokens.next().ok_or(TextError::Malformed { line })?;
+    Ok(match name {
+        "sphere" => {
+            let center = next_f64s::<3>(tokens, line)?;
+            let [radius] = next_f64s::<1>(tokens, line)?;
+            Expr::from(im::Sphere::new(center, radius).map_err(refused)?)
+        }
+        "cuboid" => {
+            let center = next_f64s::<3>(tokens, line)?;
+            let half = next_f64s::<3>(tokens, line)?;
+            Expr::from(im::Cuboid::new(center, half).map_err(refused)?)
+        }
+        "cylinder" => {
+            let center = next_f64s::<3>(tokens, line)?;
+            let axis = next_f64s::<3>(tokens, line)?;
+            let [radius, half] = next_f64s::<2>(tokens, line)?;
+            Expr::from(im::Cylinder::new(center, axis, radius, half).map_err(refused)?)
+        }
+        "torus" => {
+            let center = next_f64s::<3>(tokens, line)?;
+            let axis = next_f64s::<3>(tokens, line)?;
+            let [major, minor] = next_f64s::<2>(tokens, line)?;
+            Expr::from(im::Torus::new(center, axis, major, minor).map_err(refused)?)
+        }
+        "half_space" => {
+            let point = next_f64s::<3>(tokens, line)?;
+            let normal = next_f64s::<3>(tokens, line)?;
+            Expr::from(im::HalfSpace::new(point, normal).map_err(refused)?)
+        }
+        "capsule" => {
+            let a = next_f64s::<3>(tokens, line)?;
+            let b = next_f64s::<3>(tokens, line)?;
+            let [radius] = next_f64s::<1>(tokens, line)?;
+            Expr::from(im::Capsule::new(a, b, radius).map_err(refused)?)
+        }
+        "round_cone" => {
+            let a = next_f64s::<3>(tokens, line)?;
+            let b = next_f64s::<3>(tokens, line)?;
+            let [ra, rb] = next_f64s::<2>(tokens, line)?;
+            Expr::from(im::RoundCone::new(a, b, ra, rb).map_err(refused)?)
+        }
+        "extrude" => {
+            let profile = parse_implicit_profile(tokens, line)?;
+            let [half] = next_f64s::<1>(tokens, line)?;
+            Expr::from(im::Extrude::new(profile, half).map_err(refused)?)
+        }
+        "revolve" => Expr::from(im::Revolve::new(parse_implicit_profile(tokens, line)?)),
+        "union" | "intersection" | "difference" => {
+            let left = parse_implicit(tokens, line)?;
+            let right = parse_implicit(tokens, line)?;
+            match name {
+                "union" => Expr::from(im::Union::new(left, right)),
+                "intersection" => Expr::from(im::Intersection::new(left, right)),
+                _ => Expr::from(im::Difference::new(left, right)),
+            }
+        }
+        "smooth_union" => {
+            let left = parse_implicit(tokens, line)?;
+            let right = parse_implicit(tokens, line)?;
+            let [radius] = next_f64s::<1>(tokens, line)?;
+            Expr::from(im::SmoothUnion::new(left, right, radius).map_err(refused)?)
+        }
+        "blend" => {
+            let count = next_u32(tokens, line)?;
+            let parts = (0..count)
+                .map(|_| parse_implicit(tokens, line))
+                .collect::<Result<Vec<_>, _>>()?;
+            let [radius] = next_f64s::<1>(tokens, line)?;
+            Expr::from(im::SmoothUnionN::new(parts, radius).map_err(refused)?)
+        }
+        "translate" => {
+            let field = parse_implicit(tokens, line)?;
+            let offset = next_f64s::<3>(tokens, line)?;
+            Expr::from(im::Translate::new(field, offset).map_err(refused)?)
+        }
+        "scale" => {
+            let field = parse_implicit(tokens, line)?;
+            let [factor] = next_f64s::<1>(tokens, line)?;
+            Expr::from(im::Scale::new(field, factor).map_err(refused)?)
+        }
+        "placed" => {
+            let field = parse_implicit(tokens, line)?;
+            let placement = parse_placement(tokens, line)?;
+            Expr::from(im::Placed::new(field, placement).map_err(refused)?)
+        }
+        "tagged" => {
+            let field = parse_implicit(tokens, line)?;
+            let region = next_u32(tokens, line)?;
+            Expr::from(im::Tagged::new(field, region))
+        }
+        _ => return Err(TextError::Malformed { line }),
+    })
+}
+
+fn parse_implicit_profile(
+    tokens: &mut core::str::SplitWhitespace<'_>,
+    line: usize,
+) -> Result<exedra_implicit::ProfileExpr, TextError> {
+    use exedra_implicit as im;
+    use exedra_implicit::ProfileExpr;
+    let refused = |error| TextError::Implicit { line, error };
+    Ok(match tokens.next().ok_or(TextError::Malformed { line })? {
+        "circle" => {
+            let center = next_f64s::<2>(tokens, line)?;
+            let [radius] = next_f64s::<1>(tokens, line)?;
+            ProfileExpr::from(im::Circle::new(center, radius).map_err(refused)?)
+        }
+        "rectangle" => {
+            let center = next_f64s::<2>(tokens, line)?;
+            let half = next_f64s::<2>(tokens, line)?;
+            ProfileExpr::from(im::Rectangle::new(center, half).map_err(refused)?)
+        }
+        "half_plane" => {
+            let point = next_f64s::<2>(tokens, line)?;
+            let normal = next_f64s::<2>(tokens, line)?;
+            ProfileExpr::from(im::HalfPlane::new(point, normal).map_err(refused)?)
+        }
+        _ => return Err(TextError::Malformed { line }),
+    })
 }
 
 fn next_u32(tokens: &mut core::str::SplitWhitespace<'_>, line: usize) -> Result<u32, TextError> {
@@ -2008,6 +2305,28 @@ fn parse_node(builder: &mut RecipeBuilder, body: &str, line: usize) -> Result<()
                 placement,
             }
         }
+        "implicit" => {
+            expect(&mut tokens, "bounds", line)?;
+            let first = tokens.next().ok_or(TextError::Malformed { line })?;
+            let bounds = if first == "-" {
+                None
+            } else {
+                let mut corner = [parse_f64(first, line)?, 0.0, 0.0];
+                corner[1] = next_f64(&mut tokens, line)?;
+                corner[2] = next_f64(&mut tokens, line)?;
+                let far = next_f64s::<3>(&mut tokens, line)?;
+                Some(exedra_implicit::Aabb::new(corner, far).ok_or(TextError::Malformed { line })?)
+            };
+            expect(&mut tokens, "placement", line)?;
+            let placement = parse_placement(&mut tokens, line)?;
+            expect(&mut tokens, "field", line)?;
+            let field = parse_implicit(&mut tokens, line)?;
+            NodeKind::Implicit {
+                field,
+                bounds,
+                placement,
+            }
+        }
         _ => return Err(TextError::Malformed { line }),
     };
     builder
@@ -2190,12 +2509,90 @@ pub(crate) mod tests_support {
                 placement: Placement3::translate(30.0, 0.0, 0.0),
             })
             .expect("valid");
+        let implicit = b
+            .add_node(NodeKind::Implicit {
+                field: every_implicit_variant(),
+                bounds: Some(exedra_implicit::Aabb::new([-2.0; 3], [2.0; 3]).expect("bounds")),
+                placement: Placement3::rotate_z_then_translate(0.3, 40.0, 0.0, 0.0),
+            })
+            .expect("valid");
         let group = b
             .add_node(NodeKind::Group {
-                children: vec![transform, mirror, instance, stretch, face, imported, grid],
+                children: vec![
+                    transform, mirror, instance, stretch, face, imported, grid, implicit,
+                ],
             })
             .expect("valid");
         b.finish(group).expect("valid recipe")
+    }
+
+    /// A field using every expression and profile variant once.
+    pub(crate) fn every_implicit_variant() -> exedra_implicit::Expr {
+        use exedra_implicit as im;
+        use exedra_implicit::{Expr, ProfileExpr};
+        let leaves = vec![
+            Expr::from(im::Sphere::new([0.1, 0.2, 0.3], 0.4).unwrap()),
+            Expr::from(im::Cuboid::new([0.0; 3], [0.5, 0.4, 0.3]).unwrap()),
+            Expr::from(im::Cylinder::new([0.0; 3], [0.2, 0.3, 1.0], 0.25, 0.6).unwrap()),
+            Expr::from(im::Torus::new([0.0; 3], [0.0, 1.0, 0.1], 0.7, 0.1).unwrap()),
+            Expr::from(im::Capsule::new([-0.5, 0.0, 0.0], [0.5, 0.1, 0.0], 0.1).unwrap()),
+            Expr::from(im::RoundCone::new([0.0; 3], [0.0, 0.0, 0.8], 0.3, 0.1).unwrap()),
+            Expr::from(
+                im::Extrude::new(
+                    ProfileExpr::from(im::Rectangle::new([0.0, 0.1], [0.3, 0.2]).unwrap()),
+                    0.4,
+                )
+                .unwrap(),
+            ),
+            Expr::from(im::Revolve::new(ProfileExpr::from(
+                im::Circle::new([0.6, 0.0], 0.15).unwrap(),
+            ))),
+        ];
+        let blend = Expr::from(im::SmoothUnionN::new(leaves, 0.05).unwrap());
+        let cut = Expr::from(im::Difference::new(
+            blend,
+            Expr::from(im::Tagged::new(
+                Expr::from(im::HalfSpace::new([0.0, 0.0, 0.5], [0.1, 0.0, 1.0]).unwrap()),
+                3,
+            )),
+        ));
+        let half = Expr::from(
+            im::Extrude::new(
+                ProfileExpr::from(im::HalfPlane::new([0.0, 0.0], [1.0, 0.2]).unwrap()),
+                0.5,
+            )
+            .unwrap(),
+        );
+        let lens = Expr::from(im::Intersection::new(cut, half));
+        let smooth = Expr::from(
+            im::SmoothUnion::new(
+                lens,
+                Expr::from(
+                    im::Translate::new(
+                        Expr::from(im::Sphere::new([0.0; 3], 0.2).unwrap()),
+                        [0.0, 0.0, -0.9],
+                    )
+                    .unwrap(),
+                ),
+                0.1,
+            )
+            .unwrap(),
+        );
+        let scaled = Expr::from(im::Scale::new(smooth, 1.5).unwrap());
+        let placed = Expr::from(
+            im::Placed::new(
+                scaled,
+                Placement3::rotate_z_then_translate(0.4, 0.1, 0.0, 0.0),
+            )
+            .unwrap(),
+        );
+        Expr::from(im::Union::new(
+            placed,
+            Expr::from(im::Tagged::new(
+                Expr::from(im::Sphere::new([1.2, 0.0, 0.0], 0.2).unwrap()),
+                9,
+            )),
+        ))
     }
 }
 

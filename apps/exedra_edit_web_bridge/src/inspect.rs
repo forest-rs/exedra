@@ -555,6 +555,7 @@ fn kind_name(kind: &NodeKind) -> &'static str {
         NodeKind::MeshImport { .. } => "mesh_import",
         NodeKind::Stretch { .. } => "stretch",
         NodeKind::GridSurface { .. } => "grid_surface",
+        NodeKind::Implicit { .. } => "implicit",
         _ => "unknown",
     }
 }

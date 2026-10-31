@@ -23,6 +23,7 @@ pub(crate) fn stretch_body_vertices(
         sweep_checks: None,
         path_sampling: None,
         loft_sampling: None,
+        implicit: None,
         refinement: None,
     })
 }

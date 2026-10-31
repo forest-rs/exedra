@@ -19,9 +19,17 @@ default = ["std"]
 # interchange is a host-side format, and the workspace serde dependency is
 # std-flavored. Core evaluation stays serde-free.
 serde = ["dep:serde", "std"]
-std = ["exedra_mesh/std", "exedra_mesh_ops/std", "exedra_math/std"]
+std = [
+    "exedra_implicit/std",
+    "exedra_isosurface/std",
+    "exedra_mesh/std",
+    "exedra_mesh_ops/std",
+    "exedra_math/std",
+]
 
 [dependencies]
+exedra_implicit = { features = ["libm"], workspace = true }
+exedra_isosurface = { features = ["libm"], workspace = true }
 exedra_math = { features = ["libm"], workspace = true }
 exedra_mesh = { features = ["libm"], workspace = true }
 exedra_mesh_ops = { features = ["libm"], workspace = true }

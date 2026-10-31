@@ -667,6 +667,7 @@ fn combine(bodies: &[(&TessellatedBody, f32)]) -> TessellatedBody {
         sweep_checks: None,
         path_sampling: None,
         loft_sampling: None,
+        implicit: None,
         refinement: None,
     }
 }
@@ -991,6 +992,7 @@ fn collinear_prism(bent: bool) -> TessellatedBody {
         sweep_checks: None,
         path_sampling: None,
         loft_sampling: None,
+        implicit: None,
         refinement: None,
     }
 }
@@ -1063,6 +1065,7 @@ fn rounding_cannot_merge_separate_section_boundaries() {
         sweep_checks: None,
         path_sampling: None,
         loft_sampling: None,
+        implicit: None,
         refinement: None,
     };
     assert!(body.mesh.validate_deep().is_empty());

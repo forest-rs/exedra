@@ -268,6 +268,9 @@ pub struct GeometryReport {
     /// refinement; cache hits replay the outcome stored with the tessellated
     /// body so they cannot hide incomplete quality.
     pub refinements: Vec<(NodeId, RefineStats)>,
+    /// Meshing reports of implicit leaves, in node order; cache hits replay
+    /// the report stored with the tessellated body.
+    pub implicit_meshes: Vec<(NodeId, exedra_isosurface::DelaunayReport)>,
     /// Work counters.
     pub counters: EvalCounters,
     /// The policy evaluation ran under.
@@ -409,6 +412,7 @@ fn evaluate_inner(
             envelopes: Vec::new(),
             policy_curves: Vec::new(),
             refinements: Vec::new(),
+            implicit_meshes: Vec::new(),
             counters: EvalCounters::default(),
             policy: *policy,
             schema_version: crate::EVAL_SCHEMA_VERSION,
@@ -860,8 +864,23 @@ impl EvalCx<'_> {
                         sweep_checks: None,
                         path_sampling: None,
                         loft_sampling: None,
+                        implicit: None,
                         refinement: None,
                     })
+                })?;
+                let fidelity = self.body_fidelity(node_id, &[]);
+                Ok(self.finish_body(node_id, body, emit, fidelity, material))
+            }
+            NodeKind::Implicit {
+                field,
+                bounds,
+                placement,
+            } => {
+                let combined = *world * *placement;
+                let (field, bounds) = (field.clone(), *bounds);
+                let body = self.body_cached(node_id, world, |cx| {
+                    crate::implicit::tessellate(&field, bounds, &combined, &cx.policy.implicit)
+                        .map_err(|error| EvalError::new(node_id, error))
                 })?;
                 let fidelity = self.body_fidelity(node_id, &[]);
                 Ok(self.finish_body(node_id, body, emit, fidelity, material))
@@ -1841,6 +1860,7 @@ impl EvalCx<'_> {
                     sweep_checks: None,
                     path_sampling: None,
                     loft_sampling: None,
+                    implicit: None,
                     refinement: None,
                 });
                 self.report.counters.tessellations += 1;
@@ -1949,6 +1969,20 @@ impl EvalCx<'_> {
     /// Records refinement work and makes every incomplete stopping reason
     /// visible in the honest geometry report. The tessellated body carries
     /// the same value, which makes this replayable on cache hits.
+    /// Records an implicit leaf's meshing report, warning when it is
+    /// incomplete.
+    fn record_implicit(&mut self, node: NodeId, report: exedra_isosurface::DelaunayReport) {
+        self.report.implicit_meshes.push((node, report));
+        if !report.is_complete() {
+            self.push_diagnostic(
+                node,
+                Severity::Warning,
+                "eval.implicit.incomplete",
+                crate::implicit::incomplete_message(&report),
+            );
+        }
+    }
+
     fn record_refinement(&mut self, node: NodeId, stats: RefineStats) {
         self.report.refinements.push((node, stats));
         if stats.budget_exhausted {
@@ -2111,6 +2145,9 @@ impl EvalCx<'_> {
         if let Some(stats) = body.refinement {
             self.record_refinement(node, stats);
         }
+        if let Some(report) = body.implicit {
+            self.record_implicit(node, report);
+        }
         self.report.fidelity.push((node, fidelity));
         if emit {
             self.bodies.push(PlacedBody {
@@ -2266,6 +2303,7 @@ fn instantiate(
         // provenance survives placement; realized mesh checks do not.
         path_sampling: source.path_sampling.clone(),
         loft_sampling: source.loft_sampling.clone(),
+        implicit: source.implicit,
         refinement: source.refinement,
     })
 }

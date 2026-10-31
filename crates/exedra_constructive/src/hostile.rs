@@ -29,6 +29,10 @@ fn fuzz_policy() -> EvalPolicy {
             max_segment_edges: 24,
             min_arc_edges: 2,
         },
+        implicit: crate::implicit::ImplicitPolicy {
+            cells: 6,
+            max_points: 2000,
+        },
         ..EvalPolicy::default()
     }
 }
@@ -127,7 +131,7 @@ fn hostile_placement(rng: &mut Rng) -> Placement3 {
 fn hostile_kind(rng: &mut Rng, profiles: usize, nodes: usize) -> NodeKind {
     let profile = ProfileId(rng.hostile_u32() % (small_u32(profiles.max(1)) + 3));
     let node = NodeId(rng.hostile_u32() % (small_u32(nodes.max(1)) + 3));
-    match rng.range(12) {
+    match rng.range(13) {
         0 => NodeKind::Extrude {
             profile,
             placement: hostile_placement(rng),
@@ -190,10 +194,53 @@ fn hostile_kind(rng: &mut Rng, profiles: usize, nodes: usize) -> NodeKind {
         10 => NodeKind::Group {
             children: (0..rng.range(4)).map(|_| node).collect(),
         },
+        11 => NodeKind::Implicit {
+            field: hostile_field(rng, 2),
+            bounds: exedra_implicit::Aabb::new(
+                [rng.hostile_f64(), rng.hostile_f64(), rng.hostile_f64()],
+                [rng.hostile_f64(), rng.hostile_f64(), rng.hostile_f64()],
+            ),
+            placement: hostile_placement(rng),
+        },
         _ => NodeKind::MeshImport {
             import: ImportId(rng.hostile_u32()),
             placement: hostile_placement(rng),
         },
+    }
+}
+
+/// A field from hostile parameters, as far as the field constructors take
+/// them, falling back to a unit ball where they refuse.
+fn hostile_field(rng: &mut Rng, depth: u32) -> exedra_implicit::Expr {
+    use exedra_implicit as im;
+    use exedra_implicit::Expr;
+    let ball = || Expr::from(im::Sphere::new([0.0; 3], 1.0).expect("unit ball"));
+    let point = |rng: &mut Rng| [rng.hostile_f64(), rng.hostile_f64(), rng.hostile_f64()];
+    let choice = if depth == 0 {
+        rng.range(4)
+    } else {
+        rng.range(8)
+    };
+    match choice {
+        0 => im::Sphere::new(point(rng), rng.hostile_f64()).map_or_else(|_| ball(), Expr::from),
+        1 => im::Cuboid::new(point(rng), point(rng)).map_or_else(|_| ball(), Expr::from),
+        2 => im::Cylinder::new(point(rng), point(rng), rng.hostile_f64(), rng.hostile_f64())
+            .map_or_else(|_| ball(), Expr::from),
+        3 => im::HalfSpace::new(point(rng), point(rng)).map_or_else(|_| ball(), Expr::from),
+        4 => Expr::from(im::Difference::new(
+            hostile_field(rng, depth - 1),
+            hostile_field(rng, depth - 1),
+        )),
+        5 => im::SmoothUnion::new(
+            hostile_field(rng, depth - 1),
+            hostile_field(rng, depth - 1),
+            rng.hostile_f64(),
+        )
+        .map_or_else(|_| ball(), Expr::from),
+        6 => im::Scale::new(hostile_field(rng, depth - 1), rng.hostile_f64())
+            .map_or_else(|_| ball(), Expr::from),
+        _ => im::Translate::new(hostile_field(rng, depth - 1), point(rng))
+            .map_or_else(|_| ball(), Expr::from),
     }
 }
 
@@ -310,6 +357,61 @@ fn hostile_recipes_never_panic_and_evaluate_typed() {
     }
     assert!(evaluated > 0, "corpus must include evaluable recipes");
     let _ = eval_errors;
+}
+
+#[test]
+fn hostile_implicit_fields_never_panic() {
+    let mut rng = Rng(0x40B1_0003);
+    let mut meshed = 0;
+    for _ in 0..80 {
+        let field = hostile_field(&mut rng, 2);
+        // Bounds that hold more often than fully hostile ones would.
+        let mut corner = || {
+            if rng.range(4) == 0 {
+                rng.hostile_f64()
+            } else {
+                rng.unit(-50.0, 50.0)
+            }
+        };
+        let (a, b) = (
+            [corner(), corner(), corner()],
+            [corner(), corner(), corner()],
+        );
+        let bounds = exedra_implicit::Aabb::new(
+            core::array::from_fn(|i| a[i].min(b[i])),
+            core::array::from_fn(|i| a[i].max(b[i])),
+        );
+        let placement = if rng.range(2) == 0 {
+            Placement3::IDENTITY
+        } else {
+            hostile_placement(&mut rng)
+        };
+        let mut builder = RecipeBuilder::new();
+        let Ok(leaf) = builder.add_node(NodeKind::Implicit {
+            field,
+            bounds,
+            placement,
+        }) else {
+            continue;
+        };
+        let Ok(recipe) = builder.finish(leaf) else {
+            continue;
+        };
+        if let Ok(result) = evaluate(&recipe, &fuzz_policy()) {
+            meshed += result.report.implicit_meshes.len();
+            for placed in &result.bodies {
+                let mesh = &placed.body.mesh;
+                assert!(mesh.validate_deep().is_empty(), "invalid implicit mesh");
+                assert!(
+                    mesh.vertices()
+                        .filter_map(|v| mesh.vertex_position(v))
+                        .all(|p| p.iter().all(|c| c.is_finite())),
+                    "non-finite implicit mesh"
+                );
+            }
+        }
+    }
+    assert!(meshed > 10, "corpus must mesh implicit leaves: {meshed}");
 }
 
 #[test]

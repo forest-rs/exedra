@@ -78,6 +78,8 @@ pub struct EvalPolicy {
     /// [`Feature::PlanarFace`]. Bodies with side walls use
     /// `cap_refinement` instead.
     pub planar_face_refinement: Option<RefineParams>,
+    /// Resolution and budget for meshing implicit leaves.
+    pub implicit: crate::implicit::ImplicitPolicy,
     /// Optional interior-only Delaunay refinement for extrusion caps.
     ///
     /// When set, [`tessellate_extrude`] triangulates every cap, including
@@ -121,6 +123,7 @@ impl Default for EvalPolicy {
             workplane: crate::workplane::WorkplanePolicy::default(),
             sharp_sin_threshold: 0.1,
             planar_face_refinement: None,
+            implicit: crate::implicit::ImplicitPolicy::default(),
             cap_refinement: None,
         }
     }
@@ -156,6 +159,12 @@ pub enum Feature {
     },
     /// A face of an opaque imported mesh.
     Imported,
+    /// A face or vertex of an implicit leaf, with the region of the
+    /// [`Tagged`](exedra_implicit::Tagged) part it lies on, or zero.
+    ImplicitRegion {
+        /// The tagged part's region.
+        region: u32,
+    },
     /// A face or vertex of a declared primitive. `region` is the stable
     /// primitive-local region emitted by `exedra_primitives` (for example a
     /// cylinder side or cap); different primitive kinds have independent
@@ -246,6 +255,9 @@ pub struct TessellatedBody {
     /// Includes ruled-wall diagonal error; `None` for other operations.
     /// Retained as source evidence by instances; not a solid certificate.
     pub loft_sampling: Option<crate::loft::LoftSampling>,
+    /// The meshing report of an implicit leaf: its work, and anything left
+    /// unmet. Preserved by cache and rigid-instance adapters.
+    pub implicit: Option<exedra_isosurface::DelaunayReport>,
 }
 
 impl TessellatedBody {
@@ -266,6 +278,7 @@ impl TessellatedBody {
             sweep_checks: None,
             path_sampling: None,
             loft_sampling: None,
+            implicit: None,
         }
     }
 }
@@ -361,6 +374,11 @@ pub enum TessellateError {
     },
     /// Mesh construction failed (an internal invariant violation).
     Build(exedra_mesh::BuildError),
+    /// An implicit leaf has no bounds, and its field's claims do not bound
+    /// its interior either.
+    ImplicitUnbounded,
+    /// Implicit meshing refused its parameters.
+    Implicit(exedra_isosurface::DelaunayError),
     /// A revolved profile crosses into negative radius.
     NegativeRadius {
         /// The smallest radius found in the discretized profile.
@@ -513,6 +531,10 @@ impl core::fmt::Display for TessellateError {
                 write!(f, "profile {first} {relation} {second}")
             }
             Self::Build(e) => write!(f, "mesh construction failed: {e:?}"),
+            Self::ImplicitUnbounded => {
+                f.write_str("implicit leaf has no bounds, and its field claims none")
+            }
+            Self::Implicit(e) => write!(f, "implicit meshing failed: {e}"),
             Self::NegativeRadius { min_radius } => write!(
                 f,
                 "revolved profile crosses into negative radius (minimum {min_radius})"
@@ -968,6 +990,7 @@ fn rebuild_placed_primitive(
         sweep_checks: None,
         path_sampling: None,
         loft_sampling: None,
+        implicit: None,
         refinement: None,
     })
 }
@@ -1155,6 +1178,7 @@ pub fn tessellate_planar_face(
         sweep_checks: None,
         path_sampling: None,
         loft_sampling: None,
+        implicit: None,
         refinement: refinement_stats,
     })
 }
@@ -1486,6 +1510,7 @@ fn extrude_impl(
         sweep_checks: None,
         path_sampling: None,
         loft_sampling: None,
+        implicit: None,
         refinement: refinement_stats,
     })
 }
@@ -2209,6 +2234,7 @@ fn revolve_impl(
         sweep_checks: None,
         path_sampling: None,
         loft_sampling: None,
+        implicit: None,
         refinement: None,
     })
 }
@@ -2651,6 +2677,7 @@ fn loft_impl(
         path_sampling: None,
         loft_sampling,
         refinement: None,
+        implicit: None,
     })
 }
 
@@ -4160,6 +4187,7 @@ fn tessellate_sweep_rings(
         sweep_checks,
         path_sampling,
         loft_sampling: None,
+        implicit: None,
         refinement: None,
     })
 }
@@ -4417,6 +4445,7 @@ pub fn tessellate_grid(
         sweep_checks: None,
         path_sampling: None,
         loft_sampling: None,
+        implicit: None,
         refinement: None,
     })
 }

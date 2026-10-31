@@ -465,6 +465,24 @@ pub enum NodeKind {
         /// Placement of the grid's local frame in 3D.
         placement: Placement3,
     },
+    /// A solid given by an implicit field, meshed under
+    /// [`EvalPolicy::implicit`](crate::tessellate::EvalPolicy::implicit).
+    ///
+    /// Faces carry the regions of the field's
+    /// [`Tagged`](exedra_implicit::Tagged) parts as face regions and
+    /// [`Feature::ImplicitRegion`](crate::tessellate::Feature::ImplicitRegion)
+    /// provenance; creases are kept sharp and marked so. The meshing report
+    /// rides with the body, and an incomplete mesh is a warning. See
+    /// [`crate::implicit`].
+    Implicit {
+        /// The field, in the leaf's local frame.
+        field: exedra_implicit::Expr,
+        /// The region meshed, in the local frame. `None` takes the box the
+        /// field's claims bound its interior by, grown by two cells.
+        bounds: Option<exedra_implicit::Aabb>,
+        /// Placement of the local frame.
+        placement: Placement3,
+    },
 }
 
 /// One node: kind plus optional source, material and construction-chart bindings.
@@ -1675,6 +1693,32 @@ impl RecipeBuilder {
                 }
                 self.check_placement(placement)
             }
+            NodeKind::Implicit {
+                field,
+                bounds,
+                placement,
+            } => {
+                self.check_placement(placement)?;
+                let bounds_ok = match bounds {
+                    // Fields are public, so the box may not be one.
+                    Some(b) => exedra_implicit::Aabb::new(b.min, b.max).is_some(),
+                    None => exedra_implicit::Formula::claims(field)
+                        .support
+                        .bounds()
+                        .is_some(),
+                };
+                if !bounds_ok {
+                    return Err(RecipeError::InvalidParameter {
+                        what: "implicit bounds",
+                    });
+                }
+                if crate::implicit::nesting(field) > crate::implicit::MAX_IMPLICIT_NESTING {
+                    return Err(RecipeError::InvalidParameter {
+                        what: "implicit nesting",
+                    });
+                }
+                Ok(())
+            }
             NodeKind::Group { children } => {
                 if children.is_empty() {
                     return Err(RecipeError::TooFewOperands {
@@ -2032,7 +2076,8 @@ fn ambiguous_sources(nodes: &[Node], sources: &[String], root: NodeId) -> Vec<St
             | NodeKind::PlanarFace { .. }
             | NodeKind::Primitive { .. }
             | NodeKind::MeshImport { .. }
-            | NodeKind::GridSurface { .. } => {}
+            | NodeKind::GridSurface { .. }
+            | NodeKind::Implicit { .. } => {}
         }
     }
     counts
@@ -2582,6 +2627,15 @@ fn node_canon_bytes(
         NodeKind::MeshImport { import, placement } => {
             out.push(12);
             put_u128(out, import_hashes[import.0 as usize]);
+            put_placement(out, placement);
+        }
+        NodeKind::Implicit {
+            field,
+            bounds,
+            placement,
+        } => {
+            out.push(20);
+            crate::implicit::encode(out, field, *bounds);
             put_placement(out, placement);
         }
         NodeKind::StretchVertices { child: c, steps } => {

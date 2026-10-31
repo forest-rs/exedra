@@ -554,6 +554,256 @@
       ]
     },
     {
+      "op": "implicit",
+      "field": {
+        "shape": "union",
+        "left": {
+          "shape": "placed",
+          "field": {
+            "shape": "scale",
+            "field": {
+              "shape": "smooth_union",
+              "left": {
+                "shape": "intersection",
+                "left": {
+                  "shape": "difference",
+                  "left": {
+                    "shape": "blend",
+                    "parts": [
+                      {
+                        "shape": "sphere",
+                        "center": [
+                          0.1,
+                          0.2,
+                          0.3
+                        ],
+                        "radius": 0.4
+                      },
+                      {
+                        "shape": "cuboid",
+                        "center": [
+                          0.0,
+                          0.0,
+                          0.0
+                        ],
+                        "half_extents": [
+                          0.5,
+                          0.4,
+                          0.3
+                        ]
+                      },
+                      {
+                        "shape": "cylinder",
+                        "center": [
+                          0.0,
+                          0.0,
+                          0.0
+                        ],
+                        "axis": [
+                          0.18814417367671948,
+                          0.2822162605150792,
+                          0.9407208683835974
+                        ],
+                        "radius": 0.25,
+                        "half_height": 0.6
+                      },
+                      {
+                        "shape": "torus",
+                        "center": [
+                          0.0,
+                          0.0,
+                          0.0
+                        ],
+                        "axis": [
+                          0.0,
+                          0.9950371902099893,
+                          0.09950371902099893
+                        ],
+                        "major_radius": 0.7,
+                        "minor_radius": 0.1
+                      },
+                      {
+                        "shape": "capsule",
+                        "a": [
+                          -0.5,
+                          0.0,
+                          0.0
+                        ],
+                        "b": [
+                          0.5,
+                          0.1,
+                          0.0
+                        ],
+                        "radius": 0.1
+                      },
+                      {
+                        "shape": "round_cone",
+                        "a": [
+                          0.0,
+                          0.0,
+                          0.0
+                        ],
+                        "b": [
+                          0.0,
+                          0.0,
+                          0.8
+                        ],
+                        "radius_a": 0.3,
+                        "radius_b": 0.1
+                      },
+                      {
+                        "shape": "extrude",
+                        "profile": {
+                          "profile": "rectangle",
+                          "center": [
+                            0.0,
+                            0.1
+                          ],
+                          "half_extents": [
+                            0.3,
+                            0.2
+                          ]
+                        },
+                        "half_height": 0.4
+                      },
+                      {
+                        "shape": "revolve",
+                        "profile": {
+                          "profile": "circle",
+                          "center": [
+                            0.6,
+                            0.0
+                          ],
+                          "radius": 0.15
+                        }
+                      }
+                    ],
+                    "radius": 0.05
+                  },
+                  "right": {
+                    "shape": "tagged",
+                    "field": {
+                      "shape": "half_space",
+                      "point": [
+                        0.0,
+                        0.0,
+                        0.5
+                      ],
+                      "normal": [
+                        0.09950371902099893,
+                        0.0,
+                        0.9950371902099893
+                      ]
+                    },
+                    "region": 3
+                  }
+                },
+                "right": {
+                  "shape": "extrude",
+                  "profile": {
+                    "profile": "half_plane",
+                    "point": [
+                      0.0,
+                      0.0
+                    ],
+                    "normal": [
+                      0.9805806756909201,
+                      0.19611613513818404
+                    ]
+                  },
+                  "half_height": 0.5
+                }
+              },
+              "right": {
+                "shape": "translate",
+                "field": {
+                  "shape": "sphere",
+                  "center": [
+                    0.0,
+                    0.0,
+                    0.0
+                  ],
+                  "radius": 0.2
+                },
+                "offset": [
+                  0.0,
+                  0.0,
+                  -0.9
+                ]
+              },
+              "radius": 0.1
+            },
+            "factor": 1.5
+          },
+          "placement": [
+            [
+              0.9210609940028851,
+              -0.3894183423086505,
+              0.0,
+              0.1
+            ],
+            [
+              0.3894183423086505,
+              0.9210609940028851,
+              0.0,
+              0.0
+            ],
+            [
+              0.0,
+              0.0,
+              1.0,
+              0.0
+            ]
+          ]
+        },
+        "right": {
+          "shape": "tagged",
+          "field": {
+            "shape": "sphere",
+            "center": [
+              1.2,
+              0.0,
+              0.0
+            ],
+            "radius": 0.2
+          },
+          "region": 9
+        }
+      },
+      "bounds": [
+        [
+          -2.0,
+          -2.0,
+          -2.0
+        ],
+        [
+          2.0,
+          2.0,
+          2.0
+        ]
+      ],
+      "placement": [
+        [
+          0.955336489125606,
+          -0.29552020666133955,
+          0.0,
+          40.0
+        ],
+        [
+          0.29552020666133955,
+          0.955336489125606,
+          0.0,
+          0.0
+        ],
+        [
+          0.0,
+          0.0,
+          1.0,
+          0.0
+        ]
+      ]
+    },
+    {
       "op": "group",
       "children": [
         7,
@@ -562,9 +812,10 @@
         10,
         4,
         11,
-        12
+        12,
+        13
       ]
     }
   ],
-  "root": 13
+  "root": 14
 }

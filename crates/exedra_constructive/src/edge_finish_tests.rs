@@ -88,6 +88,7 @@ fn compact_body(body: &TessellatedBody) -> TessellatedBody {
         sweep_checks: None,
         path_sampling: None,
         loft_sampling: None,
+        implicit: None,
         refinement: None,
     }
 }
@@ -289,6 +290,7 @@ fn separate_pocket_rims_finish_together_and_in_sequence() {
             sweep_checks: None,
             path_sampling: None,
             loft_sampling: None,
+            implicit: None,
             refinement: None,
         });
         let before = format!("{body:?}");
@@ -461,6 +463,7 @@ fn qualified_rims_disambiguate_reused_and_equal_region_labels() {
         sweep_checks: None,
         path_sampling: None,
         loft_sampling: None,
+        implicit: None,
         refinement: None,
     };
     let unqualified =
@@ -1207,6 +1210,7 @@ fn semantic_selection_survives_compaction_and_different_tessellation() {
             sweep_checks: None,
             path_sampling: None,
             loft_sampling: None,
+            implicit: None,
             refinement: None,
         };
         let bottom = EdgeSelection::RegionBoundaries(vec![[1, 3]]);
