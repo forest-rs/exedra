@@ -41,7 +41,7 @@ use crate::{Aabb, FieldError, check_positive};
 /// that bound shows them out of the band, without changing the result. The
 /// sum does not depend on the order of the parts. An empty union is
 /// `+inf` everywhere.
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, PartialEq)]
 pub struct SmoothUnionN<C> {
     parts: Vec<C>,
     radius: f64,
