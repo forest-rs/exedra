@@ -538,7 +538,9 @@ fn spatial_transport_matches_an_independent_differential_equation() {
         control2: p[2],
         to: p[3],
     }];
-    for angle in [0.3, 0.1, 0.03] {
+    // Double reflection's error falls with the fourth power of each span's
+    // turn: at a tenth of a radian it is below f32 positions' rounding.
+    for (angle, agreement) in [(0.3, 1e-5), (0.1, 6e-7), (0.03, 6e-7)] {
         let mut policy = EvalPolicy::default();
         policy.sweep_path.max_tangent_angle = angle;
         policy.sweep_path.chord_tolerance = 0.1;
@@ -549,8 +551,8 @@ fn spatial_transport_matches_an_independent_differential_equation() {
         for (actual, point) in last.iter().zip(&section.outer.points) {
             let expected = add(p[3], add(scale(u, point[0]), scale(v, point[1])));
             assert!(
-                norm(sub(*actual, expected)) < 6e-7,
-                "section landmark agrees with independent transport at f32 precision"
+                norm(sub(*actual, expected)) < agreement,
+                "section landmark agrees with independent transport within {agreement}"
             );
         }
     }

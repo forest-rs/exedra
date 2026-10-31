@@ -10,6 +10,7 @@
 //! centerline already meets the requested chord tolerance.
 
 use alloc::vec::Vec;
+use exedra_curves::{Nurbs, Tolerance};
 use exedra_math::{add, cross, dot, scale, sub};
 
 mod cursor;
@@ -188,8 +189,8 @@ pub enum PathDiscretizeError {
         /// Maximum spans allowed in the whole path.
         maximum: u32,
     },
-    /// Coordinates or requested precision cannot be realized reliably in f64.
-    /// Cubic subdivision also refuses depths beyond 32 instead of unbounded work.
+    /// Coordinates or requested precision cannot be realized reliably in f64,
+    /// or a cubic stops or turns back where its tangent cannot be bounded.
     NumericLimit {
         /// Offending source segment index.
         segment: usize,
@@ -247,20 +248,6 @@ fn unit(v: [f64; 3]) -> Option<[f64; 3]> {
     }
     let v = v.map(|x| x / largest);
     Some(scale(v, 1.0 / norm(v)))
-}
-
-fn midpoint(a: [f64; 3], b: [f64; 3]) -> [f64; 3] {
-    add(scale(a, 0.5), scale(b, 0.5))
-}
-
-fn split(p: [[f64; 3]; 4]) -> ([[f64; 3]; 4], [[f64; 3]; 4]) {
-    let a = midpoint(p[0], p[1]);
-    let b = midpoint(p[1], p[2]);
-    let c = midpoint(p[2], p[3]);
-    let d = midpoint(a, b);
-    let e = midpoint(b, c);
-    let m = midpoint(d, e);
-    ([p[0], a, d, m], [m, e, c, p[3]])
 }
 
 fn tangent(v: [f64; 3], segment: usize, parameter: f64) -> Result<[f64; 3], PathDiscretizeError> {
@@ -381,12 +368,12 @@ impl Sampler {
 
 /// Samples lines, circular arcs and spatial cubics with explicit accuracy and work limits.
 ///
-/// Arc counts satisfy both sagitta and tangent-angle bounds. Cubics subdivide
-/// by midpoint until their second-difference chord bound and derivative-control
-/// cone bound both fit. No successful result silently clamps required work.
-/// Subdivision performs at most `2 * max_segment_edges - 1` visits per cubic,
-/// with at most 32 levels. Unresolved stationary tangents may exhaust that
-/// budget; they never produce a successful under-resolved span.
+/// Arc counts satisfy both sagitta and tangent-angle bounds. Cubics are
+/// sampled by `exedra_curves`' adaptive intervals, split at their middles
+/// until each interval's proven chord and tangent-angle bounds, which allow
+/// for rounding, both fit; each span records them. No successful result
+/// silently clamps required work: a cubic needing more than the segment's
+/// budget, or with a tangent that cannot be bounded, is refused.
 ///
 /// `Smooth` joins require tangent continuity (direction, not parameter speed);
 /// the 1e-10-radian allowance is only for numerical agreement. `Miter` retains
@@ -505,7 +492,9 @@ pub fn discretize_path(
                 if p.iter().flatten().any(|v| !v.is_finite()) {
                     return Err(PathDiscretizeError::InvalidSegment { segment });
                 }
-                let margin = headroom(&p, segment, policy.chord_tolerance)?;
+                // Refuse a tolerance coordinate rounding could not certify
+                // before any refinement is spent on it.
+                headroom(&p, segment, policy.chord_tolerance)?;
                 let first = tangent(sub(p[1], p[0]), segment, 0.0)?;
                 tangent(sub(p[3], p[2]), segment, 1.0)?;
                 sampler.begin(
@@ -516,68 +505,46 @@ pub fn discretize_path(
                     },
                     segment,
                 )?;
-                let mut stack = Vec::new();
-                stack.push((p, 0.0, 1.0, 0_u8));
-                let mut leaves = 1_u32;
-                while let Some((p, t0, t1, depth)) = stack.pop() {
-                    let d = [sub(p[1], p[0]), sub(p[2], p[1]), sub(p[3], p[2])];
-                    let t_start = tangent(d[0], segment, t0)?;
-                    let t_end = tangent(d[2], segment, t1)?;
-                    let chord = 0.75 * norm(sub(d[1], d[0])).max(norm(sub(d[2], d[1]))) + margin;
-                    let mut angle = 0.0_f64;
-                    for v in d {
-                        if v == [0.0; 3] {
-                            continue;
-                        }
-                        let Some(v) = unit(v) else {
-                            return Err(PathDiscretizeError::NumericLimit { segment });
-                        };
-                        // All derivative controls in this cone imply every
-                        // positive Bernstein combination stays in the cone.
-                        angle =
-                            angle.max(2.0 * libm::atan2(norm(cross(t_start, v)), dot(t_start, v)));
-                    }
-                    if angle <= policy.max_tangent_angle {
-                        // With nonnegative projections of every derivative
-                        // control, endpoint Bernstein weights sum to at least
-                        // one half. Reserve angular error for rounded controls
-                        // as well as positional error for the chord bound.
-                        let lower = 0.5 * dot(t_start, d[0]).min(dot(t_start, d[2]));
-                        if lower <= 2.0 * margin || !lower.is_finite() {
-                            return Err(PathDiscretizeError::NumericLimit { segment });
-                        }
-                        angle += 4.0 * libm::asin(2.0 * margin / lower);
-                    }
-                    if !chord.is_finite() || !angle.is_finite() {
-                        return Err(PathDiscretizeError::NumericLimit { segment });
-                    }
-                    if chord <= policy.chord_tolerance && angle <= policy.max_tangent_angle {
-                        sampler.emit(
-                            PathStation {
-                                point: p[3],
-                                tangent: t_end,
-                                incoming_tangent: t_end,
-                            },
-                            PathSpan {
-                                segment: crate::len_u32(segment),
-                                parameter: [t0, t1],
-                                chord_bound: chord,
-                                tangent_angle_bound: angle,
-                            },
-                        )?;
-                    } else {
-                        if leaves == maximum {
-                            return Err(budget_error(segment, policy, remaining));
-                        }
-                        if depth == 32 {
-                            return Err(PathDiscretizeError::NumericLimit { segment });
-                        }
-                        leaves += 1;
-                        let (a, b) = split(p);
-                        let mid = (t0 + t1) * 0.5;
-                        stack.push((b, mid, t1, depth + 1));
-                        stack.push((a, t0, mid, depth + 1));
-                    }
+                let curve = Nurbs {
+                    order: 4,
+                    knots: &[0.0, 0.0, 0.0, 0.0, 1.0, 1.0, 1.0, 1.0],
+                    points: &p,
+                    weights: None,
+                }
+                .validate()
+                .map_err(|_| PathDiscretizeError::NumericLimit { segment })?
+                .prepare();
+                let tolerance = Tolerance {
+                    chord: policy.chord_tolerance,
+                    angle: policy.max_tangent_angle,
+                };
+                // At most `maximum` intervals, one fewer than samples.
+                let (intervals, report) =
+                    curve.adaptive_intervals(tolerance, maximum.saturating_add(1));
+                if report.capped {
+                    return Err(budget_error(segment, policy, remaining));
+                }
+                if report.unresolved {
+                    return Err(PathDiscretizeError::NumericLimit { segment });
+                }
+                for interval in intervals {
+                    let [t0, t1] = interval.range;
+                    let end = curve.evaluation(t1);
+                    let t_end = tangent(end.first, segment, t1)?;
+                    sampler.emit(
+                        PathStation {
+                            // The authored end, exactly.
+                            point: if t1 == 1.0 { *to } else { end.point },
+                            tangent: t_end,
+                            incoming_tangent: t_end,
+                        },
+                        PathSpan {
+                            segment: crate::len_u32(segment),
+                            parameter: [t0, t1],
+                            chord_bound: interval.chord,
+                            tangent_angle_bound: interval.angle,
+                        },
+                    )?;
                 }
             }
         }
