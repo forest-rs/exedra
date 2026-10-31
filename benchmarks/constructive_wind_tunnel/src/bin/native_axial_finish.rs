@@ -5,7 +5,7 @@
 
 use exedra_analytic::extrusion::{End, Extrusion, Pocket};
 use exedra_constructive::{builders, ir::Placement3};
-use exedra_profile::{CornerTreatment, Loop, ProfilePolicy, SegTag, Segment};
+use exedra_curves::profile::{CornerTreatment, Loop, ProfilePolicy, SegTag, Segment};
 use std::{hash::Hasher, hint::black_box, time::Instant};
 const POLICY: ProfilePolicy = ProfilePolicy::new(1e-7);
 fn main() {

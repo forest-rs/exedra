@@ -8,8 +8,8 @@ use crate::{
     realize::VertexSource,
 };
 use alloc::vec;
+use exedra_curves::profile::{Loop, Segment};
 use exedra_math::{cross, dot};
-use exedra_profile::{Loop, Segment};
 
 fn rectangle(h: f64) -> Profile {
     let ring = Loop::new(vec![

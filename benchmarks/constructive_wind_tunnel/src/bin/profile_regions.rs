@@ -3,7 +3,7 @@
 
 //! Filled-region arrangement wind tunnel with geometry identity checked first.
 
-use exedra_profile::{
+use exedra_curves::profile::{
     Curve, Loop, Profile, ProfilePolicy, RegionOp, RegionPolicy, RegionResult, Segment,
 };
 use std::{hint::black_box, time::Instant};

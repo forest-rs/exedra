@@ -78,7 +78,9 @@ impl DiscretizePolicy {
     }
 }
 
-pub use exedra_profile::{CircularEdgeConstraints, CircularSamplingError, circular_edge_count};
+pub use exedra_curves::profile::{
+    CircularEdgeConstraints, CircularSamplingError, circular_edge_count,
+};
 
 /// One discretized loop: a point ring plus edge-to-segment provenance.
 ///

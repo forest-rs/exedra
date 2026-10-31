@@ -48,6 +48,8 @@ their own operations and conversions directly.
 - `exedra::edit`: opt-in mesh command execution, preview and reporting.
 - `exedra::primitives`: deterministic primitive mesh generators and selections.
 - `exedra::analytic`: planar analytic topology and tessellation.
+- `exedra::curves`: curve evaluation, sampling, frames and sweep paths, and in
+  `curves::profile` the line and arc profiles `constructive` and `analytic` share.
 - `exedra::implicit`: implicit fields written once as formulas.
 - `exedra::isosurface`: surface meshes extracted from implicit fields.
 - `exedra::gltf`: glTF and GLB export.

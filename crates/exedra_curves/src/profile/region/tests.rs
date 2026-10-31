@@ -3,9 +3,9 @@
 
 use super::arrangement::point_at;
 use super::*;
-use crate::SegTag;
-use crate::arc::{length, sub};
-use crate::{Curve, Loop, LoopRef, Segment};
+use crate::profile::SegTag;
+use crate::profile::arc::{length, sub};
+use crate::profile::{Curve, Loop, LoopRef, Segment};
 use alloc::vec;
 use core::f64::consts::PI;
 

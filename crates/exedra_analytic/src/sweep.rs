@@ -13,9 +13,9 @@ use crate::body::{Body, BodyError, EdgeId, FaceId};
 use crate::geometry::GeometryError;
 use crate::realize::{RealizationError, RealizationPolicy, RealizedBody};
 use alloc::vec::Vec;
+use exedra_curves::profile::{IntoProfile, Profile, ProfilePolicy, SegTag, SegmentRef};
 use exedra_math::Placement3;
 use exedra_math::path::{CurvePathSource, CurvePathView, PathClosure, PathJoin, PathSegment3};
-use exedra_profile::{IntoProfile, Profile, ProfilePolicy, SegTag, SegmentRef};
 
 mod build;
 mod chart;
@@ -295,8 +295,8 @@ impl CurvePathSource for Sweep {
 mod tests {
     use super::*;
     use alloc::vec;
+    use exedra_curves::profile::{Loop, Segment};
     use exedra_math::path::{CurvePathView, PathClosure, PathJoin, PathSegment3};
-    use exedra_profile::{Loop, Segment};
 
     fn square(half: f64) -> Loop {
         Loop::new(vec![

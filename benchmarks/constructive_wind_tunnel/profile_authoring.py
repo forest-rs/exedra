@@ -31,7 +31,7 @@ scope = {
 }[args.workload]
 extra_dependencies = ""
 if args.workload in ["native_poles", "generic_brep", "native_manifold", "native_solid_query", "native_spline_wall"]:
-    extra_dependencies = "\n".join(f'{crate} = {{ path = {json.dumps(str(repo / "crates" / crate))} }}' for crate in ["exedra_analytic", "exedra_constructive", "exedra_profile", "exedra_math"]) + "\n"
+    extra_dependencies = "\n".join(f'{crate} = {{ path = {json.dumps(str(repo / "crates" / crate))} }}' for crate in ["exedra_analytic", "exedra_constructive", "exedra_curves", "exedra_math"]) + "\n"
 if args.workload == "native_solid_query":
     extra_dependencies += f'exedra = {{ path = {json.dumps(str(repo / "crates/exedra"))}, features = ["analytic", "std"] }}\n'
 (output / "Cargo.toml").write_text(f'''[package]

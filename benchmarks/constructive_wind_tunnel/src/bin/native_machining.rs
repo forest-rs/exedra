@@ -11,8 +11,8 @@ use exedra_analytic::{
     },
     rectilinear::{BooleanOperation, RectilinearPolicy, boolean_rectilinear},
 };
+use exedra_curves::profile::{Loop, Profile, ProfilePolicy, Segment};
 use exedra_math::Placement3;
-use exedra_profile::{Loop, Profile, ProfilePolicy, Segment};
 use std::{hint::black_box, time::Instant};
 fn stock(min: [f64; 2], max: [f64; 2]) -> Extrusion {
     let outline = Loop::new(vec![

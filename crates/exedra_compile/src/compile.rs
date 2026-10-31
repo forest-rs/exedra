@@ -1305,7 +1305,7 @@ mod native_mapping_tests {
     use super::*;
     #[test]
     fn retained_face_order_matches_actual_regrouped_render_triangles() {
-        let validation = exedra_profile::ProfilePolicy::new(1e-9);
+        let validation = exedra_curves::profile::ProfilePolicy::new(1e-9);
         let profile = exedra_constructive::builders::rect_centered(4.0, 3.0).unwrap();
         let source: crate::NativeSource = exedra_analytic::extrusion::Extrusion::from_profile(
             &profile,

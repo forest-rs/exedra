@@ -5,9 +5,9 @@ edition.workspace = true
 rust-version.workspace = true
 license.workspace = true
 repository.workspace = true
-description = "Deterministic cubic, Hermite and rational B-spline curve evaluation, sampling, rotation-minimizing frames, tube and ribbon tessellation, and arc length"
+description = "Deterministic curves for Exedra: cubic, Hermite and rational B-spline evaluation, sampling, frames, sweeps and arc length, and exact line and arc 2D profiles"
 readme = "README.md"
-keywords = ["curves", "nurbs", "spline", "no_std", "geometry"]
+keywords = ["curves", "nurbs", "profile", "no_std", "geometry"]
 categories = ["graphics", "mathematics", "no-std"]
 
 [lints]
@@ -23,3 +23,6 @@ std = ["exedra_math/std"]
 
 [dependencies]
 exedra_math.workspace = true
+# Non-optional by design: profile sampling trig always routes through libm,
+# so counts and points are bit-identical across platforms and backends.
+libm.workspace = true

@@ -11,7 +11,7 @@ use exedra::{
         extrusion::{Extrusion, Pocket, TessellationPolicy},
     },
     constructive::{builders, ir::Placement3},
-    profile::{CornerTreatment, ProfilePolicy, SegTag},
+    curves::profile::{CornerTreatment, ProfilePolicy, SegTag},
 };
 use std::error::Error;
 use support::{Exhibit, export};

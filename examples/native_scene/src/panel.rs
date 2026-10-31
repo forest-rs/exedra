@@ -7,8 +7,8 @@ use exedra_analytic::{
 };
 use exedra_compile::{PartSource, PreparedSource};
 use exedra_constructive::builders;
+use exedra_curves::profile::{ProfilePolicy, SegTag};
 use exedra_math::Placement3;
-use exedra_profile::{ProfilePolicy, SegTag};
 use exedra_scene::{
     SceneErrorKind,
     composition::*,

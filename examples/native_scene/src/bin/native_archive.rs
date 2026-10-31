@@ -42,7 +42,7 @@ fn other_support_sources(
         loft::{Loft, LoftPolicy},
         revolve::Revolution,
     };
-    use exedra_profile::{Loop, Profile, ProfilePolicy, Segment};
+    use exedra_curves::profile::{Loop, Profile, ProfilePolicy, Segment};
     let policy = ProfilePolicy::new(1e-10);
     let cone = Profile::new(
         Loop::new(vec![
@@ -102,15 +102,15 @@ fn valve_source() -> Result<NativeSource, Box<dyn Error>> {
     let (width, depth, height) = (112.0, 72.0, 42.0);
     let slope = (12.0_f64.to_radians()).tan();
     let entry_height = |x: f64| height + slope * x;
-    let outline = exedra_profile::Profile::new(
-        exedra_profile::Loop::new(vec![
-            exedra_profile::Segment::line([-width / 2.0, 0.0]),
-            exedra_profile::Segment::line([width / 2.0, 0.0]),
-            exedra_profile::Segment::line([width / 2.0, entry_height(width / 2.0)]),
-            exedra_profile::Segment::line([-width / 2.0, entry_height(-width / 2.0)]),
+    let outline = exedra_curves::profile::Profile::new(
+        exedra_curves::profile::Loop::new(vec![
+            exedra_curves::profile::Segment::line([-width / 2.0, 0.0]),
+            exedra_curves::profile::Segment::line([width / 2.0, 0.0]),
+            exedra_curves::profile::Segment::line([width / 2.0, entry_height(width / 2.0)]),
+            exedra_curves::profile::Segment::line([-width / 2.0, entry_height(-width / 2.0)]),
         ])?,
         vec![],
-        &exedra_profile::ProfilePolicy::new(1e-9),
+        &exedra_curves::profile::ProfilePolicy::new(1e-9),
     )?;
     let stock = Extrusion::new(outline, Placement3::IDENTITY, depth)?
         .body()
@@ -190,7 +190,7 @@ fn run(output: &Path) -> Result<(), Box<dyn Error>> {
         &profile,
         Placement3::IDENTITY,
         5.0,
-        &exedra_profile::ProfilePolicy::new(1e-9),
+        &exedra_curves::profile::ProfilePolicy::new(1e-9),
     )?
     .body()
     .clone()

@@ -3,7 +3,7 @@
 
 //! Checked conversion into the shared exact profile representation.
 
-use crate::{Profile, ProfileError, ProfilePolicy};
+use crate::profile::{Profile, ProfileError, ProfilePolicy};
 
 /// An authored input that can become an exact line-and-arc [`Profile`].
 ///
@@ -40,7 +40,7 @@ impl IntoProfile for &Profile {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::{Loop, Segment};
+    use crate::profile::{Loop, Segment};
     use alloc::vec;
 
     #[test]

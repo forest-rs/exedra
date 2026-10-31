@@ -7,7 +7,7 @@
 use analytic_extrusion::{PlateError, PlateSpec, compiled_profile, extrude, handwritten_profile};
 use exedra::analytic::extrusion::{TessellateExtrusionError, TessellationPolicy};
 use exedra::compile::{CompilePolicy, PartCompiler, PartInput, PartSource};
-use exedra::profile::{CircularSamplingError, ProfileError};
+use exedra::curves::profile::{CircularSamplingError, ProfileError};
 
 fn main() -> Result<(), Box<dyn std::error::Error>> {
     let spec = PlateSpec::default();

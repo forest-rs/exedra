@@ -20,7 +20,8 @@
 //! - `analytic` contains planar analytic topology (opt-in).
 //! - `implicit` contains implicit fields written as formulas, and
 //!   `isosurface` meshes them (opt-in; `isosurface` selects `implicit`).
-//! - `profile` contains the line and arc profiles both `constructive` and
+//! - `curves` contains curve evaluation, sampling and frames, and in
+//!   `curves::profile` the line and arc profiles both `constructive` and
 //!   `analytic` accept; either feature enables it.
 //! - `step` exchanges supported retained analytic boundaries (opt-in).
 //! - `gltf` exports compiled geometry and caller-prepared structure (opt-in).
@@ -147,9 +148,10 @@ pub use exedra_edit as edit;
 #[cfg(feature = "analytic")]
 pub use exedra_analytic as analytic;
 
-/// Line and circular-arc profiles shared by the constructive and analytic heads.
+/// Curves and the line and circular-arc profiles shared by the constructive
+/// and analytic heads.
 #[cfg(any(feature = "analytic", feature = "constructive"))]
-pub use exedra_profile as profile;
+pub use exedra_curves as curves;
 
 /// Implicit fields written once as formulas, and their composition.
 #[cfg(feature = "implicit")]

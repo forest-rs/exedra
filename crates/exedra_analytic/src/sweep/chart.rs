@@ -10,8 +10,8 @@ use crate::{
     realize::{RealizationError, RealizationPolicy, RealizedBody, VertexSource},
 };
 use alloc::vec::Vec;
+use exedra_curves::profile::{Arc, LoopRef, SegmentRef};
 use exedra_math::predicates::{MAX_COORDINATE, Orientation, orient2d};
-use exedra_profile::{Arc, LoopRef, SegmentRef};
 
 /// A native sweep could not deliver valid construction coordinates or mapped UVs.
 #[derive(Clone, Debug, PartialEq)]
@@ -470,8 +470,8 @@ mod tests {
     #[test]
     fn quality_face_interiors_preserve_straight_and_curved_sweep_charts() {
         use alloc::vec;
+        use exedra_curves::profile::{Loop, Profile, ProfilePolicy, Segment};
         use exedra_math::path::PathSegment3;
-        use exedra_profile::{Loop, Profile, ProfilePolicy, Segment};
         let profiles = [
             Loop::new(vec![
                 Segment::line([2.0, -2.0]),
@@ -583,7 +583,7 @@ mod tests {
         );
     }
     fn profile_point(
-        profile: &exedra_profile::Profile,
+        profile: &exedra_curves::profile::Profile,
         source: SegmentRef,
         distance: f64,
     ) -> [f64; 2] {

@@ -14,8 +14,8 @@ use crate::{
     realize::{RealizationError, RealizationPolicy, RealizedBody},
 };
 use alloc::vec::Vec;
+use exedra_curves::profile::{IntoProfile, LoopRef, Profile, ProfilePolicy, SegTag, SegmentRef};
 use exedra_math::Placement3;
-use exedra_profile::{IntoProfile, LoopRef, Profile, ProfilePolicy, SegTag, SegmentRef};
 
 mod build;
 mod chart;
@@ -202,7 +202,7 @@ impl Loft {
     /// ```
     /// use exedra_analytic::loft::{Loft, LoftPolicy};
     /// use exedra_math::Placement3;
-    /// use exedra_profile::{Loop, Profile, ProfilePolicy, Segment};
+    /// use exedra_curves::profile::{Loop, Profile, ProfilePolicy, Segment};
     /// let validation = ProfilePolicy::new(1e-9);
     /// let outline = Loop::new(vec![
     ///     Segment::line([1.0, -1.0]), Segment::line([1.0, 1.0]),
@@ -287,7 +287,7 @@ impl Loft {
     }
 }
 
-fn loops(profile: &Profile) -> impl Iterator<Item = (LoopRef, &exedra_profile::Loop)> {
+fn loops(profile: &Profile) -> impl Iterator<Item = (LoopRef, &exedra_curves::profile::Loop)> {
     core::iter::once((LoopRef::Outer, profile.outer())).chain(
         profile
             .holes()

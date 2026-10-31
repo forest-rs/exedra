@@ -19,8 +19,10 @@ use crate::body::{
 use crate::geometry::{Curve, GeometryError, ParameterDomain, ParameterRange, Surface};
 use crate::realize::{RealizationError, RealizationPolicy, RealizedBody};
 use alloc::vec::Vec;
+use exedra_curves::profile::{
+    IntoProfile, Loop, LoopRef, Profile, ProfilePolicy, SegTag, SegmentRef,
+};
 use exedra_math::Placement3;
-use exedra_profile::{IntoProfile, Loop, LoopRef, Profile, ProfilePolicy, SegTag, SegmentRef};
 
 mod caps;
 pub use caps::SphericalCapError;
@@ -551,8 +553,10 @@ fn loops(profile: &Profile) -> impl Iterator<Item = (LoopRef, &Loop)> {
             .map(|(i, l)| (LoopRef::Hole(i), l)),
     )
 }
-fn axis_line(from: [f64; 2], segment: &exedra_profile::Segment) -> bool {
-    matches!(segment.curve, exedra_profile::Curve::Line) && from[0] == 0.0 && segment.to[0] == 0.0
+fn axis_line(from: [f64; 2], segment: &exedra_curves::profile::Segment) -> bool {
+    matches!(segment.curve, exedra_curves::profile::Curve::Line)
+        && from[0] == 0.0
+        && segment.to[0] == 0.0
 }
 fn vertex_is_pole(ring: &Loop, i: usize) -> bool {
     let n = ring.segments().len();
@@ -625,7 +629,7 @@ fn push_meridian(
     parts: &mut BodyParts<FaceRole, EdgeRole>,
     start: VertexId,
     end: VertexId,
-    arc: Option<exedra_profile::Arc>,
+    arc: Option<exedra_curves::profile::Arc>,
     angle: f64,
     role: EdgeRole,
 ) -> Result<EdgeId, RevolutionError> {
@@ -657,7 +661,7 @@ fn push_meridian(
     ))
 }
 fn arc_wall(
-    a: exedra_profile::Arc,
+    a: exedra_curves::profile::Arc,
     sweep: f64,
 ) -> Result<(Surface, ParameterDomain, Sense), GeometryError> {
     let mut start = a.start_angle;
@@ -746,7 +750,7 @@ pub(crate) fn wall(
 mod tests {
     use super::*;
     use alloc::vec;
-    use exedra_profile::{ProfilePolicy, Segment};
+    use exedra_curves::profile::{ProfilePolicy, Segment};
 
     fn polygon(points: &[[f64; 2]]) -> Loop {
         Loop::new(points.iter().copied().map(Segment::line).collect()).unwrap()

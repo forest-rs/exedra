@@ -174,7 +174,7 @@ on walls and source `(x,y)` on caps. `SurfaceChart::Loft::map_loft_wall_triangle
 applies the authoring head's texture transform. Caps, profile seams, mapping
 refusals and occurrence placement follow the same contracts as other native heads.
 
-`extrusion::Extrusion` extrudes an `exedra_profile::Profile` of lines and
+`extrusion::Extrusion` extrudes an `exedra_curves::profile::Profile` of lines and
 circular arcs along local +Z under a checked rigid frame. The result is a closed
 solid with planar caps, planar and cylindrical walls, and shared edges used
 once in each direction by oriented coedges. Faces, edges and vertices record
@@ -228,7 +228,7 @@ tables are built once after validation. No mesh rounding or Boolean is involved.
 ```rust
 use exedra_analytic::extrusion::{Extrusion, TessellationPolicy};
 use exedra_math::Placement3;
-use exedra_profile::{Loop, Profile, ProfilePolicy, Segment};
+use exedra_curves::profile::{Loop, Profile, ProfilePolicy, Segment};
 
 let disk = Loop::new(vec![Segment::arc([-1.0, 0.0], 1.0), Segment::arc([1.0, 0.0], 1.0)])?;
 let profile = Profile::new(disk, vec![], &ProfilePolicy::new(1e-9))?;
@@ -277,7 +277,7 @@ the workspace root for license files.
 
 `Extrusion::from_profile(input, frame, length, &policy)` and
 `Workplane::extrude_profile(input, length, &policy)` accept any checked
-`exedra_profile::IntoProfile` input, including constructive `Profile2` values or
+`exedra_curves::profile::IntoProfile` input, including constructive `Profile2` values or
 references. Callers no longer need an explicit conversion helper. Profile
 conversion errors remain typed inside `ProfileExtrusionError::Profile`; native
 construction errors use its `Extrusion` variant. Cubics are refused rather than

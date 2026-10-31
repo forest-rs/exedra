@@ -2,8 +2,8 @@
 // SPDX-License-Identifier: Apache-2.0 OR MIT
 
 //! Closed-form line/arc point queries without sampling or scratch allocation.
-use crate::Loop;
-use crate::arc::{Piece, turns, winding_angle};
+use crate::profile::Loop;
+use crate::profile::arc::{Piece, turns, winding_angle};
 
 /// Winding and nearest-boundary distance from the resolved line/arc geometry.
 #[derive(Copy, Clone, Debug, PartialEq)]
@@ -115,7 +115,7 @@ impl Loop {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::Segment;
+    use crate::profile::Segment;
     use alloc::vec;
 
     fn disk() -> Loop {

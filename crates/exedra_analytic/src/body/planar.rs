@@ -15,7 +15,7 @@ impl<F, E> Body<F, E> {
         &self,
         face: FaceId,
         loop_id: LoopId,
-    ) -> Option<(exedra_profile::Loop, f64)> {
+    ) -> Option<(exedra_curves::profile::Loop, f64)> {
         let surface = &self.face(face)?.surface;
         let Surface::Plane(plane) = surface else {
             return None;
@@ -59,12 +59,12 @@ impl<F, E> Body<F, E> {
                 )
                 .ok()?;
                 let segment = match curve {
-                    Curve::Line(_) => exedra_profile::Segment::line(to),
+                    Curve::Line(_) => exedra_curves::profile::Segment::line(to),
                     Curve::Circle(c) => {
                         let clockwise = dot(c.frame().rows.map(|r| r[2]), normal)
                             * (if co.reversed { -1.0 } else { 1.0 })
                             < 0.0;
-                        exedra_profile::Segment::arc_centered(
+                        exedra_curves::profile::Segment::arc_centered(
                             to,
                             surface.parameters(c.frame().rows.map(|r| r[3]))?,
                             clockwise,
@@ -74,12 +74,12 @@ impl<F, E> Body<F, E> {
                 };
                 // Resolving now establishes that both authoritative endpoints can
                 // participate in this exact circular representation.
-                exedra_profile::Arc::resolve(from, to, segment.curve).ok()?;
+                exedra_curves::profile::Arc::resolve(from, to, segment.curve).ok()?;
                 segments.push(segment);
                 spans.push(source);
             }
         }
-        let loop_ = exedra_profile::Loop::new(segments).ok()?;
+        let loop_ = exedra_curves::profile::Loop::new(segments).ok()?;
         let mut gap = 0.0_f64;
         for (index, ((from, segment), source)) in loop_.iter_with_starts().zip(&spans).enumerate() {
             let lifted = if let Some(arc) = loop_.arc(index) {

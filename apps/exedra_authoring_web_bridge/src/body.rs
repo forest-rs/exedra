@@ -16,7 +16,7 @@ use exedra_analytic::{
     },
     geometry::{Curve, CurveSpan, GeometryError, ParameterDomain, ParameterRange, Surface},
 };
-use exedra_profile::SegTag;
+use exedra_curves::profile::SegTag;
 use serde::Deserialize;
 
 #[derive(Debug, Deserialize)]

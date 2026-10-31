@@ -4,8 +4,8 @@
 //! Checked local sketch planes for independent native construction.
 
 use super::{End, Extrusion, ExtrusionError, FRAME_TOLERANCE, FaceId, FaceRole};
+use exedra_curves::profile::{Profile, SegTag};
 use exedra_math::{FrameError, Placement3};
-use exedra_profile::{Profile, SegTag};
 
 /// A finite, right-handed orthonormal sketch plane, with local +Z outward.
 ///
@@ -14,7 +14,7 @@ use exedra_profile::{Profile, SegTag};
 ///
 /// ```
 /// use exedra_analytic::extrusion::{End, Workplane};
-/// use exedra_profile::{Loop, Profile, ProfilePolicy, Segment};
+/// use exedra_curves::profile::{Loop, Profile, ProfilePolicy, Segment};
 ///
 /// let outline = Loop::new(vec![
 ///     Segment::line([4.0, 0.0]), Segment::line([4.0, 2.0]),
@@ -199,7 +199,7 @@ impl Extrusion {
 mod tests {
     use super::*;
     use alloc::vec;
-    use exedra_profile::{Loop, ProfilePolicy, Segment};
+    use exedra_curves::profile::{Loop, ProfilePolicy, Segment};
 
     const POLICY: ProfilePolicy = ProfilePolicy::new(1e-9);
 

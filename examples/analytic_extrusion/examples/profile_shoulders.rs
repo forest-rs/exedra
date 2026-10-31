@@ -8,8 +8,8 @@ use exedra::analytic::geometry::Surface;
 use exedra::analytic::revolve::Revolution;
 use exedra::compile::{CompilePolicy, NativeSource, PartCompiler, PartId, PartInput, PartSource};
 use exedra::constructive::ir::Placement3;
+use exedra::curves::profile::{CornerTreatment, Loop, Profile, ProfilePolicy, SegTag, Segment};
 use exedra::gltf::{GltfExportOptions, GltfMesh, GltfNode, GltfScene, export_glb_with_materials};
-use exedra::profile::{CornerTreatment, Loop, Profile, ProfilePolicy, SegTag, Segment};
 use serde_json::{Value, json};
 use std::error::Error;
 

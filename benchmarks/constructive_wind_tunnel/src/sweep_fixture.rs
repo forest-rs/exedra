@@ -12,7 +12,7 @@ use exedra_constructive::{
     profile::Profile2,
     tessellate::EvalPolicy,
 };
-use exedra_profile::ProfilePolicy;
+use exedra_curves::profile::ProfilePolicy;
 
 pub(crate) fn profile() -> Profile2 {
     builders::rect_centered(20.0, 20.0).unwrap()

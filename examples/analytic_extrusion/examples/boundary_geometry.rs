@@ -20,8 +20,8 @@ use exedra::analytic::{AnalyticShellBuilder, RegionId};
 use exedra::compile::{CompilePolicy, PartCompiler, PartId, PartInput, PartSource};
 use exedra::constructive::builders;
 use exedra::constructive::ir::Placement3;
+use exedra::curves::profile::{ProfilePolicy, SegTag};
 use exedra::gltf::{GltfExportOptions, GltfMesh, GltfNode, GltfScene, export_glb_with_materials};
-use exedra::profile::{ProfilePolicy, SegTag};
 
 fn cylinder() -> Result<Body, Box<dyn std::error::Error>> {
     let circle = |z| Curve::circle(Placement3::translate(0.0, 0.0, z), 13.0).unwrap();

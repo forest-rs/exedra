@@ -18,8 +18,8 @@ use crate::{
     },
 };
 use alloc::vec::Vec;
+use exedra_curves::profile::SegTag;
 use exedra_math::{Placement3, sub};
-use exedra_profile::SegTag;
 
 /// An unoriented cylinder axis and positive radius in plate-local coordinates.
 #[derive(Clone, Debug, PartialEq)]
@@ -280,7 +280,7 @@ impl Extrusion {
     /// ```
     /// use exedra_analytic::{bore::{Bore,BorePolicy},extrusion::Extrusion};
     /// use exedra_math::Placement3;
-    /// use exedra_profile::{Loop,Profile,ProfilePolicy,Segment};
+    /// use exedra_curves::profile::{Loop,Profile,ProfilePolicy,Segment};
     /// let outline=Loop::new(vec![Segment::line([20.0,-15.0]),Segment::line([20.0,15.0]),
     ///     Segment::line([-20.0,15.0]),Segment::line([-20.0,-15.0])])?;
     /// let profile=Profile::new(outline,vec![],&ProfilePolicy::new(1e-9))?;
@@ -315,7 +315,7 @@ impl Extrusion {
             || !self.pockets().is_empty()
             || rectangle.len() != 4
             || rectangle.iter().any(|s| {
-                !matches!(s.curve, exedra_profile::Curve::Line)
+                !matches!(s.curve, exedra_curves::profile::Curve::Line)
                     || !(s.to[0] == bounds[0][0] || s.to[0] == bounds[1][0])
                     || !(s.to[1] == bounds[0][1] || s.to[1] == bounds[1][1])
             })
@@ -542,7 +542,7 @@ impl Extrusion {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use exedra_profile::{Loop, Profile, ProfilePolicy, Segment};
+    use exedra_curves::profile::{Loop, Profile, ProfilePolicy, Segment};
     fn plate(center: f64, frame: Placement3) -> Extrusion {
         let outline = Loop::new(alloc::vec![
             Segment::line([center + 20.0, -15.0]),

@@ -24,11 +24,11 @@ use exedra_constructive::{
     path::PathCursor3,
     profile::{Loop2, Profile2, Seg2},
 };
-use exedra_math::Placement3;
-use exedra_profile::{
+use exedra_curves::profile::{
     CornerError, CornerSelectionError, CornerTreatment, LoopRef, Profile as SharedProfile,
     ProfilePolicy, SegTag, SegmentRef,
 };
+use exedra_math::Placement3;
 use serde::Deserialize;
 
 #[path = "solid_operations.rs"]
@@ -128,20 +128,20 @@ impl ProfileSegment {
             Self::Line { feature, .. } | Self::Arc { feature, .. } => feature.as_deref(),
         }
     }
-    fn lower(&self, labels: &BTreeMap<String, SegTag>) -> exedra_profile::Segment {
+    fn lower(&self, labels: &BTreeMap<String, SegTag>) -> exedra_curves::profile::Segment {
         let tag = self
             .feature()
             .and_then(|name| labels.get(name))
             .copied()
             .unwrap_or(UNNAMED);
         match self {
-            Self::Line { to, .. } => exedra_profile::Segment::line(*to),
+            Self::Line { to, .. } => exedra_curves::profile::Segment::line(*to),
             Self::Arc {
                 to,
                 center,
                 clockwise,
                 ..
-            } => exedra_profile::Segment::arc_centered(*to, *center, *clockwise),
+            } => exedra_curves::profile::Segment::arc_centered(*to, *center, *clockwise),
         }
         .tagged(tag)
     }
@@ -1051,20 +1051,23 @@ impl Request {
                         .iter()
                         .map(|segment| segment.lower(&labels))
                         .collect();
-                    let boundary = exedra_profile::Loop::new(lowered).map_err(|error| {
-                        if let exedra_profile::LoopError::InvalidArc { segment } = error {
+                    let boundary = exedra_curves::profile::Loop::new(lowered).map_err(|error| {
+                        if let exedra_curves::profile::LoopError::InvalidArc { segment } = error {
                             let current = segments[segment].lower(&labels);
                             let from = segments[(segment + segments.len() - 1) % segments.len()]
                                 .lower(&labels)
                                 .to;
-                            let error =
-                                exedra_profile::Arc::resolve(from, current.to, current.curve)
-                                    .expect_err("invalid arc");
+                            let error = exedra_curves::profile::Arc::resolve(
+                                from,
+                                current.to,
+                                current.curve,
+                            )
+                            .expect_err("invalid arc");
                             let code = match error {
-                                exedra_profile::ArcError::EndpointRadii { .. } => {
+                                exedra_curves::profile::ArcError::EndpointRadii { .. } => {
                                     "profile.arc.endpointRadii"
                                 }
-                                exedra_profile::ArcError::NumericLimit => {
+                                exedra_curves::profile::ArcError::NumericLimit => {
                                     "profile.arc.numericLimit"
                                 }
                                 _ => "profile.arc.input",
@@ -1072,7 +1075,7 @@ impl Request {
                             let mut diagnostic =
                                 Error::new(code, "profile.loop", error.to_string()).profile(i);
                             diagnostic.context_mut().segment = Some(segment);
-                            if let exedra_profile::ArcError::EndpointRadii {
+                            if let exedra_curves::profile::ArcError::EndpointRadii {
                                 start_radius,
                                 end_radius,
                                 roundoff_bound,

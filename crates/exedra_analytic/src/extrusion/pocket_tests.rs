@@ -4,7 +4,7 @@
 use super::*;
 use alloc::vec;
 use core::f64::consts::PI;
-use exedra_profile::{Loop, Profile, ProfilePolicy, Segment};
+use exedra_curves::profile::{Loop, Profile, ProfilePolicy, Segment};
 
 const POLICY: ProfilePolicy = ProfilePolicy::new(1e-9);
 

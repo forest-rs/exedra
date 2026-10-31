@@ -366,7 +366,7 @@ pub(super) fn export_constructed(
     expected: &mut Vec<serde_json::Value>,
 ) -> Result<(), Box<dyn Error>> {
     use exedra_analytic::revolve::Revolution;
-    use exedra_profile::{Loop, Profile, ProfilePolicy, Segment};
+    use exedra_curves::profile::{Loop, Profile, ProfilePolicy, Segment};
     let pose = Placement3::from_axes(
         [0.0, 0.0, -1.0],
         [1.0, 0.0, 0.0],
@@ -528,7 +528,7 @@ pub(super) fn export_caps(
     expected: &mut Vec<serde_json::Value>,
 ) -> Result<(), Box<dyn Error>> {
     use exedra_analytic::revolve::Revolution;
-    use exedra_profile::ProfilePolicy;
+    use exedra_curves::profile::ProfilePolicy;
     let pose = Placement3::from_axes(
         [0.0, 0.0, -1.0],
         [1.0, 0.0, 0.0],

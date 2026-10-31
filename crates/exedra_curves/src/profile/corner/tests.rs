@@ -3,9 +3,9 @@
 
 use super::arrangement::piece;
 use super::*;
-use crate::arc::{Piece, length, sub};
-use crate::{Loop, LoopRef, ProfilePolicy, Segment};
-use crate::{RegionOp, RegionPolicy};
+use crate::profile::arc::{Piece, length, sub};
+use crate::profile::{Loop, LoopRef, ProfilePolicy, Segment};
+use crate::profile::{RegionOp, RegionPolicy};
 use alloc::vec;
 use core::f64::consts::PI;
 const POLICY: ProfilePolicy = ProfilePolicy::new(1e-9);

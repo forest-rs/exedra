@@ -11,8 +11,8 @@ use exedra_analytic::{
         subtract_parallel_passages, subtract_through_cylinder,
     },
 };
+use exedra_curves::profile::{Loop, Profile, ProfilePolicy, Segment};
 use exedra_math::Placement3;
-use exedra_profile::{Loop, Profile, ProfilePolicy, Segment};
 use exedra_step::{StepOptions, export_body};
 use serde_json::{Value, json};
 use std::{

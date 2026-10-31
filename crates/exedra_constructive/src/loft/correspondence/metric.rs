@@ -6,7 +6,7 @@
 use super::{BoundaryPoint, CorrespondenceError, LandmarkError, ProfileSegmentSpan};
 use crate::profile::{Loop2, Seg2, SegKind};
 use alloc::vec::Vec;
-use exedra_profile::{Arc, Loop, LoopRef, SegmentRef};
+use exedra_curves::profile::{Arc, Loop, LoopRef, SegmentRef};
 
 #[derive(Copy, Clone)]
 pub(super) struct Anchor {

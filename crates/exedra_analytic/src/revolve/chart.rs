@@ -8,8 +8,8 @@ use crate::End;
 use crate::body::FaceId;
 use crate::realize::{RealizationError, RealizationPolicy, RealizedBody, VertexSource};
 use alloc::vec::Vec;
+use exedra_curves::profile::{LoopRef, SegmentRef};
 use exedra_math::predicates::{MAX_COORDINATE, Orientation, orient2d};
-use exedra_profile::{LoopRef, SegmentRef};
 
 /// Why a charted revolution was refused. The caller receives no partial result.
 #[derive(Clone, Debug, PartialEq)]
@@ -377,8 +377,8 @@ mod tests {
     use super::*;
     use crate::revolve::Revolution;
     use alloc::vec;
+    use exedra_curves::profile::{Loop, Profile, ProfilePolicy, Segment};
     use exedra_math::Placement3;
-    use exedra_profile::{Loop, Profile, ProfilePolicy, Segment};
     fn solid(sweep: f64) -> Revolution {
         let ring = Loop::new(vec![
             Segment::line([2.0, 0.0]),

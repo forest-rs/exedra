@@ -16,8 +16,8 @@ workspace = true
 exedra_analytic = { features = ["std"], workspace = true }
 exedra_compile = { features = ["std"], workspace = true }
 exedra_constructive = { features = ["std"], workspace = true }
+exedra_curves.workspace = true
 exedra_math = { features = ["std"], workspace = true }
-exedra_profile.workspace = true
 exedra_scene = { features = ["std"], workspace = true }
 exedra_step.workspace = true
 layerstack_usda.workspace = true

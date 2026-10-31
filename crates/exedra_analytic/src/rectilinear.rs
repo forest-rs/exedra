@@ -1438,18 +1438,18 @@ mod tests {
     }
     #[test]
     fn nonorthogonal_support_and_far_thin_intervals_refuse() {
-        let outline = exedra_profile::Loop::new(alloc::vec![
-            exedra_profile::Segment::line([2.0, 0.0]),
-            exedra_profile::Segment::line([0.0, 2.0]),
-            exedra_profile::Segment::line([-2.0, 0.0]),
-            exedra_profile::Segment::line([0.0, -2.0])
+        let outline = exedra_curves::profile::Loop::new(alloc::vec![
+            exedra_curves::profile::Segment::line([2.0, 0.0]),
+            exedra_curves::profile::Segment::line([0.0, 2.0]),
+            exedra_curves::profile::Segment::line([-2.0, 0.0]),
+            exedra_curves::profile::Segment::line([0.0, -2.0])
         ])
         .unwrap();
         let diagonal = crate::extrusion::Extrusion::new(
-            exedra_profile::Profile::new(
+            exedra_curves::profile::Profile::new(
                 outline,
                 alloc::vec![],
-                &exedra_profile::ProfilePolicy::new(1e-9),
+                &exedra_curves::profile::ProfilePolicy::new(1e-9),
             )
             .unwrap(),
             Placement3::IDENTITY,

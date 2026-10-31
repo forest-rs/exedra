@@ -5,7 +5,9 @@
 
 use alloc::vec::Vec;
 
-use crate::arc::{Arc, Piece, bounds_may_contact, cross, length, sub, turns, winding_angle};
+use crate::profile::arc::{
+    Arc, Piece, bounds_may_contact, cross, length, sub, turns, winding_angle,
+};
 
 /// Opaque caller tag carried by a segment across geometry representations.
 ///
@@ -421,7 +423,7 @@ impl core::fmt::Display for LoopName {
 /// a minimum separation.
 ///
 /// ```
-/// use exedra_profile::{Loop, Profile, ProfilePolicy, Segment};
+/// use exedra_curves::profile::{Loop, Profile, ProfilePolicy, Segment};
 ///
 /// // A 4 x 2 rectangle with a round hole of radius 0.5.
 /// let outer = Loop::new(vec![

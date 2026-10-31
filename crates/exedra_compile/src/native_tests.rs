@@ -9,8 +9,8 @@ use exedra_analytic::{
     extrusion::{Extrusion, Pocket},
 };
 use exedra_constructive::builders;
+use exedra_curves::profile::{ProfilePolicy, SegTag};
 use exedra_math::{Placement3, cross, dot, norm, sub};
-use exedra_profile::{ProfilePolicy, SegTag};
 
 fn source(tag: SegTag, frame: Placement3) -> NativeSource {
     let policy = ProfilePolicy::new(1e-9);
@@ -251,14 +251,14 @@ fn loft_measure_unavailability_is_typed_and_all_families_install() {
             .report
             .within_tolerance()
     );
-    let outline = exedra_profile::Loop::new(vec![
-        exedra_profile::Segment::line([6.0, -2.0]),
-        exedra_profile::Segment::line([6.0, 2.0]),
-        exedra_profile::Segment::line([4.0, 2.0]),
-        exedra_profile::Segment::line([4.0, -2.0]),
+    let outline = exedra_curves::profile::Loop::new(vec![
+        exedra_curves::profile::Segment::line([6.0, -2.0]),
+        exedra_curves::profile::Segment::line([6.0, 2.0]),
+        exedra_curves::profile::Segment::line([4.0, 2.0]),
+        exedra_curves::profile::Segment::line([4.0, -2.0]),
     ])
     .unwrap();
-    let radial = exedra_profile::Profile::new(outline, vec![], &policy).unwrap();
+    let radial = exedra_curves::profile::Profile::new(outline, vec![], &policy).unwrap();
     let revolution: NativeSource = exedra_analytic::revolve::Revolution::new(
         radial,
         Placement3::IDENTITY,

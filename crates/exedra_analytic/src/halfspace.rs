@@ -638,7 +638,7 @@ fn unit(v: [f64; 3]) -> [f64; 3] {
 mod tests {
     use super::*;
     use crate::extrusion::Extrusion;
-    use exedra_profile::{Loop, Profile, ProfilePolicy, Segment};
+    use exedra_curves::profile::{Loop, Profile, ProfilePolicy, Segment};
     fn stock() -> Extrusion {
         let outline = Loop::new(alloc::vec![
             Segment::line([10.0, -8.0]),

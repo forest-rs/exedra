@@ -14,7 +14,7 @@ use exedra_constructive::{
     profile::Profile2,
     tessellate::{EvalPolicy, TessellatedBody, tessellate_loft},
 };
-use exedra_profile::{LoopRef, ProfilePolicy};
+use exedra_curves::profile::{LoopRef, ProfilePolicy};
 
 pub(crate) fn sections(hollow: bool) -> Vec<(Placement3, Profile2)> {
     let a = if hollow {

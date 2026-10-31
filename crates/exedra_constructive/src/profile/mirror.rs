@@ -71,7 +71,7 @@ mod tests {
         assert!(circle.segs().iter().all(|s| s.tag == Some(SegTag(10))));
         let profile = Profile2::simple(circle)
             .unwrap()
-            .to_line_arc(&exedra_profile::ProfilePolicy::new(1e-9))
+            .to_line_arc(&exedra_curves::profile::ProfilePolicy::new(1e-9))
             .unwrap();
         assert!((profile.area() - core::f64::consts::PI).abs() < 1e-14);
     }

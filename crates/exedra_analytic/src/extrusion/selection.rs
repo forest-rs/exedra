@@ -4,7 +4,7 @@
 //! Feature labels resolved through geometry-local topology correspondence.
 
 use super::{Boundary, BoundarySegment, Edge, EdgeId, EdgeRole, Extrusion, Face, FaceId, FaceRole};
-use exedra_profile::SegTag;
+use exedra_curves::profile::SegTag;
 
 impl Extrusion {
     /// Faces paired with their IDs in this solid, in deterministic table order.

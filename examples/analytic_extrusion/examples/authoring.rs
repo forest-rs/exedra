@@ -14,11 +14,11 @@ use exedra::constructive::chart::{ChartTransform, SurfaceChart};
 use exedra::constructive::ir::Placement3;
 use exedra::constructive::path::PathCursor3;
 use exedra::constructive::profile::{LineArcError, LoopCursor, MirrorLine, Profile2, Seg2};
+use exedra::curves::profile::{ProfilePolicy, SegTag};
 use exedra::gltf::{
     GltfExportOptions, GltfMesh, GltfNode, GltfScene, MaterialResolver, Texture,
     export_glb_with_materials,
 };
-use exedra::profile::{ProfilePolicy, SegTag};
 use serde_json::{Value, json};
 use std::{
     error::Error,

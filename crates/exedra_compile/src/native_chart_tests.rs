@@ -13,11 +13,11 @@ use exedra_constructive::{
     builders,
     chart::{ChartError, ChartTransform, LoftStations, SurfaceChart},
 };
+use exedra_curves::profile::{Loop, Profile, ProfilePolicy, Segment};
 use exedra_math::{
     Placement3,
     path::{CurvePathView, PathClosure, PathJoin, PathSegment3},
 };
-use exedra_profile::{Loop, Profile, ProfilePolicy, Segment};
 
 pub(crate) fn revolution() -> NativeSource {
     let outline = Loop::new(vec![

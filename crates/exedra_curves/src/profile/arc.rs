@@ -3,7 +3,7 @@
 
 //! Checked circular arcs from authored source intent, and distances between pieces.
 
-use crate::Curve;
+use crate::profile::Curve;
 use core::f64::consts::{PI, TAU};
 
 /// A resolved circular arc whose authored endpoints remain authoritative.
