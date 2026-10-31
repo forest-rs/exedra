@@ -40,6 +40,9 @@ pub struct FrameReport {
     /// (the incoming and outgoing directions cancel): they take the
     /// incoming direction.
     pub cusps: u32,
+    /// The first such station, if any, so a caller that refuses cusps can
+    /// say where.
+    pub first_cusp: Option<u32>,
     /// Stations whose supplied tangent was zero or not finite: their
     /// tangent was estimated from the chords instead. 0 without supplied
     /// tangents.
@@ -208,7 +211,7 @@ fn frame(
     // closed), or `None` where they coincide.
     let segments = if closed { n } else { n - 1 };
     directions.clear();
-    directions.extend((0..segments).map(|i| normalize(sub(points[(i + 1) % n], points[i]))));
+    directions.extend((0..segments).map(|i| direction(sub(points[(i + 1) % n], points[i]))));
     // The first direction leaving each point, skipping repeated points:
     // one backward pass, wrapping once around a closed curve.
     outgoing.clear();
@@ -239,7 +242,7 @@ fn frame(
             }
         }
         if let Some(tangents) = supplied {
-            match normalize(tangents[i]) {
+            match direction(tangents[i]) {
                 Some(tangent) => return tangent,
                 None => report.estimated += 1,
             }
@@ -247,6 +250,9 @@ fn frame(
         match (incoming, outgoing[i]) {
             (Some(a), Some(b)) => bisector(a, b).unwrap_or_else(|| {
                 report.cusps += 1;
+                report
+                    .first_cusp
+                    .get_or_insert(u32::try_from(i).unwrap_or(u32::MAX));
                 a
             }),
             (Some(d), None) | (None, Some(d)) => d,
@@ -322,6 +328,17 @@ pub(crate) fn perpendicular(v: [f64; 3], t: [f64; 3]) -> Option<[f64; 3]> {
     } else {
         None
     }
+}
+
+/// `v`'s direction, scaled by its largest coordinate before normalizing,
+/// so tiny and huge vectors keep theirs; `None` for a zero or non-finite
+/// vector.
+pub(crate) fn direction(v: [f64; 3]) -> Option<[f64; 3]> {
+    let largest = v.iter().fold(0.0_f64, |m, c| m.max(c.abs()));
+    if largest == 0.0 || !largest.is_finite() {
+        return None;
+    }
+    normalize(v.map(|c| c / largest))
 }
 
 /// The unit bisector of the unit directions `a` and `b`, or `None` at a
@@ -404,6 +421,7 @@ mod tests {
         let (frames, report) = rotation_minimizing_frames(&points, false, None);
         assert_eq!(report.repeated, 1);
         assert_eq!(report.cusps, 1);
+        assert_eq!(report.first_cusp, Some(2));
         assert_eq!(frames[0].tangent, [1.0, 0.0, 0.0]);
         assert_eq!(frames[2].tangent, [1.0, 0.0, 0.0]);
         for frame in &frames {
