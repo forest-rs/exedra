@@ -948,7 +948,18 @@ fn support_gap(curve: &Curve, range: ParameterRange, surface: &Surface) -> f64 {
     if let Surface::Ruled(ruled) = surface {
         // Full-curve comparison against the patch's exact four boundaries.
         // This is sufficient, not complete for arbitrary interior trims.
-        return [false, true]
+        // A stored source span is already checked. Identical defining geometry
+        // over the same range has exactly the same locus in either direction;
+        // no alignment-roundoff allowance or temporary span is needed.
+        if ruled
+            .curves()
+            .iter()
+            .any(|span| span.curve() == curve && span.range() == range)
+        {
+            return 0.0;
+        }
+        let mut gap = f64::INFINITY;
+        for alignment in [false, true]
             .into_iter()
             .filter_map(|reverse| {
                 crate::geometry::CurveSpan::new(curve.clone(), range, reverse).ok()
@@ -958,7 +969,15 @@ fn support_gap(curve: &Curve, range: ParameterRange, surface: &Surface) -> f64 {
                     .filter_map(|side| ruled.boundary(side))
                     .map(move |ideal| ideal.alignment(&actual))
             })
-            .fold(f64::INFINITY, f64::min);
+        {
+            gap = gap.min(alignment);
+            // Alignment bounds are nonnegative. Zero is the exhaustive
+            // minimum, so later boundary spans need not be constructed.
+            if gap == 0.0 {
+                return gap;
+            }
+        }
+        return gap;
     }
     let frame = surface.frame();
     match curve {
@@ -1114,6 +1133,203 @@ pub(crate) mod tests {
     use super::*;
     use alloc::vec;
     const POLICY: ValidationPolicy = ValidationPolicy { max_gap: 1e-12 };
+
+    fn exhaustive_ruled_gap(curve: &Curve, range: ParameterRange, surface: &Surface) -> f64 {
+        let Surface::Ruled(ruled) = surface else {
+            panic!("ruled surface required");
+        };
+        let boundaries: [_; 4] = core::array::from_fn(|side| ruled.boundary(side));
+        let mut gap = f64::INFINITY;
+        for reverse in [false, true] {
+            if let Ok(actual) = crate::geometry::CurveSpan::new(curve.clone(), range, reverse) {
+                for ideal in boundaries.iter().flatten() {
+                    let alignment = ideal.alignment(&actual);
+                    assert!(alignment >= 0.0);
+                    gap = gap.min(alignment);
+                }
+            }
+        }
+        gap
+    }
+
+    fn ruled_support_fixture(rational: bool, reversed: bool) -> Surface {
+        use crate::geometry::{CurveSpan, NurbsCurve};
+        let (curve, range) = if rational {
+            (
+                Curve::nurbs(
+                    NurbsCurve::new(
+                        4,
+                        vec![2.0, 2.0, 2.0, 2.0, 5.0, 5.0, 5.0, 5.0],
+                        vec![[0.0; 3], [1.0, 2.0, 0.0], [3.0, 2.0, 0.0], [4.0, 0.0, 0.0]],
+                        Some(vec![1.0, 0.7, 1.4, 1.0]),
+                    )
+                    .unwrap(),
+                )
+                .unwrap(),
+                ParameterRange::new(2.0, 5.0).unwrap(),
+            )
+        } else {
+            (
+                Curve::line([0.0; 3], [4.0, 0.0, 0.0]).unwrap(),
+                ParameterRange::UNIT,
+            )
+        };
+        let upper = curve
+            .transformed(Placement3::translate(0.0, 0.0, 2.0))
+            .unwrap();
+        Surface::ruled(
+            CurveSpan::new(curve, range, reversed).unwrap(),
+            CurveSpan::new(upper, range, reversed).unwrap(),
+        )
+        .unwrap()
+    }
+
+    #[test]
+    fn ruled_support_lazy_minimum_matches_exhaustive_boundary_search() {
+        for rational in [false, true] {
+            for reversed in [false, true] {
+                let surface = ruled_support_fixture(rational, reversed);
+                let Surface::Ruled(ruled) = &surface else {
+                    unreachable!()
+                };
+                for side in 0..4 {
+                    let ideal = ruled.boundary(side).unwrap();
+                    let curve = ideal.curve();
+                    let range = ideal.range();
+                    let exhaustive = exhaustive_ruled_gap(curve, range, &surface);
+                    assert_eq!(support_gap(curve, range, &surface), 0.0);
+                    assert!(exhaustive >= 0.0);
+
+                    // These are not source identities: every candidate must
+                    // still contribute to the same conservative minimum.
+                    let shifted = curve
+                        .transformed(Placement3::translate(0.125, 0.0, 0.0))
+                        .unwrap();
+                    let exhaustive = exhaustive_ruled_gap(&shifted, range, &surface);
+                    assert!(exhaustive > 0.0);
+                    assert_eq!(
+                        support_gap(&shifted, range, &surface).to_bits(),
+                        exhaustive.to_bits()
+                    );
+                }
+                let last = ruled.boundary(3).unwrap();
+                let Curve::Line(line) = last.curve() else {
+                    unreachable!()
+                };
+                let backward = Curve::line(
+                    core::array::from_fn(|k| {
+                        line.origin()[k] + line.direction()[k] + if k == 0 { 0.125 } else { 0.0 }
+                    }),
+                    line.direction().map(|v| -v),
+                )
+                .unwrap();
+                assert_eq!(
+                    exhaustive_ruled_gap(&backward, ParameterRange::UNIT, &surface),
+                    0.125
+                );
+                assert_eq!(
+                    support_gap(&backward, ParameterRange::UNIT, &surface),
+                    0.125
+                );
+
+                // Finite checked inputs can still have an unrepresentable
+                // normalized span. Both searches must retain the refusal.
+                let huge = ParameterRange::new(0.0, 1e300).unwrap();
+                let line = Curve::line([0.0; 3], [1e100, 0.0, 0.0]).unwrap();
+                assert_eq!(exhaustive_ruled_gap(&line, huge, &surface), f64::INFINITY);
+                assert_eq!(support_gap(&line, huge, &surface), f64::INFINITY);
+            }
+        }
+    }
+
+    #[test]
+    fn ruled_source_identity_proves_zero_beyond_alignment_roundoff_guards() {
+        use crate::geometry::CurveSpan;
+        let rational = ruled_support_fixture(true, false);
+        let circle = Curve::circle(Placement3::IDENTITY, 2.0).unwrap();
+        let range = ParameterRange::new(0.0, core::f64::consts::TAU).unwrap();
+        let harmonic = Surface::ruled(
+            CurveSpan::new(circle.clone(), range, true).unwrap(),
+            CurveSpan::new(
+                circle
+                    .transformed(Placement3::translate(0.0, 0.0, 2.0))
+                    .unwrap(),
+                range,
+                true,
+            )
+            .unwrap(),
+        )
+        .unwrap();
+        for surface in [&rational, &harmonic] {
+            let Surface::Ruled(ruled) = surface else {
+                unreachable!()
+            };
+            for span in ruled.curves() {
+                // This is a stronger exact-locus proof, not equality with the
+                // old comparison's positive arithmetic allowance.
+                assert!(exhaustive_ruled_gap(span.curve(), span.range(), surface) > 0.0);
+                assert_eq!(support_gap(span.curve(), span.range(), surface), 0.0);
+                let bounds = span.range().bounds();
+                let partial =
+                    ParameterRange::new(bounds[0], (bounds[0] + bounds[1]) / 2.0).unwrap();
+                assert_eq!(
+                    support_gap(span.curve(), partial, surface).to_bits(),
+                    exhaustive_ruled_gap(span.curve(), partial, surface).to_bits(),
+                    "different ranges must use the full comparison",
+                );
+            }
+        }
+
+        let Surface::Ruled(ruled) = &rational else {
+            unreachable!()
+        };
+        let boundaries: [_; 4] = core::array::from_fn(|side| ruled.boundary(side).unwrap());
+        let vertices = [
+            [0.0, 0.0, 0.0],
+            [4.0, 0.0, 0.0],
+            [4.0, 0.0, 2.0],
+            [0.0, 0.0, 2.0],
+        ];
+        let endpoints = [(0, 1), (1, 2), (3, 2), (0, 3)];
+        let parts = BodyParts {
+            vertices: vertices.into(),
+            edges: boundaries
+                .into_iter()
+                .zip(endpoints)
+                .map(|(span, (start, end))| Edge {
+                    geometry: EdgeGeometry::Curve {
+                        curve: span.curve().clone(),
+                        range: span.range(),
+                    },
+                    start: VertexId(start),
+                    end: VertexId(end),
+                    role: (),
+                })
+                .collect(),
+            loops: vec![BoundaryLoop {
+                coedges: (0..4)
+                    .map(|i| Coedge {
+                        edge: EdgeId(i),
+                        reversed: i >= 2,
+                    })
+                    .collect(),
+            }],
+            faces: vec![Face {
+                surface: rational,
+                domain: ParameterDomain {
+                    u: ParameterRange::UNIT,
+                    v: ParameterRange::UNIT,
+                },
+                sense: Sense::Forward,
+                loops: vec![LoopId(0)],
+                role: (),
+            }],
+            trims: vec![],
+        };
+        let zero = ValidationPolicy { max_gap: 0.0 };
+        let body = Body::try_from_parts(parts, &zero).unwrap();
+        assert_eq!(body.validate(&zero).unwrap().max_gap, 0.0);
+    }
 
     #[test]
     fn torus_support_bounds_whole_curves_including_chords_and_oblique_circles() {
