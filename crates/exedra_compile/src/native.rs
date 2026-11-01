@@ -25,7 +25,7 @@ use exedra_analytic::{
 use exedra_curves::path::{PathClosure, PathJoin, PathSegment3};
 use exedra_curves::profile::{Profile, SegTag};
 use exedra_math::Placement3;
-pub use lower::NativeLoweringError;
+pub use lower::{NativeLoweringError, NativeLoweringPolicy};
 
 /// Supported retained construction family, independent of display tolerance.
 #[derive(Copy, Clone, Debug, PartialEq, Eq)]

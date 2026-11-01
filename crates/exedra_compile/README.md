@@ -93,19 +93,23 @@ Held sources and snapshots can outlive cache eviction and remain usable.
 
 ## Native recipes
 
-`NativeSource::from_recipe(&recipe, &profile_policy)` builds a constructive
-recipe's root natively, so its measures, selections and STEP export are exact:
-an extrusion of a profile with any pockets cut into it, a revolution, a
-constant-section sweep or a ruled loft, under rigid transforms, with segment
-tags carried to face tags. Lowering is the caller's explicit choice. A caller
-that requires exact geometry propagates `NativeLoweringError`, which names the
-first node that has no native construction, asks for something native
-construction would not keep (a material, chart, issue, open caps, a varying
-sweep section or smooth loft interpolation), or whose
-construction refuses its parameters; a caller that prefers exact geometry falls
-back to `PartSource::Recipe`, whose mesh evaluation covers every node. The lowered source takes the label of
-the node that produced its body, as mesh evaluation attributes it, so a snapshot
-resolves it by that label either way.
+`NativeSource::from_recipe(&recipe, &NativeLoweringPolicy::new(profile_policy))`
+builds a constructive recipe's root natively, so its measures, selections and
+STEP export are exact: an extrusion of a profile with any pockets cut into it, a
+revolution, a constant-section sweep or a ruled loft, under rigid transforms,
+with segment tags carried to face tags. A solid on an `OnWorkplane` attachment
+is placed on its native support's cap or pocket floor, named as mesh evaluation
+names it, and resolves to the same frame; the support is not emitted. Lowering
+is the caller's explicit choice. A caller that requires exact geometry
+propagates `NativeLoweringError`, which names the first node that has no native
+construction, asks for something native construction would not keep (a material,
+chart, issue, open caps, a varying sweep section, smooth loft interpolation or a
+region attachment), or whose construction refuses its parameters; a caller that
+prefers exact geometry falls back to `PartSource::Recipe`, whose mesh evaluation
+covers every node. Attachments nest at most `NativeLoweringPolicy::max_depth`
+deep. The lowered source takes the label of the node that produced its body, as
+mesh evaluation attributes it, so a snapshot resolves it by that label either
+way.
 
 ## Input identity migration
 

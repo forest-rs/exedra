@@ -205,18 +205,7 @@ fn build_inner(
     policy: &WorkplanePolicy,
 ) -> Result<Workplane, Rejection> {
     use WorkplaneError as Error;
-    if !policy.distance_tolerance.is_finite()
-        || policy.distance_tolerance <= 0.0
-        || !policy.min_axis_sine.is_finite()
-        || policy.min_axis_sine <= 0.0
-        || policy.min_axis_sine > 1.0
-        || !policy.min_projection_cos.is_finite()
-        || policy.min_projection_cos <= 0.0
-        || policy.min_projection_cos > 1.0
-        || policy.max_faces == 0
-        || policy.max_corners == 0
-        || origin.iter().any(|v| !v.is_finite())
-    {
+    if !policy.is_valid() || origin.iter().any(|v| !v.is_finite()) {
         return Err(Error::InvalidInput.into());
     }
     let _ = normalize(x_direction).ok_or(Error::InvalidInput)?;
