@@ -4,14 +4,19 @@
 //! Native construction of constructive recipes.
 
 use super::NativeSource;
+use alloc::vec::Vec;
 use exedra_analytic::{
-    extrusion::{Extrusion, ExtrusionError},
+    End,
+    extrusion::{Extrusion, ExtrusionError, Pocket},
     loft::{Loft, LoftError, LoftPolicy},
     revolve::{Revolution, RevolutionError},
     sweep::{Sweep, SweepError},
 };
 use exedra_constructive::{
-    ir::{CapMode, LoftPolicy as Interpolation, NodeId, NodeKind, Placement3, ProfileId, Recipe},
+    ir::{
+        CapMode, ExtrusionEnd, LoftPolicy as Interpolation, NodeId, NodeKind, Placement3,
+        ProfileId, Recipe,
+    },
     profile::ToProfileError,
     section_law::SectionLaw,
 };
@@ -113,8 +118,9 @@ impl core::error::Error for NativeLoweringError {
 
 impl NativeSource {
     /// The recipe's root built natively, so that its measures, selections
-    /// and exchange are exact: an extrusion or revolution of a profile, a
-    /// constant-section sweep or a ruled loft, under any rigid transforms. Profiles are validated under `policy`;
+    /// and exchange are exact: an extrusion of a profile with any pockets
+    /// cut into it, a revolution, a constant-section sweep or a ruled loft,
+    /// under any rigid transforms. Profiles are validated under `policy`;
     /// segment tags become the solid's face tags.
     ///
     /// Lowering is the caller's explicit choice. A caller that requires
@@ -151,6 +157,8 @@ impl NativeSource {
     ) -> Result<Self, NativeLoweringError> {
         let mut id = recipe.root();
         let mut outer = Placement3::IDENTITY;
+        // Pockets met on the way down, outermost first.
+        let mut pockets = Vec::new();
         loop {
             let node = recipe.node(id).expect("a recipe's nodes resolve");
             let unkept = |request| Err(NativeLoweringError::Unkept { node: id, request });
@@ -175,6 +183,19 @@ impl NativeSource {
                     outer = outer * *xf;
                     id = *child;
                 }
+                NodeKind::Pocket {
+                    base,
+                    profile: p,
+                    end,
+                    depth,
+                } => {
+                    let end = match end {
+                        ExtrusionEnd::Start => End::Start,
+                        ExtrusionEnd::End => End::End,
+                    };
+                    pockets.push((id, profile(*p)?, end, *depth));
+                    id = *base;
+                }
                 NodeKind::Extrude {
                     profile: p,
                     placement,
@@ -184,9 +205,23 @@ impl NativeSource {
                     if *caps != CapMode::Both {
                         return unkept("open_caps");
                     }
-                    return Extrusion::new(profile(*p)?, outer * *placement, *height)
-                        .map(|solid| produced(Self::from(solid), recipe, id))
-                        .map_err(|error| NativeLoweringError::Extrusion { node: id, error });
+                    let mut solid = Extrusion::new(profile(*p)?, outer * *placement, *height)
+                        .map_err(|error| NativeLoweringError::Extrusion { node: id, error })?;
+                    // The outermost pocket produced the body.
+                    let producer = pockets.first().map_or(id, |pocket| pocket.0);
+                    for (index, (node, region, end, depth)) in pockets.into_iter().rev().enumerate()
+                    {
+                        let refused = |error| NativeLoweringError::Extrusion { node, error };
+                        let pocket =
+                            Pocket::from_profile(&region, end, depth).map_err(|error| {
+                                refused(ExtrusionError::Pocket {
+                                    pocket: index,
+                                    error,
+                                })
+                            })?;
+                        solid = solid.with_pocket(pocket, policy).map_err(refused)?;
+                    }
+                    return Ok(produced(Self::from(solid), recipe, producer));
                 }
                 NodeKind::Revolve {
                     profile: p,
@@ -266,6 +301,7 @@ fn operation(kind: &NodeKind) -> &'static str {
         NodeKind::ExtrudeToPlane { .. } => "extrude_to_plane",
         NodeKind::EdgeFinish { .. } => "edge_finish",
         NodeKind::Extrude { .. } => "extrude",
+        NodeKind::Pocket { .. } => "pocket",
         NodeKind::Revolve { .. } => "revolve",
         NodeKind::Loft { .. } => "loft",
         NodeKind::Sweep { .. } => "sweep",
@@ -453,6 +489,50 @@ mod tests {
                 assert!((a[k][axis] - b[k][axis]).abs() < reach, "{a:?} {b:?}");
             }
         }
+    }
+
+    #[test]
+    fn pocketed_extrusions_lower_with_every_pocket() {
+        let mut builder = RecipeBuilder::new();
+        let profile = builder.add_profile(plate());
+        let leaf = builder.add_node(extrude(profile)).unwrap();
+        let recess = builder.add_profile(
+            builders::rect_centered(10.0, 6.0)
+                .unwrap()
+                .translated((-10.0, 5.0))
+                .unwrap()
+                .tagged(SegTag(9)),
+        );
+        let first = builder
+            .add_node(NodeKind::Pocket {
+                base: leaf,
+                profile: recess,
+                end: ExtrusionEnd::End,
+                depth: 4.0,
+            })
+            .unwrap();
+        let slot = builder.add_profile(
+            builders::rect_centered(8.0, 4.0)
+                .unwrap()
+                .translated((10.0, -5.0))
+                .unwrap(),
+        );
+        let root = builder
+            .add_node(NodeKind::Pocket {
+                base: first,
+                profile: slot,
+                end: ExtrusionEnd::Start,
+                depth: 3.0,
+            })
+            .unwrap();
+        let recipe = builder.finish(root).unwrap();
+        let lowered = NativeSource::from_recipe(&recipe, &POLICY).unwrap();
+        let solid = lowered.as_extrusion().unwrap();
+        assert_eq!(solid.pockets().len(), 2);
+        assert_eq!(solid.faces_tagged(SegTag(9)).count(), 4, "the recess walls");
+        let exact = (1200.0 - core::f64::consts::PI * 9.0) * 12.0 - 60.0 * 4.0 - 32.0 * 3.0;
+        assert!((lowered.volume().unwrap() - exact).abs() < 1e-9 * exact);
+        agree(both_ways(recipe), 1e-4);
     }
 
     #[test]

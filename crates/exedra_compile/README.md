@@ -95,8 +95,9 @@ Held sources and snapshots can outlive cache eviction and remain usable.
 
 `NativeSource::from_recipe(&recipe, &profile_policy)` builds a constructive
 recipe's root natively, so its measures, selections and STEP export are exact:
-an extrusion or revolution of a profile, a constant-section sweep or a ruled
-loft, under rigid transforms, with segment tags carried to face tags. Lowering is the caller's explicit choice. A caller
+an extrusion of a profile with any pockets cut into it, a revolution, a
+constant-section sweep or a ruled loft, under rigid transforms, with segment
+tags carried to face tags. Lowering is the caller's explicit choice. A caller
 that requires exact geometry propagates `NativeLoweringError`, which names the
 first node that has no native construction, asks for something native
 construction would not keep (a material, chart, issue, open caps, a varying
