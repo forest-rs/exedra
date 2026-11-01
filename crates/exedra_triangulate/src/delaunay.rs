@@ -331,11 +331,12 @@ fn replace_edge(
         old_second[2],
     ];
 
-    // Remove queued keys before changing the diagonal. Its slot is reused,
-    // so neither adjacency nor the priority queue grows during a flip.
-    for edge in affected {
-        worklist.remove(edge, &mut adjacency.edges);
-    }
+    // Only the diagonal changes its queue key. Perimeter edges retain their
+    // keys and can stay queued while their incident triangles are updated.
+    // The insertion below schedules those already popped without disturbing
+    // the remaining heap entries. Reusing the diagonal's slot keeps storage
+    // bounded by the original edge count.
+    worklist.remove(candidate.edge, &mut adjacency.edges);
     for (triangle, edges) in [
         (candidate.first_triangle, old_first),
         (candidate.second_triangle, old_second),
