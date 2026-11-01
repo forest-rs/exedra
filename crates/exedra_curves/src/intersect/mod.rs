@@ -21,7 +21,9 @@
 //! These are intersections of the pieces as given: a caller whose pieces
 //! approximate other curves answers for that approximation.
 
+mod enclosure;
 mod interval;
+pub use enclosure::{BezierEnclosure, HullSeparation};
 
 use alloc::vec::Vec;
 
