@@ -883,3 +883,35 @@ fn explicit_periodic_chart_trims_participate_in_identity_and_survive_role_mappin
     snapshot(&mut compiler, &b, 0.05);
     assert_eq!(compiler.counters().native_realizations, 2);
 }
+
+#[test]
+fn estimated_extrusion_measures_are_unavailable() {
+    use exedra_curves::profile::{Bezier, Loop, Profile, Segment};
+    let arch = |weights| {
+        let outline = Loop::new(vec![
+            Segment::line([4.0, 0.0]),
+            Segment::bezier(
+                [0.0, 0.0],
+                Bezier::new(vec![[3.0, 2.0], [1.0, 2.0]], weights),
+            ),
+        ])
+        .unwrap();
+        let profile = Profile::new(outline, vec![], &ProfilePolicy::new(1e-9)).unwrap();
+        NativeSource::from(Extrusion::new(profile, Placement3::IDENTITY, 2.0).unwrap())
+    };
+    let unavailable = |measure| NativeMeasureError::Unavailable {
+        family: NativeFamily::Extrusion,
+        measure,
+    };
+    // A polynomial crown's area is exact, 18 (1/20 + 4/30 + 1/20) under
+    // y = 6t(1 - t), and its length an estimate.
+    let polynomial = arch(None);
+    assert!((polynomial.volume().unwrap() - 2.0 * 4.2).abs() < 1e-12);
+    assert_eq!(
+        polynomial.surface_area(),
+        Err(unavailable(NativeMeasure::SurfaceArea))
+    );
+    // A rational one's area is an estimate too.
+    let rational = arch(Some(vec![1.0, 2.0, 2.0, 1.0]));
+    assert_eq!(rational.volume(), Err(unavailable(NativeMeasure::Volume)));
+}

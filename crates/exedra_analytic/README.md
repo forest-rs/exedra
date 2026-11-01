@@ -423,35 +423,35 @@ premise, and a successful point query is not a global validity certificate.
 No mesh, construction history, role metadata, scene or tessellation is involved.
 See `examples/geometry_queries` for retained valve-block probes and section exports.
 
-## Checked spline-profile extrusion
+## Bezier profile extrusion
 
-`planar_extrusion::PlanarExtrusion::new(outer, holes, frame, length, &policy)`
-builds a retained solid directly from tagged native `CurveSpan`s. Both caps,
-shared edges, exact ruled walls and planar trim correspondence are constructed
-together. Source NURBS domains and traversal directions remain unchanged.
-`cap(end)` and `faces_tagged(tag)` resolve native caps and named walls directly;
-these identities stay unchanged across display realizations.
+Profiles may hold rational Bezier segments (`Segment::bezier`), which
+`Extrusion::new` builds exactly: each segment's two cap edges are the one-span
+rational NURBS curve with its controls and weights, and its wall is the ruled
+surface between them, parametrized by the curve parameter and the fraction of
+the way up. Caps, seams, tags and roles are as for lines and arcs. Pocket
+outlines with Bezier segments are still refused. The profile's own validation,
+an outward-rounded enclosure proof (`Profile::new`), establishes simplicity,
+winding and hole containment; no segment is flattened or healed.
 
-The checked subset is explicit: unit-range lines with exact endpoint arithmetic,
-and full-domain clamped single-span rational NURBS of order at most 16, with
-controls exactly in local XY. `PlanarSegment::line(from, to)` retains arbitrary
-finite decimal endpoints, using a native line when its endpoint coefficients are
-exact and an order-two NURBS otherwise. The outer loop winds counterclockwise; holes wind
-clockwise. Consecutive endpoints must agree exactly. Multi-span sources, partial
-ranges and conics return `UnsupportedSource`; no curve is flattened or healed.
-
-Outline checking propagates outward-rounded homogeneous Bezier controls through
-bisection. Each piece must be monotone, and hull separation must establish
-disjointness or contact only at a permitted identical endpoint. The chord profile
-then establishes winding and hole containment. Exhausted work and unresolved
-geometry are distinct refusals. Reports count source segments, checked pieces,
-pair tests and subdivision depth; these are construction work, not mesh work.
-
-`realize_with_uvs` supplies cap XY and wall `(normalized source traversal, height)`
-to the caller. The first wall coordinate is a parameter, not spline arc length.
-Exact integrals and general pockets are unavailable. The body follows the existing
-realization, archive and STEP paths; `NativeSource::from(solid)` installs it as a
-generic body with its feature tags. See the executable
+Measures follow the profile's contracts: areas of polynomial segments are
+exact, while the areas of rational segments and the lengths of all Bezier
+segments are documented estimates. `Extrusion::tessellate` samples each Bezier
+segment at the fewest uniform parameter steps whose certified chord bound meets
+the tolerance, refines it on cap contacts like an arc, and reports that bound
+as deviation evidence. `Extrusion::realize_with_uvs` supplies cap and floor XY
+and wall `(u, z)`, where `u` runs along the segment by length, angle or curve
+parameter (not arc length) and `z` is the height. The body follows the existing
+realization, archive and STEP paths, and installs through
+`NativeSource::from(solid)` like any extrusion. See the executable
 [`spline_profile`](../../examples/analytic_extrusion/examples/spline_profile.rs)
 for a weighted crown, rectangular hole, construction UVs, STEP export and
 remeshing through the compiler.
+
+This replaces the former `planar_extrusion::PlanarExtrusion`. A one-span
+clamped NURBS segment becomes a `Segment::bezier` with the same controls and
+weights, traversed in loop order; its edge and wall coordinates then run over
+`[0, 1]` rather than the span's knot range, so callers holding parameters in
+the old range convert them. The profile's `ProfilePolicy` takes the place of
+the former support gap and outline work limits, and no construction-work
+report is returned.

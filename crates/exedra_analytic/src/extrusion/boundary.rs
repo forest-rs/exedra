@@ -4,9 +4,12 @@
 //! Lower construction geometry into the shared boundary model once.
 
 use crate::body::{BoundaryLoop, Coedge, LoopId, Sense};
-use crate::geometry::{Curve, ParameterDomain, ParameterRange, Surface};
+use crate::geometry::{
+    Curve, CurveSpan, GeometryError, NurbsCurve, ParameterDomain, ParameterRange, Surface,
+};
 use alloc::vec::Vec;
-use exedra_curves::profile::Arc;
+use exedra_curves::NurbsError;
+use exedra_curves::profile::{Arc, Bezier};
 use exedra_math::Placement3;
 
 pub(super) fn line(from: [f64; 3], to: [f64; 3]) -> (Curve, ParameterRange) {
@@ -32,6 +35,52 @@ pub(super) fn circle(arc: Arc, z: f64) -> (Curve, ParameterRange) {
         Curve::circle(circle_frame(arc, z), arc.radius).expect("validated circle"),
         ParameterRange::new(0.0, arc.sweep.abs()).expect("nonzero arc"),
     )
+}
+
+/// The Bezier segment from `from` to `to` as the one-span NURBS curve with
+/// its controls, placed by `place`, and its weights, over `[0, 1]`.
+pub(super) fn bezier_nurbs<const N: usize>(
+    from: [f64; 2],
+    to: [f64; 2],
+    bezier: &Bezier,
+    place: impl Fn([f64; 2]) -> [f64; N],
+) -> Result<NurbsCurve<N>, NurbsError> {
+    let order = bezier.order();
+    NurbsCurve::new(
+        u32::try_from(order).expect("profiles hold at most sixteen controls a segment"),
+        [alloc::vec![0.0; order], alloc::vec![1.0; order]].concat(),
+        bezier.controls(from, to).map(place).collect(),
+        bezier.weights().map(<[f64]>::to_vec),
+    )
+}
+
+/// The Bezier segment from `from` to `to` at height `z`.
+pub(super) fn bezier(
+    from: [f64; 2],
+    to: [f64; 2],
+    bezier: &Bezier,
+    z: f64,
+) -> Result<(Curve, ParameterRange), GeometryError> {
+    let curve =
+        bezier_nurbs(from, to, bezier, |p| [p[0], p[1], z]).map_err(GeometryError::Nurbs)?;
+    Ok((Curve::nurbs(curve)?, ParameterRange::UNIT))
+}
+
+/// The ruled wall between a Bezier segment's edges at the two heights:
+/// `u` its curve parameter, `v` the fraction of the way up.
+pub(super) fn ruled_wall(
+    lower: Curve,
+    upper: Curve,
+) -> Result<(Surface, ParameterDomain, Sense), GeometryError> {
+    let span = |curve| CurveSpan::new(curve, ParameterRange::UNIT, false);
+    Ok((
+        Surface::ruled(span(lower)?, span(upper)?)?,
+        ParameterDomain {
+            u: ParameterRange::UNIT,
+            v: ParameterRange::UNIT,
+        },
+        Sense::Forward,
+    ))
 }
 
 pub(super) fn wall(

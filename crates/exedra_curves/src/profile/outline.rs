@@ -395,13 +395,14 @@ impl Loop {
     /// extent, as no closed form exists.
     #[must_use]
     pub fn length(&self) -> f64 {
-        self.pieces()
-            .map(|piece| match piece {
-                Piece::Line(from, to) => length(sub(to, from)),
-                Piece::Arc(arc) => arc.length(),
-                Piece::Bezier(bezier) => bezier.length(),
-            })
-            .sum()
+        self.pieces().map(|piece| piece_length(&piece)).sum()
+    }
+
+    /// Length of segment `index`, estimated for a Bezier segment as
+    /// [`Self::length`] says, or `None` past the last segment.
+    #[must_use]
+    pub fn segment_length(&self, index: usize) -> Option<f64> {
+        self.pieces().nth(index).map(|piece| piece_length(&piece))
     }
 
     pub(crate) fn pieces(&self) -> impl Iterator<Item = Piece> + '_ {
@@ -451,6 +452,14 @@ impl Loop {
                 .map(|piece| winding_angle(&piece, point, 0.0))
                 .sum(),
         )
+    }
+}
+
+fn piece_length(piece: &Piece) -> f64 {
+    match piece {
+        Piece::Line(from, to) => length(sub(*to, *from)),
+        Piece::Arc(arc) => arc.length(),
+        Piece::Bezier(bezier) => bezier.length(),
     }
 }
 

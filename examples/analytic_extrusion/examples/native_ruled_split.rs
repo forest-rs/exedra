@@ -7,14 +7,14 @@ mod support;
 use exedra::{
     analytic::{
         body::{Body, FaceId},
-        geometry::{Curve, CurveSpan, NurbsCurve, ParameterRange, Surface},
-        planar_extrusion::{PlanarExtrusion, PlanarExtrusionPolicy, PlanarSegment},
+        extrusion::Extrusion,
+        geometry::{ParameterRange, Surface},
         query::{ProjectionPolicy, RuledProjection},
         realize::{RealizationPolicy, RealizedBody, TriangleQuality},
         split::{RuledSplitPolicy, RuledSplitReport, split_ruled_face_at_u},
     },
     constructive::ir::Placement3,
-    curves::profile::SegTag,
+    curves::profile::{Bezier, Loop, Profile, ProfilePolicy, SegTag, Segment},
     step::{StepOptions, export_body},
 };
 use serde_json::{Value, json};
@@ -22,34 +22,29 @@ use std::{error::Error, path::PathBuf, time::Instant};
 type Result<T> = std::result::Result<T, Box<dyn Error>>;
 
 fn source() -> Result<(Body<(), u8>, FaceId)> {
-    let curve = Curve::nurbs(NurbsCurve::new(
-        4,
-        vec![2., 2., 2., 2., 5., 5., 5., 5.],
-        vec![[0., 0., 0.], [1., 2., 0.], [3., 2., 0.], [4., 0., 0.]],
-        Some(vec![1., 0.7, 1.4, 1.]),
-    )?)?;
-    let outer = vec![
-        PlanarSegment::line([0., 0.], [4., 0.])?,
-        PlanarSegment::new(CurveSpan::new(curve, ParameterRange::new(2., 5.)?, true)?)
-            .tagged(SegTag(42)),
-    ];
-    let points = [[1.5, 0.3], [1.5, 0.6], [2.5, 0.6], [2.5, 0.3]];
-    let hole = (0..4)
-        .map(|i| PlanarSegment::line(points[i], points[(i + 1) % 4]).map_err(Into::into))
-        .collect::<Result<Vec<_>>>()?;
-    let solid = PlanarExtrusion::new(
-        outer,
-        vec![hole],
-        Placement3::IDENTITY,
-        2.,
-        &PlanarExtrusionPolicy::default(),
-    )?;
+    // Along the chord, then back over a weighted cubic crown.
+    let outer = Loop::new(vec![
+        Segment::line([4., 0.]),
+        Segment::bezier(
+            [0., 0.],
+            Bezier::new(vec![[3., 2.], [1., 2.]], Some(vec![1., 1.4, 0.7, 1.])),
+        )
+        .tagged(SegTag(42)),
+    ])?;
+    let hole = Loop::new(vec![
+        Segment::line([1.5, 0.6]),
+        Segment::line([2.5, 0.6]),
+        Segment::line([2.5, 0.3]),
+        Segment::line([1.5, 0.3]),
+    ])?;
+    let profile = Profile::new(outer, vec![hole], &ProfilePolicy::new(1e-9))?;
+    let solid = Extrusion::new(profile, Placement3::IDENTITY, 2.)?;
     let face = solid
         .faces_tagged(SegTag(42))
         .next()
         .expect("named crown")
         .0;
-    Ok((solid.into_body().map_roles(|_| (), |_| 0_u8), face))
+    Ok((solid.body().clone().map_roles(|_| (), |_| 0_u8), face))
 }
 fn report(report: &RuledSplitReport) -> Value {
     json!({"source_face":report.source.0,"source_u":report.source_domain.u.bounds(),"u":report.u,

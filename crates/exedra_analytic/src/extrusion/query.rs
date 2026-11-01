@@ -4,8 +4,11 @@
 //! Exact queries on an [`Extrusion`], independent of any tessellation.
 //!
 //! Results are in local coordinates unless named otherwise; the rigid
-//! [`Extrusion::frame`] places them. Measures are exact for the native
-//! geometry, not for a realized mesh.
+//! [`Extrusion::frame`] places them. Measures are of the native geometry,
+//! not of a realized mesh: exact for lines, arcs and the areas of
+//! polynomial Bezier segments, and estimates for the lengths of Bezier
+//! segments and the areas of rational ones, as
+//! [`exedra_curves::profile::Profile::area`] states.
 
 use exedra_curves::profile::{Curve, LoopRef};
 use exedra_math::Placement3;
@@ -25,7 +28,8 @@ impl Extrusion {
     /// Evaluates face `face` at `uv`.
     ///
     /// For a wall, `u` is the fraction along its boundary segment, by angle
-    /// for an arc, and `v` the height, within the wall's span: the whole
+    /// for an arc and by curve parameter for a Bezier segment, and `v` the
+    /// height, within the wall's span: the whole
     /// length for a profile wall, the pocket's depth for a pocket wall. For a
     /// cap or floor, `uv` is a point of the profile plane; the face's own
     /// boundary decides whether it lies on the face, which this does not
@@ -34,14 +38,17 @@ impl Extrusion {
     #[must_use]
     pub fn evaluate(&self, face: FaceId, uv: [f64; 2]) -> Option<SurfacePoint> {
         let record = self.body.face(face)?;
-        let uv = if matches!(record.role, FaceRole::Wall { .. }) {
+        let uv = if let FaceRole::Wall { segment, .. } = record.role {
             let u = record.domain.u.at(uv[0])?;
             let v = match &record.surface {
                 Surface::Plane(_) => uv[1],
                 Surface::Cylinder(c) => uv[1] * c.frame().rows[2][2],
-                Surface::Cone(_) | Surface::Torus(_) | Surface::Sphere(_) | Surface::Ruled(_) => {
-                    return None;
+                // A Bezier wall rules its edges from the bottom of its span.
+                Surface::Ruled(_) => {
+                    let [low, high] = self.band_of(segment.boundary).heights;
+                    (uv[1] - low) / (high - low)
                 }
+                Surface::Cone(_) | Surface::Torus(_) | Surface::Sphere(_) => return None,
             };
             if !record.domain.v.contains(v) {
                 return None;
@@ -57,15 +64,19 @@ impl Extrusion {
         })
     }
 
-    /// Exact length of edge `edge`.
+    /// Exact length of edge `edge`, or `None` for an edge without a closed
+    /// form: a Bezier segment's, even a straight one.
     #[must_use]
     pub fn edge_length(&self, edge: EdgeId) -> Option<f64> {
         self.body.edge_length(edge)
     }
 
-    /// Exact area of face `face`: the profile's area less the pockets opening
+    /// Area of face `face`: the profile's area less the pockets opening
     /// on it for a cap, the outline's area for a floor, and the segment's
-    /// length times its span for a wall.
+    /// length times its span for a wall. Exact for lines and arcs; a cap's
+    /// is an estimate where the profile holds a rational Bezier segment,
+    /// as [`exedra_curves::profile::Profile::area`] says, and a Bezier wall's always is, as
+    /// [`exedra_curves::profile::Loop::segment_length`] says.
     #[must_use]
     pub fn face_area(&self, face: FaceId) -> Option<f64> {
         Some(match self.body.faces().get(face.index())?.role {
@@ -81,20 +92,42 @@ impl Extrusion {
             FaceRole::Floor { pocket } => -self.pockets[pocket].outline.signed_area(),
             FaceRole::Wall { segment, .. } => {
                 let loop_ = self.boundary_loop(segment.boundary);
-                let length = match loop_.arc(segment.segment) {
-                    Some(arc) => arc.length(),
-                    None => {
-                        let (from, to) = segment_ends(loop_, segment.segment);
-                        libm::hypot(to[0] - from[0], to[1] - from[1])
-                    }
-                };
+                let length = loop_.segment_length(segment.segment)?;
                 let [low, high] = self.band_of(segment.boundary).heights;
                 length * (high - low)
             }
         })
     }
 
-    /// Exact total boundary area.
+    /// The profile's loops and the pockets' outlines.
+    fn outlines(&self) -> impl Iterator<Item = &exedra_curves::profile::Loop> {
+        core::iter::once(self.profile.outer())
+            .chain(self.profile.holes())
+            .chain(self.pockets.iter().map(|pocket| &pocket.outline))
+    }
+
+    /// Whether [`Self::volume`] is exact: whether no profile or pocket
+    /// segment is a rational Bezier, whose area is estimated.
+    #[must_use]
+    pub fn volume_is_exact(&self) -> bool {
+        !self
+            .outlines()
+            .flat_map(|loop_| loop_.segments())
+            .any(|s| matches!(&s.curve, Curve::Bezier(b) if b.weights().is_some()))
+    }
+
+    /// Whether [`Self::surface_area`] is exact: whether no profile or
+    /// pocket segment is a Bezier, whose length is estimated.
+    #[must_use]
+    pub fn surface_area_is_exact(&self) -> bool {
+        !self
+            .outlines()
+            .flat_map(|loop_| loop_.segments())
+            .any(|s| matches!(s.curve, Curve::Bezier(_)))
+    }
+
+    /// Total boundary area, an estimate where any face's is
+    /// ([`Self::face_area`], [`Self::surface_area_is_exact`]).
     #[must_use]
     pub fn surface_area(&self) -> f64 {
         (0..self.body.faces().len())
@@ -102,9 +135,12 @@ impl Extrusion {
             .sum()
     }
 
-    /// Exact enclosed volume: the profile's area times the length, less each
+    /// Enclosed volume: the profile's area times the length, less each
     /// pocket's area times its depth. The solid is closed and its loops are
-    /// oriented, so this is its signed volume.
+    /// oriented, so this is its signed volume. Exact but where the profile
+    /// or a pocket holds a rational Bezier segment, whose area
+    /// [`exedra_curves::profile::Profile::area`] estimates
+    /// ([`Self::volume_is_exact`]).
     #[must_use]
     pub fn volume(&self) -> f64 {
         self.profile.area() * self.length
@@ -115,8 +151,9 @@ impl Extrusion {
                 .sum::<f64>()
     }
 
-    /// The smallest local axis-aligned box containing the solid, as
-    /// `[min, max]`.
+    /// A local axis-aligned box containing the solid, as `[min, max]`: the
+    /// smallest, but around a Bezier segment, whose controls' box it
+    /// includes.
     #[must_use]
     pub fn local_bounds(&self) -> [[f64; 3]; 2] {
         let [min, max] = self.profile.bounds();
@@ -160,21 +197,12 @@ impl Extrusion {
             )
     }
 
-    fn band_of(&self, boundary: Boundary) -> &super::Band {
+    pub(super) fn band_of(&self, boundary: Boundary) -> &super::Band {
         self.bands()
             .iter()
             .find(|band| band.boundary == boundary)
             .expect("every boundary has a band")
     }
-}
-
-/// The start and end points of segment `index`.
-fn segment_ends(loop_: &exedra_curves::profile::Loop, index: usize) -> ([f64; 2], [f64; 2]) {
-    let segments = loop_.segments();
-    (
-        segments[(index + segments.len() - 1) % segments.len()].to,
-        segments[index].to,
-    )
 }
 
 #[cfg(test)]

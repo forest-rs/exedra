@@ -18,6 +18,7 @@ use alloc::vec::Vec;
 use exedra_curves::profile::{
     CircularEdgeConstraints, CircularSamplingError, Curve, circular_edge_count,
 };
+use exedra_curves::{ChordBound, NurbsCurve};
 use exedra_math::{Placement3, narrow};
 use exedra_mesh::{FaceBuildAttrs, Mesh, MeshBuilder};
 use exedra_triangulate::{PolygonInput, TriError, TriParams, triangulate_preserving_boundary};
@@ -35,7 +36,7 @@ pub struct TessellationPolicy {
     /// Largest chord-to-arc deviation in local model units, before `f32`
     /// narrowing. [`TessellationReport::max_deviation`] measures the result.
     pub chord_tolerance: f64,
-    /// Fewest edges per arc segment.
+    /// Fewest edges per arc or Bezier segment.
     pub min_arc_edges: u32,
     /// Most edges per profile segment.
     pub max_segment_edges: u32,
@@ -122,6 +123,17 @@ pub enum TessellateExtrusionError {
         /// The sampling failure.
         error: CircularSamplingError,
     },
+    /// A Bezier segment cannot meet the tolerance within the per-segment
+    /// budget: its chord bound asks for more edges, or no bound is
+    /// representable.
+    BezierSampling {
+        /// The segment.
+        segment: BoundarySegment,
+        /// Edges its chord bound asks for, if any count suffices.
+        required: Option<u32>,
+        /// The per-segment budget.
+        maximum: u32,
+    },
     /// The realization needs more vertices than the budget allows.
     VertexBudget {
         /// Vertices needed.
@@ -167,6 +179,22 @@ impl core::fmt::Display for TessellateExtrusionError {
                     segment.segment, segment.boundary
                 )
             }
+            Self::BezierSampling {
+                segment,
+                required,
+                maximum,
+            } => match required {
+                Some(required) => write!(
+                    f,
+                    "segment {} of {:?} needs {required} edges, over the budget of {maximum}",
+                    segment.segment, segment.boundary
+                ),
+                None => write!(
+                    f,
+                    "segment {} of {:?} has no representable chord bound",
+                    segment.segment, segment.boundary
+                ),
+            },
             Self::VertexBudget { required, maximum } => {
                 write!(f, "{required} vertices exceed the budget of {maximum}")
             }
@@ -272,13 +300,45 @@ impl Extrusion {
             return Err(TessellateExtrusionError::InvalidPolicy);
         }
         let mut counts: Vec<Vec<u32>> = Vec::with_capacity(self.bands().len());
+        let mut splines: Vec<Vec<Option<Spline>>> = Vec::with_capacity(self.bands().len());
         for band in self.bands() {
             let loop_ = self.boundary_loop(band.boundary);
             let mut band_counts = Vec::with_capacity(loop_.segments().len());
-            for (segment, s) in loop_.segments().iter().enumerate() {
-                let count = match s.curve {
+            let mut band_splines = Vec::with_capacity(loop_.segments().len());
+            for (segment, (from, s)) in loop_.iter_with_starts().enumerate() {
+                let mut spline = None;
+                let count = match &s.curve {
                     Curve::Line => 1,
-                    Curve::Bezier(_) => unreachable!("extrusions refuse Bezier segments"),
+                    Curve::Bezier(bezier) => {
+                        let failed = |required| TessellateExtrusionError::BezierSampling {
+                            segment: BoundarySegment {
+                                boundary: band.boundary,
+                                segment,
+                            },
+                            required,
+                            maximum: policy.max_segment_edges,
+                        };
+                        let curve = super::boundary::bezier_nurbs(from, s.to, bezier, |p| p)
+                            .map_err(|_| failed(None))?;
+                        let bound = curve
+                            .view()
+                            .chord_bound([0.0, 1.0])
+                            .ok_or_else(|| failed(None))?;
+                        let count = bound
+                            .steps(policy.chord_tolerance)
+                            .ok_or_else(|| failed(None))?
+                            .max(policy.min_arc_edges);
+                        if count > policy.max_segment_edges {
+                            return Err(failed(Some(count)));
+                        }
+                        let rounding = evaluation_rounding(&curve);
+                        spline = Some(Spline {
+                            curve,
+                            bound,
+                            rounding,
+                        });
+                        count
+                    }
                     Curve::Arc { .. } | Curve::ArcCenter { .. } => {
                         let arc = loop_.arc(segment).expect("validated arc");
                         circular_edge_count(
@@ -302,12 +362,14 @@ impl Extrusion {
                     }
                 };
                 band_counts.push(count);
+                band_splines.push(spline);
             }
             counts.push(band_counts);
+            splines.push(band_splines);
         }
         let mut refinements = 0;
         loop {
-            let rings = self.sample(&counts);
+            let rings = self.sample(&counts, &splines);
             let required = 2 * rings.iter().map(|ring| ring.points.len()).sum::<usize>();
             if required > policy.max_vertices as usize {
                 return Err(TessellateExtrusionError::VertexBudget {
@@ -315,7 +377,7 @@ impl Extrusion {
                     maximum: policy.max_vertices,
                 });
             }
-            match self.realize(&rings, policy, &region) {
+            match self.realize(&rings, &splines, policy, &region) {
                 Ok(mut realized) => {
                     realized.report.segment_edges = counts.concat();
                     realized.report.refinements = refinements;
@@ -327,17 +389,14 @@ impl Extrusion {
                     error,
                     segments,
                 }) => {
-                    // Refine the arcs involved: a chord that cuts across a
-                    // nearby boundary moves toward its arc.
+                    // Refine the curves involved: a chord that cuts across a
+                    // nearby boundary moves toward its curve.
                     let mut refined = false;
                     for (band, segment) in segments {
                         let loop_ = self.boundary_loop(self.bands()[band].boundary);
                         let count = &mut counts[band][segment];
-                        let is_arc = matches!(
-                            loop_.segments()[segment].curve,
-                            Curve::Arc { .. } | Curve::ArcCenter { .. }
-                        );
-                        if is_arc && *count < policy.max_segment_edges {
+                        let curved = !matches!(loop_.segments()[segment].curve, Curve::Line);
+                        if curved && *count < policy.max_segment_edges {
                             *count = count.saturating_mul(2).min(policy.max_segment_edges);
                             refined = true;
                         }
@@ -351,11 +410,12 @@ impl Extrusion {
         }
     }
 
-    fn sample(&self, counts: &[Vec<u32>]) -> Vec<Ring> {
+    fn sample(&self, counts: &[Vec<u32>], splines: &[Vec<Option<Spline>>]) -> Vec<Ring> {
         self.bands()
             .iter()
             .zip(counts)
-            .map(|(band, band_counts)| {
+            .zip(splines)
+            .map(|((band, band_counts), band_splines)| {
                 let loop_ = self.boundary_loop(band.boundary);
                 let mut points = Vec::new();
                 let mut starts = Vec::with_capacity(band_counts.len() + 1);
@@ -364,7 +424,13 @@ impl Extrusion {
                 {
                     starts.push(points.len());
                     points.push(from);
-                    if let Curve::Arc { .. } | Curve::ArcCenter { .. } = s.curve {
+                    if let Some(spline) = &band_splines[segment] {
+                        let curve = spline.curve.view();
+                        points.extend(
+                            (1..count)
+                                .map(|i| curve.evaluation(f64::from(i) / f64::from(count)).point),
+                        );
+                    } else if let Curve::Arc { .. } | Curve::ArcCenter { .. } = s.curve {
                         let arc = loop_.arc(segment).expect("validated arc");
                         points.extend(
                             (1..count).map(|i| arc.point_at(f64::from(i) / f64::from(count))),
@@ -389,6 +455,7 @@ impl Extrusion {
     fn realize(
         &self,
         rings: &[Ring],
+        splines: &[Vec<Option<Spline>>],
         policy: &TessellationPolicy,
         region: &dyn Fn(FaceId, &Face) -> u32,
     ) -> Result<TessellatedExtrusion, Refusal> {
@@ -619,10 +686,25 @@ impl Extrusion {
         }
         // Evidence on emitted coordinates.
         let mut max_deviation = max_vertex_displacement;
-        for ((band, ring), block) in bands.iter().zip(rings).zip(&blocks) {
+        for (((band, ring), block), band_splines) in
+            bands.iter().zip(rings).zip(&blocks).zip(splines)
+        {
             let loop_ = self.boundary_loop(band.boundary);
             let n = ring.points.len();
-            for segment in 0..ring.starts.len() - 1 {
+            for (segment, spline) in band_splines.iter().enumerate() {
+                if let Some(spline) = spline {
+                    // The exact samples' chords stray from the curve by the
+                    // bound at their step, the evaluated samples from the
+                    // exact ones by their rounding, which no refinement
+                    // shrinks, and the emitted chords from those by the
+                    // narrowing.
+                    let count = ring.starts[segment + 1] - ring.starts[segment];
+                    let step = 1.0 / f64::from(crate::usize_to_u32(count));
+                    max_deviation = max_deviation.max(
+                        spline.bound.deviation(step) + spline.rounding + max_vertex_displacement,
+                    );
+                    continue;
+                }
                 let Some(arc) = loop_.arc(segment) else {
                     continue;
                 };
@@ -767,10 +849,48 @@ fn end_tangent(loop_: &exedra_curves::profile::Loop, index: usize, at_end: bool)
             [-radial[1] * sense, radial[0] * sense]
         }
         Curve::Line => [to[0] - from[0], to[1] - from[1]],
-        Curve::Bezier(_) => unreachable!("extrusions refuse Bezier segments"),
+        // Positive weights point a Bezier curve's end along its first
+        // control apart from that end.
+        Curve::Bezier(bezier) => {
+            let controls: Vec<[f64; 2]> = bezier.controls(from, to).collect();
+            if at_end {
+                let other = controls.iter().rev().find(|&&c| c != to).unwrap_or(&from);
+                [to[0] - other[0], to[1] - other[1]]
+            } else {
+                let other = controls.iter().find(|&&c| c != from).unwrap_or(&to);
+                [other[0] - from[0], other[1] - from[1]]
+            }
+        }
     };
     let length = libm::hypot(direction[0], direction[1]);
     [direction[0] / length, direction[1] / length]
+}
+
+/// A Bezier segment's curve in the profile plane, how far its chords stray
+/// from it, and how far an evaluation of it may round.
+struct Spline {
+    curve: NurbsCurve<2>,
+    bound: ChordBound,
+    rounding: f64,
+}
+
+/// How far evaluating `curve` may round its point: each of its `order - 1`
+/// levels of homogeneous blends rounds by `EPSILON` of the largest weighted
+/// coordinate, which the lightest weight divides, and the division rounds
+/// by `EPSILON` of the point. Twice that, generously.
+fn evaluation_rounding(curve: &NurbsCurve<2>) -> f64 {
+    let reach = curve
+        .points()
+        .iter()
+        .flatten()
+        .fold(0.0_f64, |m, c| m.max(c.abs()));
+    let (lightest, heaviest) = curve.weights().map_or((1.0, 1.0), |w| {
+        w.iter().fold((f64::INFINITY, 0.0_f64), |(lo, hi), &w| {
+            (lo.min(w), hi.max(w))
+        })
+    });
+    let levels = f64::from(curve.order());
+    2.0 * (levels + 1.0) * f64::EPSILON * reach * (heaviest / lightest + 1.0)
 }
 
 /// Largest distance between the chord `a -> b` and the circle it samples.

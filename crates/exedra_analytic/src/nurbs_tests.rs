@@ -471,10 +471,6 @@ fn line_and_arc_constructors_refuse_bezier_profile_segments() {
     };
     assert_eq!(bowed.bezier_segment(), Some(segment));
     assert!(matches!(
-        crate::extrusion::Extrusion::new(bowed.clone(), Placement3::IDENTITY, 1.0),
-        Err(crate::extrusion::ExtrusionError::UnsupportedCurve { segment: s }) if s == segment
-    ));
-    assert!(matches!(
         crate::revolve::Revolution::new(bowed.clone(), Placement3::IDENTITY, 1.0),
         Err(crate::revolve::RevolutionError::UnsupportedCurve { segment: s }) if s == segment
     ));

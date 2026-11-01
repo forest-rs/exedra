@@ -134,8 +134,9 @@ impl Bezier {
         extent >= libm::ldexp(magnitude, -40)
     }
 
-    /// Every control in order, the ends included.
-    pub(crate) fn controls(&self, from: [f64; 2], to: [f64; 2]) -> impl Iterator<Item = [f64; 2]> {
+    /// Every control in order, from the segment's start `from` to its end
+    /// `to`.
+    pub fn controls(&self, from: [f64; 2], to: [f64; 2]) -> impl Iterator<Item = [f64; 2]> {
         core::iter::once(from)
             .chain(self.0.interior.iter().copied())
             .chain(core::iter::once(to))

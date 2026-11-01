@@ -1,21 +1,19 @@
 // Copyright 2026 the Exedra Authors
 // SPDX-License-Identifier: Apache-2.0 OR MIT
 
-//! Checked weighted spline profile, native solid, parameter UVs and exact STEP.
+//! Weighted Bezier profile, native solid, parameter UVs and exact STEP.
 //! `cargo run -p analytic_extrusion --example spline_profile -- /tmp/spline-profile.step`
 
 mod support;
 
 use exedra::{
     analytic::{
-        extrusion::FaceRole,
-        geometry::{Curve, CurveSpan, NurbsCurve, ParameterRange},
-        planar_extrusion::{PlanarExtrusion, PlanarExtrusionPolicy, PlanarSegment},
+        extrusion::{Extrusion, FaceRole},
         realize::{RealizationPolicy, TriangleQuality},
     },
     compile::{CompilePolicy, NativeSource, PartCompiler, PartId, PartInput, PartSource},
     constructive::ir::Placement3,
-    curves::profile::SegTag,
+    curves::profile::{Bezier, Loop, Profile, ProfilePolicy, SegTag, Segment},
     step::{StepOptions, export_body},
 };
 use std::{error::Error, time::Instant};
@@ -23,35 +21,27 @@ type Result<T> = std::result::Result<T, Box<dyn Error>>;
 const CROWN: SegTag = SegTag(42);
 
 fn main() -> Result<()> {
-    // Domain and positive rational weights stay authoritative in the solid.
-    let crown = Curve::nurbs(NurbsCurve::new(
-        4,
-        vec![2., 2., 2., 2., 5., 5., 5., 5.],
-        vec![[0., 0., 0.], [1., 2., 0.], [3., 2., 0.], [4., 0., 0.]],
-        Some(vec![1., 0.7, 1.4, 1.]),
-    )?)?;
-    let outer = vec![
-        PlanarSegment::line([0.; 2], [4., 0.])?,
-        PlanarSegment::new(CurveSpan::new(crown, ParameterRange::new(2., 5.)?, true)?)
-            .tagged(CROWN),
-    ];
-    let h = [[1.5, 0.3], [1.5, 0.6], [2.5, 0.6], [2.5, 0.3]];
-    let hole = (0..4)
-        .map(|i| PlanarSegment::line(h[i], h[(i + 1) % 4]).map_err(Into::into))
-        .collect::<Result<Vec<_>>>()?;
+    // Along the chord, then back over a cubic crown whose positive
+    // rational weights stay authoritative in the solid.
+    let outer = Loop::new(vec![
+        Segment::line([4., 0.]),
+        Segment::bezier(
+            [0., 0.],
+            Bezier::new(vec![[3., 2.], [1., 2.]], Some(vec![1., 1.4, 0.7, 1.])),
+        )
+        .tagged(CROWN),
+    ])?;
+    let hole = Loop::new(vec![
+        Segment::line([1.5, 0.6]),
+        Segment::line([2.5, 0.6]),
+        Segment::line([2.5, 0.3]),
+        Segment::line([1.5, 0.3]),
+    ])?;
     let start = Instant::now();
-    let solid = PlanarExtrusion::new(
-        outer,
-        vec![hole],
-        Placement3::translate(10., 20., 30.),
-        2.,
-        &PlanarExtrusionPolicy::default(),
-    )?;
+    let profile = Profile::new(outer, vec![hole], &ProfilePolicy::new(1e-9))?;
+    let solid = Extrusion::new(profile, Placement3::translate(10., 20., 30.), 2.)?;
     let construction_ms = start.elapsed().as_secs_f64() * 1000.;
-    println!(
-        "checked construction: {construction_ms:.3} ms; {:?}",
-        solid.report()
-    );
+    println!("proved profile and construction: {construction_ms:.3} ms");
     assert!(
         solid.body().is_closed(),
         "extrusion must share closed native incidence"
