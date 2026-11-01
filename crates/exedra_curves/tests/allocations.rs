@@ -59,6 +59,44 @@ fn allocations(f: impl FnOnce()) -> u64 {
     ALLOCATIONS.with(Cell::get) - before
 }
 
+#[test]
+fn prepared_native_source_enclosures_reuse_all_query_storage() {
+    use exedra_curves::enclosure::{
+        EnclosureScratch, PreparationLimits, PreparedNurbsEnclosure, SourceRange,
+    };
+    for order in [4, 9, 17] {
+        let points: Vec<_> = (0..order)
+            .map(|i| [f64::from(i), f64::from(i % 3), 0.])
+            .collect();
+        let knots = [vec![2.; order as usize], vec![5.; order as usize]].concat();
+        let curve = NurbsCurve::new(order, knots, points, None).unwrap();
+        let prepared = PreparedNurbsEnclosure::prepare(
+            curve.view(),
+            SourceRange {
+                parameters: [2., 5.],
+                reversed: true,
+            },
+            PreparationLimits {
+                max_controls: 100,
+                max_work: 100_000,
+            },
+        )
+        .unwrap();
+        let mut scratch = EnclosureScratch::new(order as usize).unwrap();
+        let count = allocations(|| {
+            for range in [[0., 1.], [0.2, 0.8], [0.5, 0.5], [1., 1.]] {
+                std::hint::black_box(prepared.enclose(range, &mut scratch, || true).unwrap());
+                std::hint::black_box(
+                    prepared
+                        .project(range, [1., 2., 3.], [0., 1., 0.], &mut scratch, || true)
+                        .unwrap(),
+                );
+            }
+        });
+        assert_eq!(count, 0, "source enclosure order {order}");
+    }
+}
+
 /// A clamped curve of `order` through a wavy row of controls.
 fn curve(order: usize, controls: usize) -> PreparedNurbs {
     let points: Vec<[f64; 3]> = (0..controls)

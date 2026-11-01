@@ -677,7 +677,8 @@ impl Surface {
     /// and overflow. Neither a face domain nor its trims are classified.
     /// Spheres use radial projection in their defining frame and return `None`
     /// on the polar axis, where longitude is not unique. Ruled patches return
-    /// `None`: a closest-point inverse is not provided.
+    /// `None` here; [`crate::query::RuledProjection`] provides an explicit prepared
+    /// search with global distance bounds on a rectangular ruled subdomain.
     #[must_use]
     pub fn parameters(&self, point: [f64; 3]) -> Option<[f64; 2]> {
         if let Self::Sphere(sphere) = self {

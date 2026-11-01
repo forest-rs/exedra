@@ -22,7 +22,7 @@
 //! approximate other curves answers for that approximation.
 
 mod enclosure;
-mod interval;
+pub(crate) mod interval;
 pub use enclosure::{BezierEnclosure, HullSeparation};
 
 use alloc::vec::Vec;

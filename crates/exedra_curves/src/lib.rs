@@ -172,6 +172,7 @@ extern crate alloc;
 
 mod basis;
 mod conic;
+pub mod enclosure;
 mod frames;
 pub mod intersect;
 mod knots;

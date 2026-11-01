@@ -640,6 +640,30 @@ cargo run --release -p constructive_wind_tunnel --bin native_spline_wall -- --pr
 EXEDRA_SPLINE_PHASE=proof python3 benchmarks/constructive_wind_tunnel/profile_authoring.py --workload native_spline_wall --output /tmp/spline-wall-heap
 ```
 
+### Native ruled-patch projection
+
+The prepared query searches the complete native UV rectangle, including edges
+and corners, with an explicit global distance bracket. Fixtures include the
+weighted spline prism/taper, a plane and a reversed nonunit-domain wavy wall.
+Preparation and warmed query medians are separate; JSON includes native UVs,
+representative position allowance, distance bounds, termination, work counters
+and retained preparation/scratch payload. Distance accuracy does not establish
+a unique nearest UV. Line/NURBS sources are supported; conics are refused.
+
+```sh
+cargo run --release -p constructive_wind_tunnel --bin native_ruled_projection -- 31 1024 /tmp/ruled-projection
+EXEDRA_PROJECTION_WORK=1000 cargo run --release -p constructive_wind_tunnel --bin native_ruled_projection -- 31 1024 /tmp/ruled-projection-limited
+EXEDRA_PROJECTION_METHOD=scan cargo run --release -p constructive_wind_tunnel --bin native_ruled_projection -- 31 1024 /tmp/ruled-projection-scan
+python3 benchmarks/constructive_wind_tunnel/profile_authoring.py --workload native_ruled_projection --output /tmp/ruled-projection-heap
+```
+
+`EXEDRA_PROJECTION_TOLERANCE` sets the absolute distance-gap tolerance (default
+`1e-6`); `EXEDRA_PROJECTION_WORK` sets the per-query work cap (default `100000`).
+The `scan` method samples 1025 U rulings by default and clamps V analytically.
+It supplies an explicitly uncertified candidate reference, without a global
+minimum or distance-gap guarantee; its accuracy is not matched to the bounded
+query merely because a timing row is available.
+
 Allocation phases are `construct`, `proof` or `realize`. Source preparation,
 warmup and profiler setup are excluded. The `retained` and `released` checkpoints
 separate owned result storage from temporary allocation traffic. Minimum sample
