@@ -213,8 +213,7 @@ fn spline_edges_are_realized_within_tolerance() {
     }
 }
 
-#[test]
-fn a_prism_over_a_spline_is_a_closed_solid() {
+pub(crate) fn prism() -> Body {
     let range = ParameterRange::new(0.0, 2.0).unwrap();
     let span = |z| CurveSpan::new(Curve::nurbs(bulge(z)).unwrap(), range, false).unwrap();
     let wall = Surface::ruled(span(0.0), span(1.0)).unwrap();
@@ -319,7 +318,12 @@ fn a_prism_over_a_spline_is_a_closed_solid() {
             },
         ],
     };
-    let body = Body::try_from_parts(parts, &POLICY).unwrap();
+    Body::try_from_parts(parts, &POLICY).unwrap()
+}
+
+#[test]
+fn a_prism_over_a_spline_is_a_closed_solid() {
+    let body = prism();
     let realized = body
         .realize(Placement3::IDENTITY, &RealizationPolicy::default())
         .unwrap();

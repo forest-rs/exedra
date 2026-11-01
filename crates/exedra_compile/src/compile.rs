@@ -162,6 +162,7 @@ pub fn policy_fingerprint(policy: &CompilePolicy) -> PolicyFingerprint {
             bytes.extend_from_slice(&quality.max_radius_edge_ratio.to_bits().to_le_bytes());
             bytes.extend_from_slice(&quality.max_steiner_points.to_le_bytes());
             bytes.extend_from_slice(&quality.max_candidate_insertions.to_le_bytes());
+            bytes.extend_from_slice(&quality.max_grid_triangle_tests.to_le_bytes());
         }
     }
     bytes.extend_from_slice(

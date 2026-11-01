@@ -633,6 +633,8 @@ cargo run --release -p constructive_wind_tunnel --bin native_spline_wall -- 51 /
 EXEDRA_SPLINE_MIN_SEGMENTS=102 cargo run --release -p constructive_wind_tunnel --bin native_spline_wall -- 51 /tmp/spline-walls-fixed
 # Request triangle shape separately from geometric accuracy.
 EXEDRA_SPLINE_BOUNDARY_SPACING=0.1 cargo run --release -p constructive_wind_tunnel --bin native_spline_wall -- 51 /tmp/spline-walls-quality
+# Retain the same boundary/planar quality settings while disabling grid shape planning:
+EXEDRA_SPLINE_BOUNDARY_SPACING=0.1 EXEDRA_SPLINE_GRID_TRIANGLE_TESTS=0 cargo run --release -p constructive_wind_tunnel --bin native_spline_wall -- 51 /tmp/spline-walls-no-grid-quality
 # Prints a PID; repeats only the selected phase for macOS sample.
 cargo run --release -p constructive_wind_tunnel --bin native_spline_wall -- --profile proof 1000000
 EXEDRA_SPLINE_PHASE=proof python3 benchmarks/constructive_wind_tunnel/profile_authoring.py --workload native_spline_wall --output /tmp/spline-wall-heap

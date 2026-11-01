@@ -12,9 +12,13 @@ use exedra_triangulate::{BoundarySplits, RefineParams};
 /// Native edges are subdivided before face triangulation so neighboring faces
 /// share every new boundary vertex. Planar interiors use constrained Delaunay
 /// refinement; four-coedge cylindrical/conical strips gain rows along their rulings.
-/// Other patch types retain their accuracy-driven sampling. Fixed boundaries,
+/// Rectangular ruled and toroidal grids balance their sampled U/V cells and
+/// choose triangle diagonals using the emitted positions. Other patch types
+/// retain their accuracy-driven sampling. Fixed boundaries,
 /// input angles and budgets can prevent the requested shape: the final emitted
 /// mesh is measured in [`TriangleQualityReport`].
+/// Grid counts stay uniform in each parameter direction; extreme parameter-speed
+/// variation or chart skew can therefore leave the target unmet.
 #[derive(Copy, Clone, Debug, PartialEq)]
 pub struct TriangleQuality {
     /// Upper bound on native boundary sample spacing in model units, using a
@@ -30,10 +34,17 @@ pub struct TriangleQuality {
     /// Maximum planar insertion attempts per attempt, including declined work.
     /// Initial CDT and the work inside one insertion are not counted here.
     pub max_candidate_insertions: u32,
+    /// Maximum triangle-shape tests per realization attempt while planning
+    /// optional rectangular grids.
+    /// Includes both diagonals of every tested cell and discarded candidate
+    /// schedules. Zero retains accuracy-driven grid counts and diagonals.
+    /// Final reporting of the emitted mesh is outside this planning budget.
+    pub max_grid_triangle_tests: u32,
 }
 impl TriangleQuality {
     /// Requests shared boundary spacing with a shape ratio of 2.5 and at most
-    /// 4096 generated planar interior vertices.
+    /// 4096 generated planar interior vertices and 1,048,576 grid-planning
+    /// triangle tests.
     #[must_use]
     pub const fn new(max_boundary_spacing: f64) -> Self {
         Self {
@@ -41,6 +52,7 @@ impl TriangleQuality {
             max_radius_edge_ratio: 2.5,
             max_steiner_points: 4096,
             max_candidate_insertions: 16384,
+            max_grid_triangle_tests: 1 << 20,
         }
     }
     /// Replaces the desired circumradius-to-shortest-edge ratio.
@@ -59,6 +71,12 @@ impl TriangleQuality {
     #[must_use]
     pub const fn with_max_candidate_insertions(mut self, maximum: u32) -> Self {
         self.max_candidate_insertions = maximum;
+        self
+    }
+    /// Replaces the shared rectangular-grid triangle-test budget.
+    #[must_use]
+    pub const fn with_max_grid_triangle_tests(mut self, maximum: u32) -> Self {
+        self.max_grid_triangle_tests = maximum;
         self
     }
     pub(super) fn valid(self) -> bool {
@@ -88,8 +106,13 @@ pub struct TriangleQualityReport {
     pub declined_insertions: u32,
     /// Attempted planar insertions, including candidates that were declined.
     pub candidate_insertions: u32,
+    /// Triangle-shape tests in grid planning, including discarded schedules.
+    /// Final emitted-mesh reporting is excluded.
+    pub grid_triangle_tests: u32,
     /// Whether a planar refiner stopped with work pending at its point,
-    /// candidate-insertion or representable-index limit. Other patch families
+    /// candidate-insertion or representable-index limit, or optional grid
+    /// planning exhausted its triangle-test, edge or output-storage budget.
+    /// Other patch families
     /// may still miss the target.
     pub budget_exhausted: bool,
 }
@@ -105,7 +128,8 @@ pub(super) struct Work {
     points: u32,
     candidates: u32,
     declined: u32,
-    exhausted: bool,
+    pub(super) exhausted: bool,
+    pub(super) grid_triangle_tests: u32,
 }
 
 pub(super) fn report(
@@ -118,12 +142,7 @@ pub(super) fn report(
     let mut bad = 0;
     for tri in triangles {
         let p = tri.map(|i| points[i as usize].map(f64::from));
-        let a = sub(p[1], p[0]);
-        let b = sub(p[2], p[0]);
-        let c = sub(p[2], p[1]);
-        let lengths = [norm(a), norm(b), norm(c)];
-        let shortest = lengths.into_iter().fold(f64::INFINITY, f64::min);
-        let ratio = lengths[0] * lengths[1] * lengths[2] / (2.0 * norm(cross(a, b)) * shortest);
+        let ratio = radius_edge_ratio(p);
         maximum = maximum.max(ratio);
         bad += usize::from(ratio > q.max_radius_edge_ratio);
     }
@@ -134,7 +153,23 @@ pub(super) fn report(
         planar_steiner_points: work.points,
         declined_insertions: work.declined,
         candidate_insertions: work.candidates,
+        grid_triangle_tests: work.grid_triangle_tests,
         budget_exhausted: work.exhausted,
+    }
+}
+
+/// The same three-dimensional metric for planning and final emitted reporting.
+pub(super) fn radius_edge_ratio(p: [[f64; 3]; 3]) -> f64 {
+    let a = sub(p[1], p[0]);
+    let b = sub(p[2], p[0]);
+    let c = sub(p[2], p[1]);
+    let lengths = [norm(a), norm(b), norm(c)];
+    let shortest = lengths.into_iter().fold(f64::INFINITY, f64::min);
+    let ratio = lengths[0] * lengths[1] * lengths[2] / (2.0 * norm(cross(a, b)) * shortest);
+    if ratio.is_finite() {
+        ratio
+    } else {
+        f64::INFINITY
     }
 }
 

@@ -3,6 +3,9 @@
 
 //! Rectangular native patches with authoritative shared boundary chains.
 
+mod quality;
+pub(super) use quality::{Schedule, refine_quality};
+
 use super::{
     Chains, Groups, Patch, RealizationError, RealizationPolicy, VertexSource, distance, emit,
 };
@@ -84,10 +87,38 @@ impl GridScratch {
             }
             self.key = Some(key);
         }
-        self.previous.clear();
-        self.previous.reserve(n + 1);
-        self.row.clear();
-        self.row.reserve(n + 1);
+    }
+    fn prepare_face<F>(&mut self, face: &Face<F>, nu: usize) {
+        self.prepare(face.domain.u, nu, matches!(face.surface, Surface::Torus(_)));
+        if let Surface::Ruled(ruled) = &face.surface {
+            self.ruled.clear();
+            self.ruled.reserve(nu + 1);
+            for phase in &self.phases {
+                let ends = [
+                    ruled.curves()[0]
+                        .evaluate(phase.parameter)
+                        .expect("bounded grid")
+                        .point,
+                    ruled.curves()[1]
+                        .evaluate(phase.parameter)
+                        .expect("bounded grid")
+                        .point,
+                ];
+                let mid = [
+                    ruled.curves()[0]
+                        .evaluate(phase.middle_parameter)
+                        .expect("bounded grid"),
+                    ruled.curves()[1]
+                        .evaluate(phase.middle_parameter)
+                        .expect("bounded grid"),
+                ];
+                self.ruled.push(RuledSample {
+                    ends,
+                    mid_tangents: mid.map(|e| e.first),
+                    mid_delta: sub(mid[1].point, mid[0].point),
+                });
+            }
+        }
     }
 }
 
@@ -333,7 +364,7 @@ impl GridPatch {
         interpolation + 2048.0 * f64::EPSILON * scale
     }
 
-    pub(super) fn emit<F, E>(
+    pub(super) fn emit<const QUALITY: bool, F, E>(
         self,
         body: &Body<F, E>,
         id: FaceId,
@@ -341,6 +372,7 @@ impl GridPatch {
         counts: &[u32],
         chains: &Chains,
         scratch: &mut GridScratch,
+        schedule: Option<&Schedule>,
         points: &mut Vec<[f32; 3]>,
         sources: &mut Vec<VertexSource>,
         displacement: &mut f64,
@@ -356,36 +388,11 @@ impl GridPatch {
             None
         };
         let [nu, nv] = self.intervals(counts).map(|n| n as usize);
-        scratch.prepare(face.domain.u, nu, torus.is_some());
-        if let Surface::Ruled(ruled) = &face.surface {
-            scratch.ruled.clear();
-            scratch.ruled.reserve(nu + 1);
-            for phase in &scratch.phases {
-                let ends = [
-                    ruled.curves()[0]
-                        .evaluate(phase.parameter)
-                        .expect("bounded grid")
-                        .point,
-                    ruled.curves()[1]
-                        .evaluate(phase.parameter)
-                        .expect("bounded grid")
-                        .point,
-                ];
-                let mid = [
-                    ruled.curves()[0]
-                        .evaluate(phase.middle_parameter)
-                        .expect("bounded grid"),
-                    ruled.curves()[1]
-                        .evaluate(phase.middle_parameter)
-                        .expect("bounded grid"),
-                ];
-                scratch.ruled.push(RuledSample {
-                    ends,
-                    mid_tangents: mid.map(|e| e.first),
-                    mid_delta: sub(mid[1].point, mid[0].point),
-                });
-            }
-        }
+        scratch.prepare_face(face, nu);
+        scratch.previous.clear();
+        scratch.previous.reserve(nu + 1);
+        scratch.row.clear();
+        scratch.row.reserve(nu + 1);
         let GridScratch {
             phases,
             ruled,
@@ -416,17 +423,7 @@ impl GridPatch {
                     self.sides[1].at(chains, v)
                 } else {
                     let uv = [phase.parameter, vv];
-                    let exact = if let Some(torus) = torus {
-                        let [su, cu] = phase.point;
-                        let radial = torus.major_radius() + torus.minor_radius() * cv;
-                        torus.frame().transform_point([
-                            radial * cu,
-                            radial * su,
-                            torus.minor_radius() * sv,
-                        ])
-                    } else {
-                        exedra_math::lerp(ruled[u].ends[0], ruled[u].ends[1], vv)
-                    };
+                    let exact = sample_point(face, phase, ruled, u, vv, [sv, cv]);
                     let exact = placement.transform_point(exact);
                     let point = narrow(exact);
                     if point.iter().any(|p| !p.is_finite()) {
@@ -454,26 +451,13 @@ impl GridPatch {
                     (0.0, 0.0)
                 };
                 for u in 0..nu {
-                    let normal = if let Some(torus) = torus {
-                        let [su, cu] = phases[u].middle;
-                        vector(torus.frame(), [cv * cu, cv * su, sv])
-                    } else {
-                        exedra_math::normalize(cross(
-                            exedra_math::lerp(
-                                ruled[u].mid_tangents[0],
-                                ruled[u].mid_tangents[1],
-                                mid_v,
-                            ),
-                            ruled[u].mid_delta,
-                        ))
-                        .ok_or(RealizationError::DegenerateFace { face: id })?
-                    }
-                    .map(|v| v * face.sense.sign());
+                    let normal = sample_normal(face, &phases[u], ruled, u, mid_v, [sv, cv])
+                        .ok_or(RealizationError::DegenerateFace { face: id })?;
                     let normal = vector(placement, normal);
-                    for mut tri in [
-                        [previous[u], previous[u + 1], row[u + 1]],
-                        [previous[u], row[u + 1], row[u]],
-                    ] {
+                    let alternate =
+                        QUALITY && schedule.is_some_and(|s| s.alternate([nu, nv], u, v - 1));
+                    let corners = [previous[u], previous[u + 1], row[u + 1], row[u]];
+                    for mut tri in cell_triangles(alternate).map(|t| t.map(|i| corners[i])) {
                         if face.sense == Sense::Reverse {
                             tri.swap(1, 2);
                         }
@@ -488,6 +472,53 @@ impl GridPatch {
             core::mem::swap(row, previous);
         }
         Ok(())
+    }
+}
+
+fn sample_point<F>(
+    face: &Face<F>,
+    phase: &Phase,
+    ruled: &[RuledSample],
+    u: usize,
+    v: f64,
+    [sv, cv]: [f64; 2],
+) -> [f64; 3] {
+    if let Surface::Torus(torus) = &face.surface {
+        let [su, cu] = phase.point;
+        let radial = torus.major_radius() + torus.minor_radius() * cv;
+        torus
+            .frame()
+            .transform_point([radial * cu, radial * su, torus.minor_radius() * sv])
+    } else {
+        exedra_math::lerp(ruled[u].ends[0], ruled[u].ends[1], v)
+    }
+}
+
+fn sample_normal<F>(
+    face: &Face<F>,
+    phase: &Phase,
+    ruled: &[RuledSample],
+    u: usize,
+    v: f64,
+    [sv, cv]: [f64; 2],
+) -> Option<[f64; 3]> {
+    let normal = if let Surface::Torus(torus) = &face.surface {
+        let [su, cu] = phase.middle;
+        vector(torus.frame(), [cv * cu, cv * su, sv])
+    } else {
+        exedra_math::normalize(cross(
+            exedra_math::lerp(ruled[u].mid_tangents[0], ruled[u].mid_tangents[1], v),
+            ruled[u].mid_delta,
+        ))?
+    };
+    Some(normal.map(|v| v * face.sense.sign()))
+}
+
+fn cell_triangles(alternate: bool) -> [[usize; 3]; 2] {
+    if alternate {
+        [[0, 1, 3], [1, 2, 3]]
+    } else {
+        [[0, 1, 2], [0, 2, 3]]
     }
 }
 
@@ -835,6 +866,45 @@ mod tests {
                 "periodic geometry has no duplicate seam vertices"
             );
             assert_eq!(output.mesh.faces().count(), 2 * u * v);
+
+            let placement = Placement3::rotate_y_then_translate(0.37, 3.0, -2.0, 4.0);
+            let policy = RealizationPolicy {
+                tolerance: 0.1,
+                min_arc_segments: 128,
+                quality: Some(crate::realize::TriangleQuality::new(100.0)),
+                ..Default::default()
+            };
+            let quality = body.realize(placement, &policy).unwrap();
+            assert!(quality.report.within_tolerance());
+            assert!(
+                quality.report.quality.as_ref().unwrap().within_target(),
+                "{:?}",
+                quality.report.quality
+            );
+            assert!(
+                quality.report.edge_segments[0] > 128,
+                "long toroidal cells gain U samples"
+            );
+            assert!(quality.mesh.validate_deep().is_empty());
+            assert!(quality.mesh.boundary_loops().unwrap().is_empty());
+            let [u, v] =
+                core::array::from_fn::<_, 2, _>(|i| quality.report.edge_segments[i] as usize);
+            assert_eq!(
+                quality.mesh.vertices().count(),
+                u * v,
+                "both periodic seams stay shared"
+            );
+            for &(vertex, source) in &quality.mesh_vertices {
+                if let VertexSource::Face { face, uv } = source {
+                    let expected =
+                        placement.transform_point(body.evaluate_support(face, uv).unwrap().point);
+                    let actual = quality.mesh.vertex_position(vertex).unwrap().map(f64::from);
+                    assert!(
+                        distance(expected, actual)
+                            <= quality.report.max_vertex_displacement + 1e-10
+                    );
+                }
+            }
         }
     }
 }
