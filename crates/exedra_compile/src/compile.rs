@@ -1025,7 +1025,11 @@ fn compile_source(
                     .collect();
                 let (mesh, correspondence) =
                     crate::NativeRealization::from_realized(realized, faces, policy.native_chart);
-                Some(EvaluatedPart::from_native(mesh, correspondence))
+                Some(EvaluatedPart::from_native(
+                    mesh,
+                    correspondence,
+                    source.label(),
+                ))
             } else {
                 None
             };

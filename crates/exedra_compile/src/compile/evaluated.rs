@@ -60,11 +60,15 @@ impl EvaluatedPart {
             }],
         }
     }
-    pub(super) fn from_native(mesh: exedra_mesh::Mesh, native: crate::NativeRealization) -> Self {
+    pub(super) fn from_native(
+        mesh: exedra_mesh::Mesh,
+        native: crate::NativeRealization,
+        source: Option<&str>,
+    ) -> Self {
         Self {
             bodies: alloc::vec![EvaluatedBody {
                 node: None,
-                source: None,
+                source: source.map(String::from),
                 material: None,
                 body: TessellatedBody::from_imported_mesh(mesh),
                 native: Some(native)

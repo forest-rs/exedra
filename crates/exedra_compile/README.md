@@ -91,6 +91,21 @@ from display buffers. Its boundary payload byte count excludes construction
 records, allocator overhead and spare capacity; it is not total heap residency.
 Held sources and snapshots can outlive cache eviction and remain usable.
 
+## Native recipes
+
+`NativeSource::from_recipe(&recipe, &profile_policy)` builds a constructive
+recipe's root natively, so its measures, selections and STEP export are exact:
+an extrusion or revolution of a profile, a constant-section sweep or a ruled
+loft, under rigid transforms, with segment tags carried to face tags. Lowering is the caller's explicit choice. A caller
+that requires exact geometry propagates `NativeLoweringError`, which names the
+first node that has no native construction, asks for something native
+construction would not keep (a material, chart, issue, open caps, a varying
+sweep section or smooth loft interpolation), or whose
+construction refuses its parameters; a caller that prefers exact geometry falls
+back to `PartSource::Recipe`, whose mesh evaluation covers every node. The lowered source takes the label of
+the node that produced its body, as mesh evaluation attributes it, so a snapshot
+resolves it by that label either way.
+
 ## Input identity migration
 
 Replace `PartInput { key, source }` literals with `PartInput::new(key, source)`.
