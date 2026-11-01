@@ -135,6 +135,14 @@ fn norm<const N: usize>(v: [I; N]) -> Result<I, EnclosureError> {
     )
 }
 fn blend(a: I, b: I, t: I) -> Result<I, EnclosureError> {
+    // Every caller supplies a unit coefficient. Convex combinations of two
+    // copies of one interval stay in that interval, including non-point boxes.
+    // Explicit affine arithmetic gives this same intersection when finite;
+    // the hull proof also avoids unnecessary overflow for large equal boxes.
+    if a.lo == b.lo && a.hi == b.hi {
+        fractions([t.lo, t.hi])?;
+        return checked(a);
+    }
     // The exact convex combination lies in the original union as well. The
     // intersection avoids dependency widening when t covers the whole unit.
     checked((I::ONE - t) * a + t * b)?
@@ -664,6 +672,54 @@ mod tests {
     use super::*;
     use crate::NurbsCurve;
     use alloc::vec;
+
+    #[test]
+    fn identical_interval_blends_keep_the_exact_convex_hull() {
+        for a in [
+            I::ZERO,
+            I::p(f64::from_bits(1)),
+            I { lo: -3., hi: 7. },
+            I {
+                lo: 1e100,
+                hi: 2e100,
+            },
+        ] {
+            for t in [I::ZERO, I::ONE, I::p(0.37), I::UNIT] {
+                let exhaustive = checked((I::ONE - t) * a + t * a)
+                    .unwrap()
+                    .intersect(a)
+                    .unwrap();
+                let found = blend(a, a, t).unwrap();
+                assert_eq!([found.lo, found.hi], [a.lo, a.hi]);
+                assert_eq!([found.lo, found.hi], [exhaustive.lo, exhaustive.hi]);
+            }
+        }
+        // The shortcut must retain refusal of invalid interval storage.
+        let invalid = I { lo: 2., hi: 1. };
+        assert!(matches!(
+            blend(invalid, invalid, I::UNIT),
+            Err(EnclosureError::NumericLimit)
+        ));
+        let large = I {
+            lo: f64::MAX * 0.5,
+            hi: f64::MAX,
+        };
+        assert!(checked((I::ONE - I::UNIT) * large + I::UNIT * large).is_err());
+        let found = blend(large, large, I::UNIT).unwrap();
+        assert_eq!([found.lo, found.hi], [large.lo, large.hi]);
+        for t in [
+            I::p(f64::NAN),
+            I::p(f64::INFINITY),
+            I::p(-0.1),
+            I { lo: 0.8, hi: 0.2 },
+            I { lo: 0., hi: 1.1 },
+        ] {
+            assert!(matches!(
+                blend(I::ZERO, I::ZERO, t),
+                Err(EnclosureError::InvalidInput)
+            ));
+        }
+    }
 
     #[test]
     fn representatives_stay_inside_subnormal_large_and_opposite_sign_boxes() {
