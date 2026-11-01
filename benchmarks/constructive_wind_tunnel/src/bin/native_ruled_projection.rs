@@ -106,7 +106,7 @@ fn wavy() -> Surface {
     .unwrap()
 }
 
-fn targets(surface: &Surface) -> Vec<(&'static str, [f64; 3])> {
+fn targets(surface: &Surface) -> Vec<(&'static str, [f64; 3], [f64; 2])> {
     let mut points = Vec::new();
     for (name, uv, offset) in [
         ("interior-positive", [0.37, 0.43], 0.25),
@@ -119,17 +119,19 @@ fn targets(surface: &Surface) -> Vec<(&'static str, [f64; 3])> {
         ("corner", [1.0, 1.0], 0.25),
     ] {
         let e = surface.evaluate(uv).unwrap();
-        points.push((name, add(e.point, scale(e.normal, offset))));
+        points.push((name, add(e.point, scale(e.normal, offset)), uv));
     }
-    points.push(("outside-domain", [-1.0, -0.5, 2.0]));
-    points.push(("above-crown", [2.0, 2.0, 0.5]));
+    points.push(("outside-domain", [-1.0, -0.5, 2.0], [0.5, 0.5]));
+    points.push(("above-crown", [2.0, 2.0, 0.5], [0.5, 0.5]));
     points.push((
         "on-support-first",
         surface.evaluate([0.37, 0.43]).unwrap().point,
+        [0.37, 0.43],
     ));
     points.push((
         "on-support-second",
         surface.evaluate([0.71, 0.64]).unwrap().point,
+        [0.71, 0.64],
     ));
     points
 }
@@ -147,9 +149,26 @@ pub fn allocation_window(mut checkpoint: impl FnMut(&str)) {
     };
     let query = RuledProjection::prepare(wall, domain, &ProjectionPolicy::default()).unwrap();
     let mut scratch = query.scratch().unwrap();
-    black_box(query.closest([2., 2., 0.5], &mut scratch).unwrap());
+    let hinted = std::env::var("EXEDRA_PROJECTION_METHOD").is_ok_and(|s| s == "bounded-hint");
+    let target = if hinted {
+        body.faces()[2]
+            .surface
+            .evaluate([0.37, 0.43])
+            .unwrap()
+            .point
+    } else {
+        [2., 2., 0.5]
+    };
+    let mut run = || {
+        if hinted {
+            query.closest_with_hint(target, [0.37, 0.43], &mut scratch)
+        } else {
+            query.closest(target, &mut scratch)
+        }
+    };
+    black_box(run().unwrap());
     checkpoint("ready");
-    black_box(query.closest([2., 2., 0.5], &mut scratch).unwrap());
+    black_box(run().unwrap());
     checkpoint("retained");
     checkpoint("released");
 }
@@ -194,19 +213,30 @@ fn main() -> Result<(), Box<dyn Error>> {
         });
         let prepared = RuledProjection::prepare(wall, domain, &policy)?;
         let mut scratch = prepared.scratch()?;
-        for (query, target) in targets(surface) {
-            if method == "bounded" {
+        for (query, target, hint) in targets(surface) {
+            if method == "bounded" || method == "bounded-hint" {
+                let hinted = method == "bounded-hint";
+                let mut closest = || {
+                    if hinted {
+                        prepared.closest_with_hint(black_box(target), hint, &mut scratch)
+                    } else {
+                        prepared.closest(black_box(target), &mut scratch)
+                    }
+                };
                 let query_us = median(repetitions, || {
-                    black_box(prepared.closest(black_box(target), &mut scratch).unwrap());
+                    black_box(closest().unwrap());
                 });
-                let found = prepared.closest(target, &mut scratch)?;
+                let found = closest()?;
                 let work = found.work;
-                let row = serde_json::json!({"case":name,"query":query,"target":target,"method":"bounded-native-ruled","query_us":query_us,"prepare_us":prepare_us,"preparation_capacity_bytes":prepared.preparation().owned_capacity_bytes,"preparation_work_bound":prepared.preparation().preparation_work_bound,"scratch_capacity_bytes":scratch.capacity_bytes(),"uv":found.witness.uv,"point":found.witness.point,"point_error_upper":found.witness.point_error_upper,"distance_upper":found.witness.distance_upper,"distance_lower":found.distance_lower,"status":format!("{:?}",found.status),"certain":found.within_tolerance(),"work":{"total":work.total(),"ruling_evaluations":work.ruling_evaluations,"interval_tests":work.interval_tests,"source_enclosures":work.source_enclosures,"control_steps":work.control_steps}});
+                let row = serde_json::json!({"case":name,"query":query,"target":target,"method":if hinted{"bounded-native-ruled-hint"}else{"bounded-native-ruled"},"hint_uv":if hinted{Some(hint)}else{None},"query_us":query_us,"prepare_us":prepare_us,"preparation_capacity_bytes":prepared.preparation().owned_capacity_bytes,"preparation_work_bound":prepared.preparation().preparation_work_bound,"scratch_capacity_bytes":scratch.capacity_bytes(),"uv":found.witness.uv,"point":found.witness.point,"point_error_upper":found.witness.point_error_upper,"distance_upper":found.witness.distance_upper,"distance_lower":found.distance_lower,"status":format!("{:?}",found.status),"certain":found.within_tolerance(),"work":{"total":work.total(),"ruling_evaluations":work.ruling_evaluations,"hint_evaluations":work.hint_evaluations,"interval_tests":work.interval_tests,"source_enclosures":work.source_enclosures,"control_steps":work.control_steps}});
                 println!("{row}");
                 rows.push(row);
                 continue;
             }
-            assert_eq!(method, "scan", "method must be bounded or scan");
+            assert_eq!(
+                method, "scan",
+                "method must be bounded, bounded-hint or scan"
+            );
             let query_us = median(repetitions, || {
                 black_box(scan(black_box(wall), black_box(target), intervals));
             });

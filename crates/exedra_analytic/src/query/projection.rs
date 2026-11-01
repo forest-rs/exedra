@@ -47,8 +47,12 @@ impl Default for ProjectionPolicy {
 /// capacity and source record count; they are not extra primitive work units.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub struct ProjectionWork {
-    /// Candidate U values evaluated, including both endpoint candidates.
+    /// Candidate ruling evaluations started, including endpoint candidates.
+    /// V is clamped analytically to the nearest point on that ruling.
     pub ruling_evaluations: u64,
+    /// Explicit native-UV hint evaluations started. The supplied V is retained;
+    /// source enclosures and control steps are also charged independently.
+    pub hint_evaluations: u64,
     /// Global U interval bounds evaluated, including rejected candidates.
     pub interval_tests: u64,
     /// Source position or projected-source enclosure requests started, including
@@ -62,7 +66,11 @@ impl ProjectionWork {
     /// Total primitive work, never exceeding the query's maximum.
     #[must_use]
     pub const fn total(self) -> u64 {
-        self.ruling_evaluations + self.interval_tests + self.source_enclosures + self.control_steps
+        self.ruling_evaluations
+            + self.hint_evaluations
+            + self.interval_tests
+            + self.source_enclosures
+            + self.control_steps
     }
 }
 
@@ -135,6 +143,11 @@ pub enum ProjectionError {
     InvalidPolicy,
     /// The target contains a nonfinite coordinate.
     NonFinitePoint,
+    /// A supplied native UV hint is nonfinite or outside the prepared rectangle.
+    InvalidHint {
+        /// Rejected native parameters; the hint never changes the search domain.
+        uv: [f64; 2],
+    },
     /// This source family has no original-source enclosure kernel yet.
     UnsupportedSource {
         /// Zero or one, identifying the ruled source.
@@ -278,17 +291,31 @@ impl<'a> Source<'a> {
 /// Results give distance brackets, not unique inverse parameters or UV accuracy.
 ///
 /// ```
-/// use exedra_analytic::{geometry::{Curve,CurveSpan,ParameterDomain,ParameterRange,Surface},
-///     query::{RuledProjection,ProjectionPolicy}};
-/// let row=|z|CurveSpan::new(Curve::line([0.,0.,z],[4.,0.,0.]).unwrap(),ParameterRange::UNIT,false).unwrap();
-/// let surface=Surface::ruled(row(0.),row(1.)).unwrap();
-/// let Surface::Ruled(ruled)=&surface else {unreachable!()};
-/// let domain=ParameterDomain{u:ParameterRange::UNIT,v:ParameterRange::UNIT};
-/// let query=RuledProjection::prepare(ruled,domain,&ProjectionPolicy::default()).unwrap();
-/// let mut scratch=query.scratch().unwrap();
-/// let found=query.closest([1.2,2.,0.7],&mut scratch).unwrap();
+/// use exedra_analytic::{
+///     geometry::{Curve, CurveSpan, ParameterDomain, ParameterRange, Surface},
+///     query::{ProjectionPolicy, RuledProjection},
+/// };
+///
+/// let row = |z| {
+///     CurveSpan::new(
+///         Curve::line([0.0, 0.0, z], [4.0, 0.0, 0.0]).unwrap(),
+///         ParameterRange::UNIT,
+///         false,
+///     ).unwrap()
+/// };
+/// let surface = Surface::ruled(row(0.0), row(1.0)).unwrap();
+/// let Surface::Ruled(ruled) = &surface else { unreachable!() };
+/// let domain = ParameterDomain {
+///     u: ParameterRange::UNIT,
+///     v: ParameterRange::UNIT,
+/// };
+/// let query = RuledProjection::prepare(
+///     ruled, domain, &ProjectionPolicy::default(),
+/// ).unwrap();
+/// let mut scratch = query.scratch().unwrap();
+/// let found = query.closest([1.2, 2.0, 0.7], &mut scratch).unwrap();
 /// assert!(found.within_tolerance());
-/// assert!(found.distance_lower<=2. && found.witness.distance_upper>=2.);
+/// assert!(found.distance_lower <= 2.0 && found.witness.distance_upper >= 2.0);
 /// ```
 #[derive(Debug)]
 pub struct RuledProjection<'a> {
@@ -405,8 +432,41 @@ impl<'a> RuledProjection<'a> {
         target: [f64; 3],
         scratch: &mut ProjectionScratch,
     ) -> Result<ProjectionResult, ProjectionError> {
+        self.closest_impl(target, None, scratch)
+    }
+    /// Supply a feasible native-UV candidate without restricting global search.
+    ///
+    /// The hint is checked against the prepared rectangle and evaluated under
+    /// the complete source/control work budget. Its outward distance upper
+    /// bound may establish the requested gap immediately against the universal
+    /// lower bound zero. Otherwise the same complete-domain search runs, keeping
+    /// the hint only when it improves the best candidate. No local convergence,
+    /// stationarity or uniqueness is assumed, and scratch retains no hint state.
+    ///
+    /// # Errors
+    /// In addition to [`Self::closest`] failures, rejects nonfinite/out-of-domain
+    /// hints with [`ProjectionError::InvalidHint`]. Zero work evaluates no hint.
+    pub fn closest_with_hint(
+        &self,
+        target: [f64; 3],
+        hint_uv: [f64; 2],
+        scratch: &mut ProjectionScratch,
+    ) -> Result<ProjectionResult, ProjectionError> {
+        self.closest_impl(target, Some(hint_uv), scratch)
+    }
+    fn closest_impl(
+        &self,
+        target: [f64; 3],
+        hint: Option<[f64; 2]>,
+        scratch: &mut ProjectionScratch,
+    ) -> Result<ProjectionResult, ProjectionError> {
         if target.iter().any(|v| !v.is_finite()) {
             return Err(ProjectionError::NonFinitePoint);
+        }
+        if let Some(uv) = hint
+            && (!self.domain.u.contains(uv[0]) || !self.domain.v.contains(uv[1]))
+        {
+            return Err(ProjectionError::InvalidHint { uv });
         }
         if scratch.max_source_order < self.report.max_source_order
             || scratch.pending.capacity() < self.policy.max_pending_intervals
@@ -420,11 +480,27 @@ impl<'a> RuledProjection<'a> {
         };
         let [lo, hi] = self.domain.u.bounds();
         let middle = lo + (hi - lo) * 0.5;
+        let first = hint.unwrap_or([middle, 0.]);
         let mut best = self
-            .candidate(middle, target, &mut scratch.source, &mut meter)
+            .candidate(
+                first[0],
+                hint.map(|uv| uv[1]),
+                target,
+                &mut scratch.source,
+                &mut meter,
+            )
             .map_err(|e| query_error(e, meter.work))?;
+        if hint.is_some() {
+            if gap_met(best.distance_upper, 0., self.policy.distance_tolerance) {
+                return Ok(result(best, 0., ProjectionStatus::ToleranceMet, meter.work));
+            }
+            match self.candidate(middle, None, target, &mut scratch.source, &mut meter) {
+                Ok(candidate) => offer(&mut best, candidate),
+                Err(e) => return Ok(result(best, 0., status(e), meter.work)),
+            }
+        }
         for u in [lo, hi] {
-            match self.candidate(u, target, &mut scratch.source, &mut meter) {
+            match self.candidate(u, None, target, &mut scratch.source, &mut meter) {
                 Ok(candidate) => offer(&mut best, candidate),
                 Err(e) => return Ok(result(best, 0.0, status(e), meter.work)),
             }
@@ -520,24 +596,33 @@ impl<'a> RuledProjection<'a> {
     fn candidate(
         &self,
         u: f64,
+        hint_v: Option<f64>,
         target: [f64; 3],
         scratch: &mut EnclosureScratch,
         meter: &mut Meter,
     ) -> Result<ProjectionWitness, EnclosureError> {
-        if !meter.admit(Kind::Ruling) {
+        if !meter.admit(if hint_v.is_some() {
+            Kind::Hint
+        } else {
+            Kind::Ruling
+        }) {
             return Err(EnclosureError::WorkLimit);
         }
         let a = self.sources[0].enclose([u, u], scratch, meter)?;
         let b = self.sources[1].enclose([u, u], scratch, meter)?;
-        let p = a.midpoint();
-        let d = sub(b.midpoint(), p);
-        let magnitude = d.iter().copied().map(f64::abs).fold(0.0, f64::max);
-        if magnitude == 0.0 || !magnitude.is_finite() {
-            return Err(EnclosureError::NumericLimit);
-        }
-        let axis = d.map(|d| d / magnitude);
-        let v = (dot(sub(target, p), axis) / magnitude / dot(axis, axis))
-            .clamp(self.domain.v.bounds()[0], self.domain.v.bounds()[1]);
+        let v = if let Some(v) = hint_v {
+            v
+        } else {
+            let p = a.midpoint();
+            let d = sub(b.midpoint(), p);
+            let magnitude = d.iter().copied().map(f64::abs).fold(0.0, f64::max);
+            if magnitude == 0.0 || !magnitude.is_finite() {
+                return Err(EnclosureError::NumericLimit);
+            }
+            let axis = d.map(|d| d / magnitude);
+            (dot(sub(target, p), axis) / magnitude / dot(axis, axis))
+                .clamp(self.domain.v.bounds()[0], self.domain.v.bounds()[1])
+        };
         if !v.is_finite() {
             return Err(EnclosureError::NumericLimit);
         }
@@ -563,6 +648,7 @@ impl<'a> RuledProjection<'a> {
         }
         let candidate = self.candidate(
             range[0] + (range[1] - range[0]) * 0.5,
+            None,
             target,
             scratch,
             meter,
@@ -629,6 +715,7 @@ impl Ord for Node {
 }
 enum Kind {
     Ruling,
+    Hint,
     Interval,
     Source,
     Control,
@@ -644,6 +731,7 @@ impl Meter {
         }
         let slot = match kind {
             Kind::Ruling => &mut self.work.ruling_evaluations,
+            Kind::Hint => &mut self.work.hint_evaluations,
             Kind::Interval => &mut self.work.interval_tests,
             Kind::Source => &mut self.work.source_enclosures,
             Kind::Control => &mut self.work.control_steps,
@@ -1049,5 +1137,132 @@ mod tests {
         assert!(!found.within_tolerance());
         assert!(found.distance_lower <= 3. && found.witness.distance_upper >= 3.);
         assert!(found.witness.point_error_upper > 1e-10);
+    }
+
+    #[test]
+    fn a_native_uv_hint_proves_a_small_global_gap_without_subdivision() {
+        for scale in [1., 0.75] {
+            let surface = crown(scale, false);
+            let Surface::Ruled(r) = &surface else {
+                unreachable!()
+            };
+            let query = RuledProjection::prepare(r, unit(), &ProjectionPolicy::default()).unwrap();
+            let mut scratch = query.scratch().unwrap();
+            let capacity = scratch.capacity_bytes();
+            for uv in [[0.37, 0.43], [0.71, 0.64]] {
+                let point = surface.evaluate(uv).unwrap().point;
+                let found = query.closest_with_hint(point, uv, &mut scratch).unwrap();
+                assert!(found.within_tolerance());
+                assert_eq!(found.witness.uv, uv);
+                assert_eq!(found.distance_lower, 0.);
+                assert!(found.witness.distance_upper <= 1e-6);
+                assert_eq!(found.work.hint_evaluations, 1);
+                assert_eq!(found.work.ruling_evaluations, 0);
+                assert_eq!(found.work.interval_tests, 0);
+                assert_eq!(found.work.source_enclosures, 2);
+                assert!(found.work.control_steps > 0);
+                assert_eq!(scratch.capacity_bytes(), capacity);
+            }
+        }
+    }
+
+    #[test]
+    fn off_surface_and_wrong_valid_hints_still_search_the_complete_domain() {
+        let surface = crown(0.75, false);
+        let Surface::Ruled(r) = &surface else {
+            unreachable!()
+        };
+        let query = RuledProjection::prepare(r, unit(), &ProjectionPolicy::default()).unwrap();
+        let mut scratch = query.scratch().unwrap();
+        for hint in [[0., 0.], [0.5, 0.5], [1., 1.]] {
+            let found = query
+                .closest_with_hint([2., 2., 0.5], hint, &mut scratch)
+                .unwrap();
+            assert!(found.within_tolerance());
+            assert!(found.work.interval_tests > 0);
+            assert_eq!(found.work.hint_evaluations, 1);
+            assert!(
+                found.distance_lower <= 0.648_493_727_321_868 + 1e-13
+                    && found.witness.distance_upper >= 0.648_493_727_321_868 - 1e-13
+            );
+        }
+        let uv = [0.37, 0.43];
+        let e = surface.evaluate(uv).unwrap();
+        let target = core::array::from_fn(|k| e.point[k] + 0.25 * e.normal[k]);
+        let found = query.closest_with_hint(target, uv, &mut scratch).unwrap();
+        assert!(found.within_tolerance());
+        assert!(found.work.interval_tests > 0);
+        assert!(
+            found.distance_lower <= 0.25 + 1e-13 && found.witness.distance_upper >= 0.25 - 1e-13
+        );
+    }
+
+    #[test]
+    fn hints_are_domain_checked_metered_and_retained_when_later_work_stops() {
+        let surface = crown(0.75, false);
+        let Surface::Ruled(r) = &surface else {
+            unreachable!()
+        };
+        let domain = ParameterDomain {
+            u: ParameterRange::new(0.25, 0.75).unwrap(),
+            v: ParameterRange::new(0.2, 0.8).unwrap(),
+        };
+        let prepared = RuledProjection::prepare(r, domain, &ProjectionPolicy::default()).unwrap();
+        let mut scratch = prepared.scratch().unwrap();
+        for uv in [
+            [f64::NAN, 0.5],
+            [0.5, f64::INFINITY],
+            [0.1, 0.5],
+            [0.5, 0.9],
+        ] {
+            assert!(matches!(
+                prepared.closest_with_hint([2., 2., 0.5], uv, &mut scratch),
+                Err(ProjectionError::InvalidHint { .. })
+            ));
+        }
+        let uv = [0.25, 0.8];
+        let target = surface.evaluate(uv).unwrap().point;
+        let full = prepared
+            .closest_with_hint(target, uv, &mut scratch)
+            .unwrap();
+        assert!(full.within_tolerance());
+        let cost = full.work.total();
+        for budget in [0, cost - 1, cost] {
+            let prepared = RuledProjection::prepare(
+                r,
+                domain,
+                &ProjectionPolicy {
+                    max_work: budget,
+                    ..Default::default()
+                },
+            )
+            .unwrap();
+            let result = prepared.closest_with_hint(target, uv, &mut prepared.scratch().unwrap());
+            if budget < cost {
+                assert!(
+                    matches!(result,Err(ProjectionError::WorkLimit{work}) if work.total()==budget)
+                );
+            } else {
+                assert!(result.unwrap().within_tolerance());
+            }
+        }
+        let prepared = RuledProjection::prepare(
+            r,
+            domain,
+            &ProjectionPolicy {
+                max_work: cost,
+                ..Default::default()
+            },
+        )
+        .unwrap();
+        let found = prepared
+            .closest_with_hint([2., 2., 0.5], uv, &mut prepared.scratch().unwrap())
+            .unwrap();
+        assert_eq!(found.status, ProjectionStatus::WorkLimit);
+        assert_eq!(found.work.total(), cost);
+        assert_eq!(found.witness.uv, uv);
+        assert_eq!(found.distance_lower, 0.);
+        let plain = prepared.closest([2., 2., 0.5], &mut scratch);
+        assert!(matches!(plain,Ok(ProjectionResult{work,..}) if work.hint_evaluations==0));
     }
 }

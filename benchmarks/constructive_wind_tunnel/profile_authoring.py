@@ -26,7 +26,7 @@ scope = {
     "generic_brep": "one explicit retained BRep realization selected by EXEDRA_BREP_PROFILE; fixed source and profiler setup excluded; topology, correspondence, normals and release included; no compile/STEP/Wasm/JS/GPU",
     "native_manifold": "one prepared native machining cut/realization/local support validation selected by EXEDRA_MANIFOLD_CASE and EXEDRA_MANIFOLD_PHASE; source/tools/warmup excluded; owned result plus report retained then destroyed; no STEP/compiler/JS/Wasm/GPU",
     "native_spline_wall": "one warmed rational spline-wall construction, regularity proof or realization selected by EXEDRA_SPLINE_PHASE; source/warmup excluded; optional fixed boundary sampling via EXEDRA_SPLINE_MIN_SEGMENTS; result retained then dropped",
-    "native_ruled_projection": "one warmed prepared tapered rational ruled-patch global projection at target[2,2,.5], distance-gap tolerance1e-6; source, preparation, scratch, warmup and profiler setup excluded; no mesh/compiler/JS/GPU",
+    "native_ruled_projection": "one warmed prepared tapered rational ruled-patch global projection, distance-gap tolerance1e-6; bounded-hint method uses the exact native UV[.37,.43] on-patch target, otherwise target[2,2,.5]; source, preparation, scratch, warmup and profiler setup excluded; no mesh/compiler/JS/GPU",
     "native_solid_query": "prepared retained valve-block point queries, or preparation with EXEDRA_SOLID_QUERY_PHASE=prepare; source construction/probes/warmup excluded; no mesh/compiler/scene/STEP/JS/GPU",
     "native_poles": "one native sphere realization, R20/tolerance0.025; retained source constructor/profile and profiler setup excluded; topology, correspondence, normals and release included; no compilation/extraction/STEP/Wasm/JS/GPU",
 }[args.workload]
