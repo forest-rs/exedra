@@ -543,6 +543,7 @@ fn kind_name(kind: &NodeKind) -> &'static str {
     match kind {
         NodeKind::Extrude { .. } => "extrude",
         NodeKind::Revolve { .. } => "revolve",
+        NodeKind::Pocket { .. } => "pocket",
         NodeKind::Loft { .. } => "loft",
         NodeKind::Sweep { .. } => "sweep",
         NodeKind::PlanarFace { .. } => "planar_face",
@@ -577,6 +578,7 @@ fn feature_dto(feature: Feature) -> InspectionFeature {
     match feature {
         Feature::CapStart => dto.kind = "cap_start".to_string(),
         Feature::CapEnd => dto.kind = "cap_end".to_string(),
+        Feature::PocketFloor => dto.kind = "pocket_floor".to_string(),
         Feature::Wall { loop_index, seg } => {
             dto.kind = "wall".to_string();
             dto.loop_index = Some(u32::from(loop_index));

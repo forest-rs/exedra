@@ -29,6 +29,24 @@ pub struct WorkplanePolicy {
     /// A successful resolution visits each selected face corner twice.
     pub max_corners: u32,
 }
+impl WorkplanePolicy {
+    /// Whether every limit is usable: a positive finite distance
+    /// tolerance, axis and projection thresholds in `(0, 1]`, and nonzero
+    /// budgets.
+    #[must_use]
+    pub fn is_valid(&self) -> bool {
+        self.distance_tolerance.is_finite()
+            && self.distance_tolerance > 0.0
+            && self.min_axis_sine.is_finite()
+            && self.min_axis_sine > 0.0
+            && self.min_axis_sine <= 1.0
+            && self.min_projection_cos.is_finite()
+            && self.min_projection_cos > 0.0
+            && self.min_projection_cos <= 1.0
+            && self.max_faces != 0
+            && self.max_corners != 0
+    }
+}
 impl Default for WorkplanePolicy {
     fn default() -> Self {
         Self {
@@ -258,18 +276,7 @@ pub fn face_workplane(
     policy: &WorkplanePolicy,
 ) -> Result<Workplane, FrameFailure> {
     use WorkplaneError as Error;
-    if !policy.distance_tolerance.is_finite()
-        || policy.distance_tolerance <= 0.0
-        || !policy.min_axis_sine.is_finite()
-        || policy.min_axis_sine <= 0.0
-        || policy.min_axis_sine > 1.0
-        || !policy.min_projection_cos.is_finite()
-        || policy.min_projection_cos <= 0.0
-        || policy.min_projection_cos > 1.0
-        || policy.max_faces == 0
-        || policy.max_corners == 0
-        || origin.iter().any(|v| !v.is_finite())
-    {
+    if !policy.is_valid() || origin.iter().any(|v| !v.is_finite()) {
         return Err(Error::InvalidInput.into());
     }
     let authored_x = normalize(x_direction).ok_or(Error::InvalidInput)?;

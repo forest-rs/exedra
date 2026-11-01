@@ -436,6 +436,7 @@ impl core::fmt::Display for FeatureLabel {
             Feature::GridPatch { row, col } => write!(f, "grid_patch {row} {col}"),
             Feature::StretchSeam { rim } => write!(f, "stretch_seam {rim}"),
             Feature::PlaneCutCap => write!(f, "plane_cut_cap"),
+            Feature::PocketFloor => write!(f, "pocket_floor"),
             Feature::PlaneCutSeam => write!(f, "plane_cut_seam"),
         }
     }

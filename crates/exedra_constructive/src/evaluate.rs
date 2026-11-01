@@ -27,7 +27,8 @@ use hashbrown::HashMap;
 use crate::cache::{CacheKey, EvalCache, policy_fingerprint};
 use crate::edge_finish::{EdgeSelection, finish_edges};
 use crate::ir::{
-    CsgOp, NodeId, NodeKind, Placement3, PolicyId, ProfileId, Recipe, SlotId, SourceId,
+    CapMode, CsgOp, ExtrusionEnd, NodeId, NodeKind, Placement3, PolicyId, ProfileId, Recipe,
+    SlotId, SourceId,
 };
 use crate::source_map::SurfaceAncestry;
 use crate::tessellate::{
@@ -564,6 +565,18 @@ struct CsgCombineFailure {
     error: BooleanError,
 }
 
+/// Every operand of one Boolean, collected.
+struct CsgOperands {
+    /// The operand meshes present, in operand order.
+    meshes: Vec<CsgMesh>,
+    /// Operands whose subtrees reported a refusal.
+    incomplete: Vec<usize>,
+    /// Whether every operand produced a mesh.
+    all_present: bool,
+    /// World bounds of everything the operands evaluated.
+    bounds: Aabb3,
+}
+
 /// One consumed CSG operand subtree.
 struct CsgOperand {
     /// The folded operand mesh; `None` when the subtree emitted no bodies
@@ -823,6 +836,15 @@ impl EvalCx<'_> {
                 let op = *op;
                 let operands = operands.clone();
                 self.evaluate_csg(node_id, op, &operands, world, emit, material)
+            }
+            NodeKind::Pocket {
+                base,
+                profile,
+                end,
+                depth,
+            } => {
+                let (base, profile, end, depth) = (*base, *profile, *end, *depth);
+                self.evaluate_pocket(node_id, base, profile, end, depth, world, emit, material)
             }
             NodeKind::GridSurface {
                 points,
@@ -1732,6 +1754,47 @@ impl EvalCx<'_> {
                 None => all_present = false,
             }
         }
+        self.combine_csg(
+            node_id,
+            op,
+            CsgOperands {
+                meshes,
+                incomplete,
+                all_present,
+                bounds,
+            },
+            world,
+            emit,
+            material,
+            scratch,
+            diagnostics,
+        )
+    }
+
+    /// Combines collected operand meshes, the first minus the rest for a
+    /// difference, and emits the result, or the operands' envelope with
+    /// the pipeline's diagnostics where they cannot be combined.
+    #[expect(
+        clippy::too_many_arguments,
+        reason = "one evaluation step's context, as its callers hold it"
+    )]
+    fn combine_csg(
+        &mut self,
+        node_id: NodeId,
+        op: CsgOp,
+        operands: CsgOperands,
+        world: &Placement3,
+        emit: bool,
+        material: Option<SlotId>,
+        mut scratch: BooleanScratch,
+        mut diagnostics: BooleanDiagnostics,
+    ) -> Result<Aabb3, EvalError> {
+        let CsgOperands {
+            meshes,
+            incomplete,
+            all_present,
+            bounds,
+        } = operands;
         let operands_complete = incomplete.is_empty();
 
         // Cache lookup happens after the operand walks so the report is
@@ -1917,6 +1980,96 @@ impl EvalCx<'_> {
                 Ok(bounds)
             }
         }
+    }
+
+    /// Subtracts the pocket's region, extruded from beyond its cap down to
+    /// its floor, from the base. The cutter reaches as far past the cap as
+    /// the pocket goes in, so the cut never shares the cap's plane.
+    #[expect(
+        clippy::too_many_arguments,
+        reason = "one node's parameters and its evaluation context"
+    )]
+    fn evaluate_pocket(
+        &mut self,
+        node_id: NodeId,
+        base: NodeId,
+        profile: ProfileId,
+        end: ExtrusionEnd,
+        depth: f64,
+        world: &Placement3,
+        emit: bool,
+        material: Option<SlotId>,
+    ) -> Result<Aabb3, EvalError> {
+        let mut scratch = BooleanScratch::default();
+        let mut diagnostics = BooleanDiagnostics::default();
+        let collected =
+            self.collect_operand_mesh(node_id, 0, base, world, &mut scratch, &mut diagnostics)?;
+        let (extrusion, height) = crate::ir::pocketed_extrusion(self.recipe.nodes(), base)
+            .expect("validated pocket base");
+        let NodeKind::Extrude { placement, .. } = self
+            .recipe
+            .node(extrusion)
+            .expect("validated pocket base")
+            .kind
+        else {
+            unreachable!("a pocket chain ends at an extrusion");
+        };
+        let start = match end {
+            ExtrusionEnd::End => height - depth,
+            ExtrusionEnd::Start => -depth,
+        };
+        let cutter = tessellate_extrude(
+            self.recipe.profile(profile).expect("validated profile id"),
+            &(*world * placement * Placement3::translate(0.0, 0.0, start)),
+            2.0 * depth,
+            CapMode::Both,
+            self.policy,
+        )
+        .map_err(|error| EvalError::new(node_id, error))?;
+        // The cutter's cap at the pocket's depth is the floor; its surfaces
+        // belong to the pocket node, so carry its label.
+        let floor = match end {
+            ExtrusionEnd::End => Feature::CapStart,
+            ExtrusionEnd::Start => Feature::CapEnd,
+        };
+        let source: Option<alloc::sync::Arc<str>> =
+            self.recipe.source_of(node_id).map(alloc::sync::Arc::from);
+        let surface_origins = cutter
+            .mesh
+            .faces()
+            .filter_map(|face| {
+                let mut ancestry = cutter.source_map.surface_ancestry(face)?.clone();
+                if ancestry.origin.feature == floor {
+                    ancestry.origin.feature = Feature::PocketFloor;
+                }
+                ancestry.origin.source.clone_from(&source);
+                Some((face, ancestry))
+            })
+            .collect();
+        let mut cutter = CsgMesh::operand(cutter.mesh, 1);
+        cutter.surface_origins = surface_origins;
+        let mut bounds = collected.bounds;
+        bounds.union(&mesh_bounds(&cutter.mesh));
+        let all_present = collected.mesh.is_some();
+        self.combine_csg(
+            node_id,
+            CsgOp::Difference,
+            CsgOperands {
+                meshes: collected.mesh.into_iter().chain([cutter]).collect(),
+                incomplete: if collected.complete {
+                    Vec::new()
+                } else {
+                    vec![0]
+                },
+                all_present,
+                bounds,
+            },
+            world,
+            emit,
+            material,
+            scratch,
+            diagnostics,
+        )
     }
 
     fn record_csg_failure(

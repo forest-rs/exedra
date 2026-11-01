@@ -413,14 +413,14 @@ fn dump_kind(line: &mut String, kind: &NodeKind) {
                 support.0, child.0
             );
             match &attachment.surface {
-                SurfaceSelector::SourceStartCap(source) | SurfaceSelector::SourceEndCap(source) => {
-                    line.push_str(
-                        if matches!(attachment.surface, SurfaceSelector::SourceStartCap(_)) {
-                            "source_start_cap "
-                        } else {
-                            "source_end_cap "
-                        },
-                    );
+                SurfaceSelector::SourceStartCap(source)
+                | SurfaceSelector::SourceEndCap(source)
+                | SurfaceSelector::SourceFloor(source) => {
+                    line.push_str(match attachment.surface {
+                        SurfaceSelector::SourceStartCap(_) => "source_start_cap ",
+                        SurfaceSelector::SourceEndCap(_) => "source_end_cap ",
+                        _ => "source_floor ",
+                    });
                     // Prefix keeps the empty UTF-8 label a nonempty token.
                     line.push('x');
                     for byte in source.as_bytes() {
@@ -505,6 +505,24 @@ fn dump_kind(line: &mut String, kind: &NodeKind) {
             put_caps(line, *caps);
             line.push_str(" placement");
             put_placement(line, placement);
+        }
+        NodeKind::Pocket {
+            base,
+            profile,
+            end,
+            depth,
+        } => {
+            let end = match end {
+                crate::ir::ExtrusionEnd::Start => "start",
+                crate::ir::ExtrusionEnd::End => "end",
+            };
+            let _ = write!(
+                line,
+                "pocket base {} profile {} end {end} depth {}",
+                base.0,
+                profile.0,
+                hex(*depth)
+            );
         }
         NodeKind::Revolve {
             profile,
@@ -1690,7 +1708,7 @@ fn parse_node(builder: &mut RecipeBuilder, body: &str, line: usize) -> Result<()
             let child = NodeId(next_u32(&mut tokens, line)?);
             expect(&mut tokens, "surface", line)?;
             let surface = match tokens.next() {
-                Some(kind @ ("source_start_cap" | "source_end_cap")) => {
+                Some(kind @ ("source_start_cap" | "source_end_cap" | "source_floor")) => {
                     let token = tokens
                         .next()
                         .and_then(|s| s.strip_prefix('x'))
@@ -1707,10 +1725,10 @@ fn parse_node(builder: &mut RecipeBuilder, body: &str, line: usize) -> Result<()
                         .collect::<Result<Vec<_>, _>>()?;
                     let source =
                         String::from_utf8(bytes).map_err(|_| TextError::Malformed { line })?;
-                    if kind == "source_start_cap" {
-                        SurfaceSelector::SourceStartCap(source)
-                    } else {
-                        SurfaceSelector::SourceEndCap(source)
+                    match kind {
+                        "source_start_cap" => SurfaceSelector::SourceStartCap(source),
+                        "source_end_cap" => SurfaceSelector::SourceEndCap(source),
+                        _ => SurfaceSelector::SourceFloor(source),
                     }
                 }
                 Some("start_cap") => SurfaceSelector::StartCap,
@@ -1803,6 +1821,26 @@ fn parse_node(builder: &mut RecipeBuilder, body: &str, line: usize) -> Result<()
                 placement,
                 height,
                 caps,
+            }
+        }
+        "pocket" => {
+            expect(&mut tokens, "base", line)?;
+            let base = NodeId(next_u32(&mut tokens, line)?);
+            expect(&mut tokens, "profile", line)?;
+            let profile = ProfileId(next_u32(&mut tokens, line)?);
+            expect(&mut tokens, "end", line)?;
+            let end = match tokens.next() {
+                Some("start") => crate::ir::ExtrusionEnd::Start,
+                Some("end") => crate::ir::ExtrusionEnd::End,
+                _ => return Err(TextError::Malformed { line }),
+            };
+            expect(&mut tokens, "depth", line)?;
+            let depth = next_f64(&mut tokens, line)?;
+            NodeKind::Pocket {
+                base,
+                profile,
+                end,
+                depth,
             }
         }
         "revolve" => {
@@ -2516,10 +2554,24 @@ pub(crate) mod tests_support {
                 placement: Placement3::rotate_z_then_translate(0.3, 40.0, 0.0, 0.0),
             })
             .expect("valid");
+        let recess = b.add_profile(
+            builders::rect_from_corner(0.5, 0.25)
+                .expect("recess")
+                .translated((0.25, 0.25))
+                .expect("recess"),
+        );
+        let pocket = b
+            .add_node(NodeKind::Pocket {
+                base: extrude,
+                profile: recess,
+                end: crate::ir::ExtrusionEnd::End,
+                depth: 0.5,
+            })
+            .expect("valid");
         let group = b
             .add_node(NodeKind::Group {
                 children: vec![
-                    transform, mirror, instance, stretch, face, imported, grid, implicit,
+                    transform, mirror, instance, stretch, face, imported, grid, implicit, pocket,
                 ],
             })
             .expect("valid");
