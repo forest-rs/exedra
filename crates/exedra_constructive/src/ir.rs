@@ -72,6 +72,16 @@ pub use exedra_mesh::uv_mapping::{
 /// One plane-selected displacement for [`NodeKind::StretchVertices`].
 pub use exedra_mesh_ops::stretch::VertexStretchStep;
 
+/// One end of an extrusion: its start cap, at the profile, or its end cap,
+/// at the full height.
+#[derive(Copy, Clone, Debug, PartialEq, Eq)]
+pub enum ExtrusionEnd {
+    /// The cap in the profile's plane.
+    Start,
+    /// The cap at the extrusion's height.
+    End,
+}
+
 /// Which caps an extrusion or revolution closes.
 #[derive(Copy, Clone, Debug, Default, PartialEq, Eq)]
 pub enum CapMode {
@@ -283,6 +293,24 @@ pub enum NodeKind {
         height: f64,
         /// Which caps to close.
         caps: CapMode,
+    },
+    /// A blind pocket cut into a closed extrusion from one of its caps.
+    ///
+    /// `base` is a closed [`Self::Extrude`] or another pocket of one, and
+    /// `profile`, a filled region without holes, is drawn in the base
+    /// profile's coordinates. The pocket removes that region from the cap
+    /// at `end` down to `depth`, which stays below the extrusion's height.
+    /// Mesh evaluation subtracts the region's extrusion from the base; the
+    /// native head cuts the same pocket exactly.
+    Pocket {
+        /// The pocketed extrusion.
+        base: NodeId,
+        /// The region removed, in the base profile's coordinates.
+        profile: ProfileId,
+        /// The cap the pocket opens on.
+        end: ExtrusionEnd,
+        /// Depth from that cap; positive and below the extrusion's height.
+        depth: f64,
     },
     /// Revolve a profile by right-handed positive rotation about local +Y:
     /// a quarter turn carries +X toward -Z, before applying placement.
@@ -1429,6 +1457,29 @@ impl RecipeBuilder {
                 }
                 Ok(())
             }
+            NodeKind::Pocket {
+                base,
+                profile,
+                end: _,
+                depth,
+            } => {
+                self.check_node(*base)?;
+                self.check_profile(*profile)?;
+                if !self.profiles[profile.0 as usize].holes().is_empty() {
+                    return Err(RecipeError::InvalidParameter {
+                        what: "pocket profile holes",
+                    });
+                }
+                let Some((_, height)) = pocketed_extrusion(&self.nodes, *base) else {
+                    return Err(RecipeError::InvalidParameter {
+                        what: "pocket base",
+                    });
+                };
+                if !(depth.is_finite() && *depth > 0.0 && *depth < height) {
+                    return Err(RecipeError::InvalidParameter { what: "depth" });
+                }
+                Ok(())
+            }
             NodeKind::Revolve {
                 profile,
                 placement,
@@ -1834,6 +1885,22 @@ impl RecipeBuilder {
 }
 
 /// Checks that every policy-defined segment references a registered policy.
+/// The closed extrusion a pocket chain from `base` cuts, as its node and
+/// height, or `None` where the chain ends anywhere else.
+pub(crate) fn pocketed_extrusion(nodes: &[Node], mut base: NodeId) -> Option<(NodeId, f64)> {
+    loop {
+        match &nodes.get(base.0 as usize)?.kind {
+            NodeKind::Pocket { base: next, .. } => base = *next,
+            NodeKind::Extrude {
+                height,
+                caps: CapMode::Both,
+                ..
+            } => return Some((base, *height)),
+            _ => return None,
+        }
+    }
+}
+
 fn check_profile_policies(profile: &Profile2, policies: usize) -> Result<(), RecipeError> {
     for loop_ in core::iter::once(profile.outer()).chain(profile.holes().iter()) {
         for seg in loop_.segs() {
@@ -2060,6 +2127,7 @@ fn ambiguous_sources(nodes: &[Node], sources: &[String], root: NodeId) -> Vec<St
             | NodeKind::Stretch { child, .. }
             | NodeKind::StretchVertices { child, .. } => visit(*child),
             NodeKind::Instance { of, .. } => visit(*of),
+            NodeKind::Pocket { base, .. } => visit(*base),
             NodeKind::Group { children }
             | NodeKind::Csg {
                 operands: children, ..
@@ -2628,6 +2696,21 @@ fn node_canon_bytes(
             out.push(12);
             put_u128(out, import_hashes[import.0 as usize]);
             put_placement(out, placement);
+        }
+        NodeKind::Pocket {
+            base,
+            profile,
+            end,
+            depth,
+        } => {
+            out.push(21);
+            child(out, *base);
+            put_u128(out, profile_hashes[profile.0 as usize]);
+            out.push(match end {
+                ExtrusionEnd::Start => 0,
+                ExtrusionEnd::End => 1,
+            });
+            put_f64(out, *depth);
         }
         NodeKind::Implicit {
             field,

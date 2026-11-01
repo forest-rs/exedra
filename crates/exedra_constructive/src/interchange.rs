@@ -934,6 +934,17 @@ pub enum NodeKindDto {
         /// Cap mode: "both" | "start" | "end" | "none".
         caps: String,
     },
+    /// A blind pocket cut into a closed extrusion from one of its caps.
+    Pocket {
+        /// The pocketed extrusion or pocket node.
+        base: u32,
+        /// Profile index of the region removed.
+        profile: u32,
+        /// The cap the pocket opens on: "start" | "end".
+        end: String,
+        /// Depth from that cap.
+        depth: f64,
+    },
     /// Revolution about local Y.
     Revolve {
         /// Profile index.
@@ -1592,6 +1603,21 @@ fn kind_dto(kind: &NodeKind) -> NodeKindDto {
             height: *height,
             caps: caps_name(*caps),
         },
+        NodeKind::Pocket {
+            base,
+            profile,
+            end,
+            depth,
+        } => NodeKindDto::Pocket {
+            base: base.0,
+            profile: profile.0,
+            end: match end {
+                crate::ir::ExtrusionEnd::Start => "start",
+                crate::ir::ExtrusionEnd::End => "end",
+            }
+            .into(),
+            depth: *depth,
+        },
         NodeKind::Revolve {
             profile,
             placement,
@@ -2165,6 +2191,21 @@ fn kind_value(dto: &NodeKindDto) -> Result<NodeKind, InterchangeError> {
             placement: placement_value(*placement),
             height: *height,
             caps: caps_value(caps)?,
+        },
+        NodeKindDto::Pocket {
+            base,
+            profile,
+            end,
+            depth,
+        } => NodeKind::Pocket {
+            base: NodeId(*base),
+            profile: ProfileId(*profile),
+            end: match end.as_str() {
+                "start" => crate::ir::ExtrusionEnd::Start,
+                "end" => crate::ir::ExtrusionEnd::End,
+                _ => return Err(InterchangeError::UnknownValue { field: "end" }),
+            },
+            depth: *depth,
         },
         NodeKindDto::Revolve {
             profile,

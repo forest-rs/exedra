@@ -543,6 +543,7 @@ fn kind_name(kind: &NodeKind) -> &'static str {
     match kind {
         NodeKind::Extrude { .. } => "extrude",
         NodeKind::Revolve { .. } => "revolve",
+        NodeKind::Pocket { .. } => "pocket",
         NodeKind::Loft { .. } => "loft",
         NodeKind::Sweep { .. } => "sweep",
         NodeKind::PlanarFace { .. } => "planar_face",

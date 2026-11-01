@@ -506,6 +506,24 @@ fn dump_kind(line: &mut String, kind: &NodeKind) {
             line.push_str(" placement");
             put_placement(line, placement);
         }
+        NodeKind::Pocket {
+            base,
+            profile,
+            end,
+            depth,
+        } => {
+            let end = match end {
+                crate::ir::ExtrusionEnd::Start => "start",
+                crate::ir::ExtrusionEnd::End => "end",
+            };
+            let _ = write!(
+                line,
+                "pocket base {} profile {} end {end} depth {}",
+                base.0,
+                profile.0,
+                hex(*depth)
+            );
+        }
         NodeKind::Revolve {
             profile,
             placement,
@@ -1805,6 +1823,26 @@ fn parse_node(builder: &mut RecipeBuilder, body: &str, line: usize) -> Result<()
                 caps,
             }
         }
+        "pocket" => {
+            expect(&mut tokens, "base", line)?;
+            let base = NodeId(next_u32(&mut tokens, line)?);
+            expect(&mut tokens, "profile", line)?;
+            let profile = ProfileId(next_u32(&mut tokens, line)?);
+            expect(&mut tokens, "end", line)?;
+            let end = match tokens.next() {
+                Some("start") => crate::ir::ExtrusionEnd::Start,
+                Some("end") => crate::ir::ExtrusionEnd::End,
+                _ => return Err(TextError::Malformed { line }),
+            };
+            expect(&mut tokens, "depth", line)?;
+            let depth = next_f64(&mut tokens, line)?;
+            NodeKind::Pocket {
+                base,
+                profile,
+                end,
+                depth,
+            }
+        }
         "revolve" => {
             expect(&mut tokens, "profile", line)?;
             let profile = ProfileId(next_u32(&mut tokens, line)?);
@@ -2516,10 +2554,24 @@ pub(crate) mod tests_support {
                 placement: Placement3::rotate_z_then_translate(0.3, 40.0, 0.0, 0.0),
             })
             .expect("valid");
+        let recess = b.add_profile(
+            builders::rect_from_corner(0.5, 0.25)
+                .expect("recess")
+                .translated((0.25, 0.25))
+                .expect("recess"),
+        );
+        let pocket = b
+            .add_node(NodeKind::Pocket {
+                base: extrude,
+                profile: recess,
+                end: crate::ir::ExtrusionEnd::End,
+                depth: 0.5,
+            })
+            .expect("valid");
         let group = b
             .add_node(NodeKind::Group {
                 children: vec![
-                    transform, mirror, instance, stretch, face, imported, grid, implicit,
+                    transform, mirror, instance, stretch, face, imported, grid, implicit, pocket,
                 ],
             })
             .expect("valid");

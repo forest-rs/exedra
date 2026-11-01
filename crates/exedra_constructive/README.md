@@ -328,6 +328,11 @@ end-cap region and `Feature::CapEnd` provenance. The operation computes its own 
 and refuses parallel, backward, crossing, or numerically unrepresentable cases.
 It returns the body and the terminating section with accuracy/work measurements.
 `NodeKind::ExtrudeToPlane` retains the same operation in a recipe.
+`NodeKind::Pocket` retains a blind pocket: a filled region, drawn in a closed
+extrusion's profile coordinates, removed from its start or end cap to a depth
+below its height. Pockets chain, each taking the previous as its base. Mesh
+evaluation subtracts the region's extrusion, reaching past the cap so the cut
+never shares its plane; `exedra_compile` builds the same pockets natively.
 `NodeKind::PlaneCut` retains one capped half-space of a child. Planes use node-local
 coordinates after child transforms, before ancestor transforms.
 The `extrude_to_plane` example in `constructive_probe` exports hollow supports

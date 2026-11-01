@@ -131,7 +131,7 @@ fn hostile_placement(rng: &mut Rng) -> Placement3 {
 fn hostile_kind(rng: &mut Rng, profiles: usize, nodes: usize) -> NodeKind {
     let profile = ProfileId(rng.hostile_u32() % (small_u32(profiles.max(1)) + 3));
     let node = NodeId(rng.hostile_u32() % (small_u32(nodes.max(1)) + 3));
-    match rng.range(13) {
+    match rng.range(14) {
         0 => NodeKind::Extrude {
             profile,
             placement: hostile_placement(rng),
@@ -201,6 +201,16 @@ fn hostile_kind(rng: &mut Rng, profiles: usize, nodes: usize) -> NodeKind {
                 [rng.hostile_f64(), rng.hostile_f64(), rng.hostile_f64()],
             ),
             placement: hostile_placement(rng),
+        },
+        12 => NodeKind::Pocket {
+            base: node,
+            profile,
+            end: if rng.range(2) == 0 {
+                crate::ir::ExtrusionEnd::Start
+            } else {
+                crate::ir::ExtrusionEnd::End
+            },
+            depth: rng.hostile_f64(),
         },
         _ => NodeKind::MeshImport {
             import: ImportId(rng.hostile_u32()),

@@ -107,6 +107,8 @@ pub mod ops;
 #[cfg(test)]
 mod panel_boolean_tests;
 pub mod path;
+#[cfg(test)]
+mod pocket_tests;
 pub mod profile;
 pub mod profile_section;
 pub mod section;
