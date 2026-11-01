@@ -1,9 +1,14 @@
 // Copyright 2026 the Exedra Authors
 // SPDX-License-Identifier: Apache-2.0 OR MIT
 
-//! Bounded point classification on retained planar/cylindrical boundaries.
+//! Bounded native solid classification and ruled-patch projection.
 //!
-//! Prepare once with [`SolidQuery::prepare`], then query without allocation.
+//! [`RuledProjection`] projects onto native ruled rectangles with explicit
+//! global distance brackets, work limits and reusable query scratch. It does not
+//! classify trims or solids. Its source family and numerical scope are explicit.
+//!
+//! For solid classification, prepare once with [`SolidQuery::prepare`], then
+//! query without allocation.
 //! Native surfaces, bounded edges and trims are authoritative. No mesh, feature
 //! history or caller metadata participates. The input must already be an
 //! embedded, outward-oriented regular solid (including correctly oriented cavity
@@ -11,9 +16,14 @@
 //! ray winding is refused, but a successful query is not a global validity proof.
 //! Arithmetic allowances are f64 evidence, not interval-arithmetic certificates.
 
+mod projection;
 #[cfg(test)]
 mod tests;
 mod trim;
+pub use projection::{
+    ProjectionError, ProjectionPolicy, ProjectionPreparation, ProjectionResult, ProjectionScratch,
+    ProjectionStatus, ProjectionWitness, ProjectionWork, RuledProjection,
+};
 
 use crate::body::{Body, CylindricalBand, EdgeId, FaceId, LoopId, ValidationPolicy};
 use crate::geometry::Surface;
