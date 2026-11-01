@@ -305,8 +305,8 @@ the workspace root for license files.
 `exedra_curves::profile::IntoProfile` input, including constructive `Profile2` values or
 references. Callers no longer need an explicit conversion helper. Profile
 conversion errors remain typed inside `ProfileExtrusionError::Profile`; native
-construction errors use its `Extrusion` variant. Cubics are refused rather than
-flattened. `Extrusion::new` still accepts an already checked shared profile
+construction errors use its `Extrusion` variant. Cubics become Bezier segments
+and so ruled walls, never flattened. `Extrusion::new` still accepts an already checked shared profile
 without repeating validation. The analytic crate does not depend on a profile
 authoring frontend.
 

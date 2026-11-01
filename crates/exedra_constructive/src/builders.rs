@@ -419,7 +419,7 @@ mod tests {
         let slot = slot_centered(35.0, 2.5).unwrap();
         let exact = 30.0 * 5.0 + core::f64::consts::PI * 2.5 * 2.5;
         let shared = slot
-            .to_line_arc(&exedra_curves::profile::ProfilePolicy::new(1e-9))
+            .to_profile(&exedra_curves::profile::ProfilePolicy::new(1e-9))
             .unwrap();
         assert!((shared.area() - exact).abs() < 1e-12);
         assert_eq!(shared.bounds(), [[-17.5, -2.5], [17.5, 2.5]]);

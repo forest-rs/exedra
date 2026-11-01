@@ -6,7 +6,7 @@
 //! A plate with a round hole is described twice: by hand, as an
 //! [`exedra::curves::profile::Profile`] of lines and arcs, and the way a spec compiler
 //! would reach it, through constructive builders and
-//! [`exedra::constructive::profile::Profile2::to_line_arc`]. Both give the same
+//! [`exedra::constructive::profile::Profile2::to_profile`]. Both give the same
 //! profile, so the same [`Extrusion`] and the same realized mesh. The mesh can
 //! then be compiled as baked geometry while the caller keeps the realization
 //! report and correspondence.
@@ -14,7 +14,7 @@
 use exedra::analytic::extrusion::{Extrusion, ExtrusionError};
 use exedra::constructive::builders;
 use exedra::constructive::ir::Placement3;
-use exedra::constructive::profile::LineArcError;
+use exedra::constructive::profile::ToProfileError;
 use exedra::curves::profile::{
     Loop, LoopError, Profile, ProfileError, ProfilePolicy, SegTag, Segment,
 };
@@ -117,8 +117,8 @@ pub fn compiled_profile(spec: &PlateSpec) -> Result<Profile, PlateError> {
     let plate = builders::rect_centered(spec.width, spec.depth)
         .and_then(|outline| outline.with_cutouts([hole]))
         .map_err(constructive)?;
-    plate.to_line_arc(&POLICY).map_err(|error| match error {
-        LineArcError::Profile(error) => PlateError::Profile(error),
+    plate.to_profile(&POLICY).map_err(|error| match error {
+        ToProfileError::Profile(error) => PlateError::Profile(error),
         other => PlateError::Constructive(other.to_string()),
     })
 }
@@ -186,7 +186,7 @@ mod tests {
             .unwrap()
             .with_cutouts([builders::circle(2.0).unwrap().tagged(BORE)])
             .unwrap();
-        let profile = drawn.to_line_arc(&POLICY).unwrap();
+        let profile = drawn.to_profile(&POLICY).unwrap();
         assert!(
             profile.holes()[0]
                 .segments()
@@ -298,7 +298,7 @@ mod native_revolve_chart_tests {
             caps: ChartTransform::IDENTITY,
         };
         let native = Revolution::new(
-            profile.to_line_arc(&POLICY).unwrap(),
+            profile.to_profile(&POLICY).unwrap(),
             Placement3::IDENTITY,
             core::f64::consts::TAU,
         )

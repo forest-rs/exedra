@@ -34,7 +34,7 @@ fn finished(fillet: bool, hollow: bool) -> Result<Mesh> {
     };
     let mut original = Extrusion::from_profile(&outline, Placement3::IDENTITY, 35.0, &PROFILE)?;
     if !hollow {
-        let recess = builders::slot_centered(36.0, 8.0)?.to_line_arc(&PROFILE)?;
+        let recess = builders::slot_centered(36.0, 8.0)?.to_profile(&PROFILE)?;
         original = original.with_pocket(
             Pocket::from_region(recess.outer(), End::End, 12.0).tagged(RECESS),
             &PROFILE,

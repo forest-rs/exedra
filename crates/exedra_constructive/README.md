@@ -280,11 +280,12 @@ and then placed with `translated` as often as needed.
 `profile::SegTag` reexports the shared profile tag: the same constant can select
 the feature in analytic face roles after lowering, without a numeric conversion.
 
-`Profile2::to_line_arc` lowers a profile into the shared
-`exedra_curves::profile::Profile` that the analytic head extrudes exactly. Endpoints,
-bulges and tags carry over and the shared arrangement checks apply. Cubic and
-policy-defined segments are refused rather than approximated, because a
-policy is local to its recipe.
+`Profile2::to_profile` lowers a profile into the shared
+`exedra_curves::profile::Profile` that the analytic head builds exactly.
+Endpoints, bulges and tags carry over, cubic segments become polynomial
+Bezier segments with the same controls, and the shared arrangement checks
+apply. Policy-defined segments are refused, because a policy is local to its
+recipe.
 Migration: the old `rect` and `rounded_rect` names are replaced by their
 `*_from_corner` names for identical geometry; existing serialized recipes do
 not change.

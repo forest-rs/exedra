@@ -92,7 +92,7 @@ fn main() -> Result<(), Box<dyn Error>> {
         .nth(1)
         .unwrap_or_else(|| "turned-fitting".to_owned());
     let authoring_profile = profile()?;
-    let profile = authoring_profile.to_line_arc(&ProfilePolicy::new(1e-6))?;
+    let profile = authoring_profile.to_profile(&ProfilePolicy::new(1e-6))?;
     let chart = SurfaceChart::Revolve {
         reference_radius: 18.0,
         wall: ChartTransform {
@@ -279,7 +279,7 @@ fn comparison(out: &str, profile: &Profile2, chart: SurfaceChart) -> Result<(), 
     ];
     let pose = |x| Placement3::rotate_x_then_translate(core::f64::consts::FRAC_PI_2, x, 0.0, 0.0);
     let native = Revolution::new(
-        profile.to_line_arc(&ProfilePolicy::new(1e-6))?,
+        profile.to_profile(&ProfilePolicy::new(1e-6))?,
         pose(-35.0),
         sweep,
     )?;

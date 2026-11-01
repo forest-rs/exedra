@@ -21,11 +21,11 @@ fn model() -> Extrusion {
     let policy = ProfilePolicy::new(1e-9);
     let profile = builders::rounded_rect_centered(120.0, 80.0, 6.0)
         .unwrap()
-        .to_line_arc(&policy)
+        .to_profile(&policy)
         .unwrap();
     let recess = builders::rounded_rect_centered(90.0, 50.0, 4.0)
         .unwrap()
-        .to_line_arc(&policy)
+        .to_profile(&policy)
         .unwrap();
     Extrusion::new(profile, Placement3::IDENTITY, 12.0)
         .unwrap()

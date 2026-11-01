@@ -1,7 +1,7 @@
 # Analytic extrusion
 
 One plate with a round hole, described by hand as an `exedra::curves::profile::Profile`
-and through constructive builders with `Profile2::to_line_arc`. Both routes give
+and through constructive builders with `Profile2::to_profile`. Both routes give
 the same profile, so the same exact `Extrusion` and a bit-identical realized
 mesh. The demo:
 
@@ -110,8 +110,9 @@ solids use `Workplane::extrude_profile` directly. Bore tags become mesh regions
 and bind the dark wall material with the same feature identity.
 
 Every output mesh must be deeply valid and closed; native realization must meet
-its reported tolerance. A cubic input also exercises the typed native refusal,
-which retains the authored segment index. The rail uses `Sweep::from_profile`
+its reported tolerance. A cubic input extrudes into an exact ruled wall, and a
+policy-defined one exercises the typed native refusal, which retains the
+authored segment index. The rail uses `Sweep::from_profile`
 with that same authored path. Its native walls retain planes and cylinders,
 and its exact measures precede meshing. An embedded grid uses construction-aware
 sweep charts with a 20 mm repeat, making texture stretch through the bends visible.

@@ -3,7 +3,7 @@
 
 //! Exact profile subdivision with explicit seams and perimeter landmarks.
 
-use crate::profile::{LineArcError, Loop2, Profile2, ProfileError, Seg2};
+use crate::profile::{Loop2, Profile2, ProfileError, Seg2, ToProfileError};
 use alloc::{boxed::Box, vec, vec::Vec};
 use exedra_curves::profile::{Loop, LoopRef, Profile, ProfilePolicy, SegmentRef};
 
@@ -170,7 +170,14 @@ pub enum CorrespondenceError {
         /// Input section.
         section: usize,
         /// Original profile diagnosis.
-        error: LineArcError,
+        error: ToProfileError,
+    },
+    /// A Bezier segment, which correspondence does not split.
+    Curve {
+        /// Input section.
+        section: usize,
+        /// The first Bezier segment, outer loop first.
+        segment: SegmentRef,
     },
     /// Hole counts do not agree; holes correspond in authored order.
     LoopCount {
@@ -222,7 +229,7 @@ pub enum CorrespondenceError {
         /// Input section.
         section: usize,
         /// Prepared profile diagnosis; use the reported output policy.
-        error: LineArcError,
+        error: ToProfileError,
         /// Original source intervals for a prepared boundary contact.
         sources: Option<Box<[ProfileSegmentSpan; 2]>>,
     },
@@ -312,7 +319,8 @@ struct Event {
 ///
 /// # Errors
 /// Returns source-indexed arrangement, landmark, numerical or budget refusals.
-/// Cubic and policy-defined pieces retain their typed line/arc conversion error.
+/// Policy-defined pieces retain their typed conversion error, and cubic pieces
+/// are refused as [`CorrespondenceError::Curve`].
 pub fn correspond_profiles(
     inputs: &[CorrespondenceProfile<'_>],
     policy: &CorrespondencePolicy,
@@ -384,8 +392,12 @@ pub fn correspond_profiles(
         .enumerate()
         .map(|(section, p)| {
             p.profile
-                .to_line_arc(&policy.profile)
+                .to_profile(&policy.profile)
                 .map_err(|error| CorrespondenceError::Profile { section, error })
+                .and_then(|profile| match profile.bezier_segment() {
+                    Some(segment) => Err(CorrespondenceError::Curve { section, segment }),
+                    None => Ok(profile),
+                })
         })
         .collect::<Result<Vec<_>, _>>()?;
     let loops = native[0].holes().len() + 1;
@@ -551,36 +563,35 @@ pub fn correspond_profiles(
             origins[i].push(spans);
         }
     }
-    let profiles =
-        output_loops
-            .into_iter()
-            .zip(origins)
-            .enumerate()
-            .map(|(section, (mut loops, segments))| {
-                let outer = loops.remove(0);
-                let profile = Profile2::new(outer, loops)
-                    .map_err(|error| CorrespondenceError::Output { section, error })?;
-                profile.to_line_arc(&policy.profile).map_err(|error| {
-                    let sources = if let LineArcError::Profile(
-                        exedra_curves::profile::ProfileError::Contact { first, second },
-                    ) = error
-                    {
-                        Some(Box::new([
-                            segments[loop_index(first.loop_ref)][first.segment],
-                            segments[loop_index(second.loop_ref)][second.segment],
-                        ]))
-                    } else {
-                        None
-                    };
-                    CorrespondenceError::OutputValidation {
-                        section,
-                        error,
-                        sources,
-                    }
-                })?;
-                Ok(MatchedProfile { profile, segments })
-            })
-            .collect::<Result<_, _>>()?;
+    let profiles = output_loops
+        .into_iter()
+        .zip(origins)
+        .enumerate()
+        .map(|(section, (mut loops, segments))| {
+            let outer = loops.remove(0);
+            let profile = Profile2::new(outer, loops)
+                .map_err(|error| CorrespondenceError::Output { section, error })?;
+            profile.to_profile(&policy.profile).map_err(|error| {
+                let sources = if let ToProfileError::Profile(
+                    exedra_curves::profile::ProfileError::Contact { first, second },
+                ) = error
+                {
+                    Some(Box::new([
+                        segments[loop_index(first.loop_ref)][first.segment],
+                        segments[loop_index(second.loop_ref)][second.segment],
+                    ]))
+                } else {
+                    None
+                };
+                CorrespondenceError::OutputValidation {
+                    section,
+                    error,
+                    sources,
+                }
+            })?;
+            Ok(MatchedProfile { profile, segments })
+        })
+        .collect::<Result<_, _>>()?;
     Ok(CorrespondenceResult { profiles, report })
 }
 

@@ -16,9 +16,9 @@ fn source(tag: SegTag, frame: Placement3) -> NativeSource {
     let policy = ProfilePolicy::new(1e-9);
     let profile = builders::rect_centered(40.0, 30.0)
         .unwrap()
-        .to_line_arc(&policy)
+        .to_profile(&policy)
         .unwrap();
-    let bore = builders::circle(3.0).unwrap().to_line_arc(&policy).unwrap();
+    let bore = builders::circle(3.0).unwrap().to_profile(&policy).unwrap();
     Extrusion::new(profile, frame, 12.0)
         .unwrap()
         .with_pocket(
@@ -193,7 +193,7 @@ fn native_accuracy_refusals_and_unmet_emission_bounds_are_visible() {
     let p = ProfilePolicy::new(1e-9);
     let shape = builders::rect_centered(4.0, 4.0)
         .unwrap()
-        .to_line_arc(&p)
+        .to_profile(&p)
         .unwrap();
     let shifted: NativeSource =
         Extrusion::new(shape, Placement3::translate(1_000_000.03, 0.0, 0.0), 10.0)
@@ -215,7 +215,7 @@ fn loft_measure_unavailability_is_typed_and_all_families_install() {
     let policy = ProfilePolicy::new(1e-9);
     let profile = builders::rect_centered(4.0, 4.0)
         .unwrap()
-        .to_line_arc(&policy)
+        .to_profile(&policy)
         .unwrap();
     let loft = exedra_analytic::loft::Loft::from_profiles(
         [
@@ -301,7 +301,7 @@ fn available_native_measures_must_be_finite() {
     let policy = ProfilePolicy::new(1e-9);
     let profile = builders::rect_centered(1e100, 1e100)
         .unwrap()
-        .to_line_arc(&policy)
+        .to_profile(&policy)
         .unwrap();
     let native = NativeSource::from(Extrusion::new(profile, Placement3::IDENTITY, 1e200).unwrap());
     assert_eq!(
@@ -329,7 +329,7 @@ fn positive_native_measures_must_not_silently_underflow() {
     let policy = ProfilePolicy::new(1e-110);
     let profile = builders::rect_centered(1e-100, 1e-100)
         .unwrap()
-        .to_line_arc(&policy)
+        .to_profile(&policy)
         .unwrap();
     let native = NativeSource::from(Extrusion::new(profile, Placement3::IDENTITY, 1e-200).unwrap());
     assert_eq!(
@@ -392,7 +392,7 @@ fn bored_plate_retains_new_scope_provenance_and_native_picking_across_display_po
     let validation = ProfilePolicy::new(1e-9);
     let profile = builders::rect_centered(40.0, 30.0)
         .unwrap()
-        .to_line_arc(&validation)
+        .to_profile(&validation)
         .unwrap();
     let plate = Extrusion::new(profile, Placement3::IDENTITY, 10.0).unwrap();
     let old = NativeSource::from(plate.clone());

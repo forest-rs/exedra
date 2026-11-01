@@ -55,10 +55,10 @@ impl ProceduralEvaluator for PanelGenerator {
                     &vent,
                     [(-36.0, 22.0), (-12.0, 22.0), (12.0, 22.0), (36.0, 22.0)],
                 )?
-                .to_line_arc(&policy)?;
+                .to_profile(&policy)?;
             let recess = builders::slot_centered(48.0, 8.0)?
                 .translated((0.0, -10.0))?
-                .to_line_arc(&policy)?;
+                .to_profile(&policy)?;
             Ok(
                 Extrusion::new(profile, Placement3::IDENTITY, 12.0)?.with_pocket(
                     Pocket::from_profile(&recess, End::End, depth)?.tagged(RECESS),

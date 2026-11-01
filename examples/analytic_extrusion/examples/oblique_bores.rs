@@ -25,7 +25,7 @@ fn main() -> Result<(), Box<dyn Error>> {
         let theta = degrees.to_radians();
         let profile = builders::rect_centered(70.0, 50.0)?
             .tagged(SegTag(1))
-            .to_line_arc(&ProfilePolicy::new(1e-8))?;
+            .to_profile(&ProfilePolicy::new(1e-8))?;
         let plate = Extrusion::new(profile, Placement3::IDENTITY, 20.0)?;
         // Center the complete oblique void through the slab's middle plane.
         let bore = Bore::new(
