@@ -1,18 +1,29 @@
 // Copyright 2026 the Exedra Authors
 // SPDX-License-Identifier: Apache-2.0 OR MIT
 
-//! Outward proof hulls of original bounded curves.
+//! Outward enclosures of curves, which contain the exact curve together
+//! with every rounding made in computing them.
 //!
-//! This module owns rounding in native source evaluation and distance/support
-//! bounds. It does not own closest-point search or a subdivision schedule.
-//! Every arithmetic operation uses the intersection kernel's intervals. A
-//! finite f64 input denotes its exact real value; overflow or lost positive
-//! denominators are refused. Square roots use IEEE 754 square root followed by
-//! outward rounding, as the crate's other arithmetic does.
+//! Two kinds serve two kinds of proof. A [`BezierEnclosure`] holds a whole
+//! planar rational Bezier piece as interval homogeneous controls whose hull
+//! contains it; halving it keeps the identity of the controls its halves
+//! share, so pieces of one outline can be proved apart, or proved to meet
+//! only at a shared end. A [`PreparedNurbsEnclosure`] holds an original
+//! NURBS source, in any dimension, and encloses its points over intervals
+//! of its parameter, with metered work and no allocation once prepared, for
+//! distance and support bounds in queries; it owns rounding in source
+//! evaluation, not closest-point search or a subdivision schedule.
+//!
+//! Every arithmetic operation uses the crate's outward intervals. A finite
+//! `f64` input denotes its exact real value; overflow or lost positive
+//! denominators are refused.
 
-use crate::{ValidNurbs, intersect::interval::I};
+mod hull;
+
+pub use hull::{BezierEnclosure, HullSeparation};
+
+use crate::{ValidNurbs, interval::I};
 use alloc::vec::Vec;
-use exedra_math::Real;
 
 /// An original curve-parameter interval and its normalized traversal direction.
 ///
@@ -67,19 +78,6 @@ impl core::error::Error for EnclosureError {}
 fn checked(i: I) -> Result<I, EnclosureError> {
     i.valid().then_some(i).ok_or(EnclosureError::NumericLimit)
 }
-fn divide(a: I, b: I) -> Result<I, EnclosureError> {
-    if !b.excludes_zero() {
-        return Err(EnclosureError::NumericLimit);
-    }
-    let q = [a.lo / b.lo, a.lo / b.hi, a.hi / b.lo, a.hi / b.hi];
-    if q.iter().any(|x| !x.is_finite()) {
-        return Err(EnclosureError::NumericLimit);
-    }
-    checked(I {
-        lo: q.into_iter().fold(f64::INFINITY, f64::min).next_down(),
-        hi: q.into_iter().fold(f64::NEG_INFINITY, f64::max).next_up(),
-    })
-}
 fn exact<const N: usize>(v: [f64; N]) -> Result<[I; N], EnclosureError> {
     if v.iter().any(|v| !v.is_finite()) {
         return Err(EnclosureError::InvalidInput);
@@ -112,44 +110,6 @@ fn parameter(range: [f64; 2], reversed: bool, fraction: I) -> Result<I, Enclosur
         })
         .ok_or(EnclosureError::NumericLimit)
 }
-fn norm<const N: usize>(v: [I; N]) -> Result<I, EnclosureError> {
-    let scale = v
-        .iter()
-        .map(|i| i.lo.abs().max(i.hi.abs()))
-        .fold(0.0, f64::max);
-    if scale == 0.0 {
-        return Ok(I::ZERO);
-    }
-    if !scale.is_finite() {
-        return Err(EnclosureError::NumericLimit);
-    }
-    let mut sum = I::ZERO;
-    for i in v {
-        sum = checked(sum + divide(i, I::p(scale))?.square())?;
-    }
-    checked(
-        I {
-            lo: <f64 as Real>::sqrt(sum.lo.max(0.0)).next_down().max(0.0),
-            hi: <f64 as Real>::sqrt(sum.hi).next_up(),
-        } * I::p(scale),
-    )
-}
-fn blend(a: I, b: I, t: I) -> Result<I, EnclosureError> {
-    // Every caller supplies a unit coefficient. Convex combinations of two
-    // copies of one interval stay in that interval, including non-point boxes.
-    // Explicit affine arithmetic gives this same intersection when finite;
-    // the hull proof also avoids unnecessary overflow for large equal boxes.
-    if a.lo == b.lo && a.hi == b.hi {
-        fractions([t.lo, t.hi])?;
-        return checked(a);
-    }
-    // The exact convex combination lies in the original union as well. The
-    // intersection avoids dependency widening when t covers the whole unit.
-    checked((I::ONE - t) * a + t * b)?
-        .intersect(a.union(b))
-        .ok_or(EnclosureError::NumericLimit)
-}
-
 /// An opaque box enclosing native positions, including evaluation roundoff.
 #[derive(Clone, Copy, Debug)]
 pub struct PointEnclosure<const N: usize = 3> {
@@ -187,7 +147,7 @@ impl<const N: usize> PointEnclosure<N> {
         let t = fractions(fraction)?;
         let mut coordinates = [I::ZERO; N];
         for (k, i) in coordinates.iter_mut().enumerate() {
-            *i = blend(self.coordinates[k], other.coordinates[k], t)?;
+            *i = checked(self.coordinates[k].lerp(other.coordinates[k], t))?;
         }
         Ok(Self { coordinates })
     }
@@ -196,7 +156,7 @@ impl<const N: usize> PointEnclosure<N> {
     pub fn distance_bounds(self, target: [f64; N]) -> Result<[f64; 2], EnclosureError> {
         let target = exact(target)?;
         let residual: [I; N] = core::array::from_fn(|k| self.coordinates[k] - target[k]);
-        let d = norm(residual)?;
+        let d = checked(I::norm(residual))?;
         Ok([d.lo.max(0.0), d.hi])
     }
     /// Distance bounds for every pair of points in the two enclosures.
@@ -204,7 +164,7 @@ impl<const N: usize> PointEnclosure<N> {
     /// native positions whose representatives have independent roundoff.
     pub fn distance_bounds_to(self, other: Self) -> Result<[f64; 2], EnclosureError> {
         let residual: [I; N] = core::array::from_fn(|k| self.coordinates[k] - other.coordinates[k]);
-        let distance = norm(residual)?;
+        let distance = checked(I::norm(residual))?;
         Ok([distance.lo.max(0.0), distance.hi])
     }
 }
@@ -227,7 +187,7 @@ impl<const N: usize> ProjectionEnclosure<N> {
             return Err(EnclosureError::InvalidInput);
         }
         Ok(Self {
-            value: blend(self.value, other.value, fractions(fraction)?)?,
+            value: checked(self.value.lerp(other.value, fractions(fraction)?))?,
             ..self
         })
     }
@@ -237,7 +197,9 @@ impl<const N: usize> ProjectionEnclosure<N> {
         if separation == 0.0 || self.length.hi == 0.0 {
             return Ok(0.0);
         }
-        Ok(divide(I::p(separation), I::p(self.length.hi))?.lo.max(0.0))
+        Ok(checked(I::p(separation) / I::p(self.length.hi))?
+            .lo
+            .max(0.0))
     }
 }
 fn projected<const N: usize>(
@@ -295,7 +257,7 @@ pub fn line_projection<const N: usize>(
         value,
         target,
         direction,
-        length: norm(exact(direction)?)?,
+        length: checked(I::norm(exact(direction)?))?,
     })
 }
 
@@ -356,7 +318,7 @@ pub fn line_restriction_error<const N: usize>(
     if domain == [0.0, 1.0] && range == child_range && reversed == child_reversed {
         return Ok(0.0);
     }
-    Ok(checked(error * norm(direction)?)?.hi)
+    Ok(checked(error * checked(I::norm(direction))?)?.hi)
 }
 
 #[derive(Clone, Copy, Debug)]
@@ -435,15 +397,15 @@ fn rational_blend<const N: usize>(
     if alpha.lo == 1. && alpha.hi == 1. {
         return Ok(b);
     }
-    let weight = blend(a.weight, b.weight, alpha)?
+    let weight = checked(a.weight.lerp(b.weight, alpha))?
         .intersect(weights)
         .ok_or(EnclosureError::NumericLimit)?;
-    let beta = divide(alpha * b.weight, weight)?
+    let beta = checked(alpha * b.weight / weight)?
         .intersect(I::UNIT)
         .ok_or(EnclosureError::NumericLimit)?;
     let mut point = [I::ZERO; N];
     for (c, value) in point.iter_mut().enumerate() {
-        *value = blend(a.point[c], b.point[c], beta)?;
+        *value = checked(a.point[c].lerp(b.point[c], beta))?;
     }
     Ok(RationalControl { point, weight })
 }
@@ -454,7 +416,7 @@ fn alpha(t: I, left: f64, right: f64) -> Result<I, EnclosureError> {
     if t.lo == t.hi && t.lo == right {
         return Ok(I::ONE);
     }
-    divide(t - I::p(left), I::p(right) - I::p(left))?
+    checked((t - I::p(left)) / (I::p(right) - I::p(left)))?
         .intersect(I::UNIT)
         .ok_or(EnclosureError::NumericLimit)
 }
@@ -567,7 +529,7 @@ impl<'a, const N: usize> PreparedNurbsEnclosure<'a, N> {
             }
         }
         let weights = I {
-            lo: divide(I::p(minimum), I::p(scale))?.lo,
+            lo: checked(I::p(minimum) / I::p(scale))?.lo,
             hi: 1.,
         };
         if weights.lo <= 0. {
@@ -590,7 +552,7 @@ impl<'a, const N: usize> PreparedNurbsEnclosure<'a, N> {
                     let weight = if w == scale {
                         I::ONE
                     } else {
-                        divide(I::p(w), I::p(scale))?
+                        checked(I::p(w) / I::p(scale))?
                     };
                     scratch.row[j] = RationalControl {
                         point: exact(curve.points[c])?,
@@ -708,7 +670,7 @@ impl<'a, const N: usize> PreparedNurbsEnclosure<'a, N> {
                     return Err(EnclosureError::WorkLimit);
                 }
                 let residual = core::array::from_fn::<_, N, _>(|c| p.point[c] - center[c]);
-                radius = radius.max(norm(residual)?.hi);
+                radius = radius.max(checked(I::norm(residual))?.hi);
                 minimum = minimum.min(p.weight.lo);
             }
             let mut numerator = 0.0_f64;
@@ -721,16 +683,16 @@ impl<'a, const N: usize> PreparedNurbsEnclosure<'a, N> {
                 let residual = core::array::from_fn::<_, N, _>(|c| {
                     (b.point[c] - center[c]) * b.weight - (a.point[c] - center[c]) * a.weight
                 });
-                numerator = numerator.max(norm(residual)?.hi);
+                numerator = numerator.max(checked(I::norm(residual))?.hi);
                 let delta = checked(b.weight - a.weight)?;
                 denominator = denominator.max(delta.lo.abs()).max(delta.hi.abs());
             }
-            let native = divide(
-                checked(degree * (I::p(numerator) + I::p(radius) * I::p(denominator)))?,
-                I::p(minimum),
+            let native = checked(
+                checked(degree * (I::p(numerator) + I::p(radius) * I::p(denominator)))?
+                    / I::p(minimum),
             )?;
             let span_width = checked(I::p(curve.knots[k + 1]) - I::p(curve.knots[k]))?;
-            let scale = divide(source_width, span_width)?;
+            let scale = checked(source_width / span_width)?;
             maximum = maximum.max(checked(native * scale)?.hi);
         }
         Ok(maximum)
@@ -770,7 +732,7 @@ impl<'a, const N: usize> PreparedNurbsEnclosure<'a, N> {
             return Ok(0.0);
         }
         let width = checked(I::p(self.range[1]) - I::p(self.range[0]))?;
-        let normalized = divide(error, width)?;
+        let normalized = checked(error / width)?;
         let speed = self.speed_upper(&mut admit)?;
         Ok(checked(normalized * I::p(speed))?.hi)
     }
@@ -796,7 +758,7 @@ impl<'a, const N: usize> PreparedNurbsEnclosure<'a, N> {
         scratch: &mut EnclosureScratch<N>,
         mut admit: impl FnMut() -> bool,
     ) -> Result<ProjectionEnclosure<N>, EnclosureError> {
-        let length = norm(exact(direction)?)?;
+        let length = checked(I::norm(exact(direction)?))?;
         exact(target)?;
         let value = self.evaluate(fraction, scratch, Some((target, direction)), &mut admit)?[0];
         Ok(ProjectionEnclosure {
@@ -858,7 +820,7 @@ impl<'a, const N: usize> PreparedNurbsEnclosure<'a, N> {
             let relative = if local.lo == 1. {
                 I::ZERO
             } else {
-                divide(I::p(local.hi) - I::p(local.lo), I::ONE - I::p(local.lo))?
+                checked((I::p(local.hi) - I::p(local.lo)) / (I::ONE - I::p(local.lo)))?
                     .intersect(I::UNIT)
                     .ok_or(EnclosureError::NumericLimit)?
             };
@@ -950,7 +912,7 @@ mod tests {
         )
         .unwrap();
         let bound = prepared.speed_upper(|| true).unwrap();
-        let exact = 2. * <f64 as Real>::sqrt(2.);
+        let exact = 2. * libm::sqrt(2.);
         assert!(bound >= exact && bound <= exact + 1e-12);
         let jump = NurbsCurve::new(
             2,
@@ -1200,48 +1162,18 @@ mod tests {
     }
 
     #[test]
-    fn identical_interval_blends_keep_the_exact_convex_hull() {
-        for a in [
-            I::ZERO,
-            I::p(f64::from_bits(1)),
-            I { lo: -3., hi: 7. },
-            I {
-                lo: 1e100,
-                hi: 2e100,
-            },
-        ] {
-            for t in [I::ZERO, I::ONE, I::p(0.37), I::UNIT] {
-                let exhaustive = checked((I::ONE - t) * a + t * a)
-                    .unwrap()
-                    .intersect(a)
-                    .unwrap();
-                let found = blend(a, a, t).unwrap();
-                assert_eq!([found.lo, found.hi], [a.lo, a.hi]);
-                assert_eq!([found.lo, found.hi], [exhaustive.lo, exhaustive.hi]);
-            }
-        }
-        // The shortcut must retain refusal of invalid interval storage.
-        let invalid = I { lo: 2., hi: 1. };
-        assert!(matches!(
-            blend(invalid, invalid, I::UNIT),
-            Err(EnclosureError::NumericLimit)
-        ));
-        let large = I {
-            lo: f64::MAX * 0.5,
-            hi: f64::MAX,
-        };
-        assert!(checked((I::ONE - I::UNIT) * large + I::UNIT * large).is_err());
-        let found = blend(large, large, I::UNIT).unwrap();
-        assert_eq!([found.lo, found.hi], [large.lo, large.hi]);
-        for t in [
-            I::p(f64::NAN),
-            I::p(f64::INFINITY),
-            I::p(-0.1),
-            I { lo: 0.8, hi: 0.2 },
-            I { lo: 0., hi: 1.1 },
+    fn blends_refuse_fractions_outside_the_unit_range() {
+        let a = PointEnclosure::point([0.; 3]).unwrap();
+        let b = PointEnclosure::point([1.; 3]).unwrap();
+        for fraction in [
+            [f64::NAN; 2],
+            [f64::INFINITY; 2],
+            [-0.1; 2],
+            [0.8, 0.2],
+            [0., 1.1],
         ] {
             assert!(matches!(
-                blend(I::ZERO, I::ZERO, t),
+                a.affine_blend(b, fraction),
                 Err(EnclosureError::InvalidInput)
             ));
         }
@@ -1399,7 +1331,7 @@ mod tests {
             .project([0., 1.], [0., 1., 0.], [1., -1., 0.], &mut scratch, || true)
             .unwrap();
         let lower = projection.distance_lower().unwrap();
-        assert!(lower > 0.7 && lower <= <f64 as Real>::sqrt(0.5));
+        assert!(lower > 0.7 && lower <= libm::sqrt(0.5));
         assert_eq!(
             point.affine_blend(point, [0., 1.]).unwrap().bounds(),
             bounds

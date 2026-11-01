@@ -8,7 +8,7 @@ use core::f64::consts::PI;
 
 use exedra_math::predicates::{Orientation, orient2d};
 
-use crate::intersect::{BezierEnclosure, HullSeparation};
+use crate::enclosure::{BezierEnclosure, HullSeparation};
 use crate::profile::Bezier;
 use crate::profile::arc::{
     Arc, Piece, bounds_may_contact, cross, dot, length, sub, turns, winding_angle,

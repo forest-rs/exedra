@@ -21,14 +21,10 @@
 //! These are intersections of the pieces as given: a caller whose pieces
 //! approximate other curves answers for that approximation.
 
-mod enclosure;
-pub(crate) mod interval;
-pub use enclosure::{BezierEnclosure, HullSeparation};
-
 use alloc::vec::Vec;
 
+use crate::interval::I;
 use crate::vector::WeightedPoint;
-use interval::I;
 
 /// Pieces of more controls than this are refused rather than evaluated.
 pub const MAX_ORDER: usize = 16;

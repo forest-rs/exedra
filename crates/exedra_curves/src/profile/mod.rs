@@ -17,7 +17,7 @@
 //! closer than the separation, holes outside the outer loop or inside one
 //! another. Lines and arcs are checked in closed form; a profile with Bezier
 //! segments is proved by outward-rounded enclosures
-//! ([`crate::intersect::BezierEnclosure`]). It reports the first violation
+//! ([`crate::enclosure::BezierEnclosure`]). It reports the first violation
 //! with the segments involved and never moves, merges or heals geometry.
 //!
 //! The module also owns deterministic circular sampling counts:
