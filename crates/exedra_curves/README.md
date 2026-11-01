@@ -114,7 +114,7 @@ Regions do not yet combine Bezier segments, and refuse them.
 
 `SegTag` is the shared feature label used by constructive profiles and analytic
 face roles. A tag passed to a constructive cutout stays the same typed value
-after `to_line_arc` and extrusion; queries can match `tag: Some(VENT)` directly.
+after `to_profile` and extrusion; queries can match `tag: Some(VENT)` directly.
 Tags do not replace the owning geometry's scoped face and edge ids.
 
 ```rust

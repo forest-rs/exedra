@@ -634,32 +634,33 @@ impl Profile2 {
         Self::new(self.outer.translated(offset)?, holes)
     }
 
-    /// This profile as a line and arc [`exedra_curves::profile::Profile`], for heads
-    /// that accept only exact lines and circular arcs.
+    /// This profile as a shared [`exedra_curves::profile::Profile`], which
+    /// the geometry heads build exactly.
     ///
-    /// Endpoints, bulges and tags carry over unchanged, and `policy` validates
-    /// the arrangement. Cubic segments are refused rather than approximated,
-    /// and policy-defined segments are refused because their policy is local
-    /// to a recipe.
+    /// Endpoints, bulges and tags carry over unchanged, cubic segments
+    /// become polynomial Bezier segments with the same controls, and
+    /// `policy` validates the arrangement. Policy-defined segments are
+    /// refused, because their policy is local to a recipe.
     ///
     /// ```
     /// use exedra_constructive::builders::{circle, rect_centered};
     /// use exedra_curves::profile::ProfilePolicy;
     ///
     /// let plate = rect_centered(80.0, 40.0)?.with_cutouts([circle(5.0)?])?;
-    /// let shared = plate.to_line_arc(&ProfilePolicy::new(1e-6))?;
+    /// let shared = plate.to_profile(&ProfilePolicy::new(1e-6))?;
     /// assert_eq!(shared.holes().len(), 1);
     /// # Ok::<(), Box<dyn core::error::Error>>(())
     /// ```
     ///
     /// # Errors
     ///
-    /// Returns [`LineArcError::Unsupported`] for the first cubic or
+    /// Returns [`ToProfileError::PolicyDefined`] for the first
     /// policy-defined segment, then any loop or arrangement error.
-    pub fn to_line_arc(
+    pub fn to_profile(
         &self,
         policy: &exedra_curves::profile::ProfilePolicy,
-    ) -> Result<exedra_curves::profile::Profile, LineArcError> {
+    ) -> Result<exedra_curves::profile::Profile, ToProfileError> {
+        use exedra_curves::profile::{Bezier, Segment};
         let convert = |loop_: &Loop2, hole: Option<usize>| {
             let segments = loop_
                 .segs()
@@ -668,10 +669,14 @@ impl Profile2 {
                 .map(|(seg, s)| {
                     let to = [s.to.x, s.to.y];
                     let segment = match s.kind {
-                        SegKind::Line => exedra_curves::profile::Segment::line(to),
-                        SegKind::Arc { bulge } => exedra_curves::profile::Segment::arc(to, bulge),
-                        SegKind::Cubic { .. } | SegKind::PolicyTo { .. } => {
-                            return Err(LineArcError::Unsupported { hole, seg });
+                        SegKind::Line => Segment::line(to),
+                        SegKind::Arc { bulge } => Segment::arc(to, bulge),
+                        SegKind::Cubic { c1, c2 } => Segment::bezier(
+                            to,
+                            Bezier::new(alloc::vec![[c1.x, c1.y], [c2.x, c2.y]], None),
+                        ),
+                        SegKind::PolicyTo { .. } => {
+                            return Err(ToProfileError::PolicyDefined { hole, seg });
                         }
                     };
                     Ok(match s.tag {
@@ -680,7 +685,7 @@ impl Profile2 {
                     })
                 })
                 .collect::<Result<Vec<_>, _>>()?;
-            exedra_curves::profile::Loop::new(segments).map_err(LineArcError::Loop)
+            exedra_curves::profile::Loop::new(segments).map_err(ToProfileError::Loop)
         };
         let outer = convert(&self.outer, None)?;
         let holes = self
@@ -689,7 +694,7 @@ impl Profile2 {
             .enumerate()
             .map(|(hole, loop_)| convert(loop_, Some(hole)))
             .collect::<Result<Vec<_>, _>>()?;
-        exedra_curves::profile::Profile::new(outer, holes, policy).map_err(LineArcError::Profile)
+        exedra_curves::profile::Profile::new(outer, holes, policy).map_err(ToProfileError::Profile)
     }
 
     /// The outer loop.
@@ -706,33 +711,33 @@ impl Profile2 {
 }
 
 impl exedra_curves::profile::IntoProfile for &Profile2 {
-    type Error = LineArcError;
+    type Error = ToProfileError;
 
     fn into_profile(
         self,
         policy: &exedra_curves::profile::ProfilePolicy,
     ) -> Result<exedra_curves::profile::Profile, Self::Error> {
-        self.to_line_arc(policy)
+        self.to_profile(policy)
     }
 }
 
 impl exedra_curves::profile::IntoProfile for Profile2 {
-    type Error = LineArcError;
+    type Error = ToProfileError;
 
     fn into_profile(
         self,
         policy: &exedra_curves::profile::ProfilePolicy,
     ) -> Result<exedra_curves::profile::Profile, Self::Error> {
-        self.to_line_arc(policy)
+        self.to_profile(policy)
     }
 }
 
-/// Why a [`Profile2`] has no line and arc form.
+/// Why a [`Profile2`] has no shared [`exedra_curves::profile::Profile`] form.
 #[derive(Copy, Clone, Debug, PartialEq, Eq)]
 #[non_exhaustive]
-pub enum LineArcError {
-    /// A cubic or policy-defined segment has no exact line or arc form.
-    Unsupported {
+pub enum ToProfileError {
+    /// A policy-defined segment, whose policy is local to its recipe.
+    PolicyDefined {
         /// Hole index, or `None` for the outer loop.
         hole: Option<usize>,
         /// Offending segment.
@@ -744,11 +749,11 @@ pub enum LineArcError {
     Profile(exedra_curves::profile::ProfileError),
 }
 
-impl core::fmt::Display for LineArcError {
+impl core::fmt::Display for ToProfileError {
     fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
         match self {
-            Self::Unsupported { hole, seg } => {
-                write!(f, "{}: segment {seg} is not a line or arc", Loc(*hole))
+            Self::PolicyDefined { hole, seg } => {
+                write!(f, "{}: segment {seg} is policy-defined", Loc(*hole))
             }
             Self::Loop(error) => error.fmt(f),
             Self::Profile(error) => error.fmt(f),
@@ -756,10 +761,10 @@ impl core::fmt::Display for LineArcError {
     }
 }
 
-impl core::error::Error for LineArcError {
+impl core::error::Error for ToProfileError {
     fn source(&self) -> Option<&(dyn core::error::Error + 'static)> {
         match self {
-            Self::Unsupported { .. } => None,
+            Self::PolicyDefined { .. } => None,
             Self::Loop(error) => Some(error),
             Self::Profile(error) => Some(error),
         }
@@ -1346,13 +1351,13 @@ mod tests {
     }
 
     #[test]
-    fn line_arc_form_keeps_geometry_and_tags_and_refuses_curves() {
+    fn shared_form_keeps_geometry_and_tags_and_refuses_policy_segments() {
         let plate = crate::builders::rounded_rect_centered(8.0, 4.0, 1.0)
             .unwrap()
             .with_cutouts([crate::builders::circle(0.5).unwrap()])
             .unwrap();
         let policy = exedra_curves::profile::ProfilePolicy::new(1e-9);
-        let shared = plate.to_line_arc(&policy).unwrap();
+        let shared = plate.to_profile(&policy).unwrap();
         let source = plate.holes()[0].segs();
         let converted = shared.holes()[0].segments();
         assert_eq!(converted.len(), source.len());
@@ -1372,10 +1377,16 @@ mod tests {
             .unwrap(),
         )
         .unwrap();
-        assert_eq!(
-            cubic.to_line_arc(&policy),
-            Err(LineArcError::Unsupported { hole: None, seg: 1 })
-        );
+        let shared = cubic.to_profile(&policy).unwrap();
+        let exedra_curves::profile::Curve::Bezier(bezier) = &shared.outer().segments()[1].curve
+        else {
+            panic!("cubics become Bezier segments");
+        };
+        assert_eq!(bezier.interior(), [[1.5, 1.0], [0.5, 1.0]]);
+        assert_eq!(bezier.weights(), None);
+        // Under y = 3t(1 - t), the integral of -y dx is 63/60.
+        assert!((shared.area() - 1.05).abs() < 1e-12);
+
         let policy_curve = Profile2::simple(
             Loop2::new(vec![
                 Seg2::line((2.0, 0.0)),
@@ -1389,8 +1400,8 @@ mod tests {
         )
         .unwrap();
         assert_eq!(
-            policy_curve.to_line_arc(&policy),
-            Err(LineArcError::Unsupported { hole: None, seg: 1 })
+            policy_curve.to_profile(&policy),
+            Err(ToProfileError::PolicyDefined { hole: None, seg: 1 })
         );
     }
 

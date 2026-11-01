@@ -122,8 +122,8 @@ fn plate() -> Result<Body<u32>, Box<dyn std::error::Error>> {
     let holes = [-29.0, 29.0].map(|x| builders::circle(3.5).and_then(|p| p.translated((x, 0.0))));
     let profile = builders::rounded_rect_centered(80.0, 44.0, 4.0)?
         .with_cutouts(holes.into_iter().collect::<Result<Vec<_>, _>>()?)?
-        .to_line_arc(&policy)?;
-    let window = builders::rounded_rect_centered(36.0, 24.0, 3.0)?.to_line_arc(&policy)?;
+        .to_profile(&policy)?;
+    let window = builders::rounded_rect_centered(36.0, 24.0, 3.0)?.to_profile(&policy)?;
     let recess = SegTag(1000);
     let solid = Extrusion::new(profile, Placement3::IDENTITY, 8.0)?.with_pocket(
         Pocket::from_profile(&window, End::End, 3.0)?.tagged(recess),

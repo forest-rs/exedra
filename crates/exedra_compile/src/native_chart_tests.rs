@@ -36,7 +36,7 @@ pub(crate) fn revolution() -> NativeSource {
 fn sweep() -> NativeSource {
     let profile = builders::rect_centered(4.0, 4.0)
         .unwrap()
-        .to_line_arc(&ProfilePolicy::new(1e-9))
+        .to_profile(&ProfilePolicy::new(1e-9))
         .unwrap();
     let spans = [PathSegment3::Line {
         to: [0.0, 0.0, 5.0],
@@ -57,7 +57,7 @@ fn loft() -> NativeSource {
     let policy = ProfilePolicy::new(1e-9);
     let profile = builders::rect_centered(4.0, 4.0)
         .unwrap()
-        .to_line_arc(&policy)
+        .to_profile(&policy)
         .unwrap();
     Loft::from_profiles(
         [
@@ -331,7 +331,7 @@ fn native_chart_configuration_and_capability_refusals_precede_cache_work() {
     assert_eq!(compiler.counters(), counters);
     let shape = builders::rect_centered(40.0, 30.0)
         .unwrap()
-        .to_line_arc(&ProfilePolicy::new(1e-9))
+        .to_profile(&ProfilePolicy::new(1e-9))
         .unwrap();
     let plate =
         exedra_analytic::extrusion::Extrusion::new(shape, Placement3::IDENTITY, 10.0).unwrap();
@@ -545,7 +545,7 @@ fn borrowed_constructors_expose_caps_planes_and_structural_chart_kind() {
     }
     let shape = builders::rect_centered(40.0, 30.0)
         .unwrap()
-        .to_line_arc(&ProfilePolicy::new(1e-9))
+        .to_profile(&ProfilePolicy::new(1e-9))
         .unwrap();
     let plate = exedra_analytic::extrusion::Extrusion::new(
         shape,
@@ -587,7 +587,7 @@ fn charted_torus_delivered_vertex_budget_witness() {
         .unwrap()
         .translated((20.0, 0.0))
         .unwrap()
-        .to_line_arc(&validation)
+        .to_profile(&validation)
         .unwrap();
     let torus = Revolution::new(profile, Placement3::IDENTITY, core::f64::consts::TAU).unwrap();
     let native_policy = exedra_analytic::realize::RealizationPolicy {

@@ -31,8 +31,8 @@ struct Study {
 }
 
 fn studies() -> Result<Vec<Study>, Box<dyn Error>> {
-    let horizontal = builders::rect_centered(40.0, 10.0)?.to_line_arc(&VALIDATION)?;
-    let vertical = builders::rect_centered(10.0, 40.0)?.to_line_arc(&VALIDATION)?;
+    let horizontal = builders::rect_centered(40.0, 10.0)?.to_profile(&VALIDATION)?;
+    let vertical = builders::rect_centered(10.0, 40.0)?.to_profile(&VALIDATION)?;
     let union = horizontal.combine(&vertical, RegionOp::Union, &REGION)?;
     let evidence = format!(
         "{} events; {} boundary sources",
@@ -78,10 +78,10 @@ fn studies() -> Result<Vec<Study>, Box<dyn Error>> {
     ];
     let a = builders::circle(12.0)?
         .translated((-6.0, 0.0))?
-        .to_line_arc(&VALIDATION)?;
+        .to_profile(&VALIDATION)?;
     let b = builders::circle(12.0)?
         .translated((6.0, 0.0))?
-        .to_line_arc(&VALIDATION)?;
+        .to_profile(&VALIDATION)?;
     for (name, title, op) in [
         (
             "circle_union",
@@ -110,8 +110,8 @@ fn studies() -> Result<Vec<Study>, Box<dyn Error>> {
             ),
         });
     }
-    let plate = builders::rect_centered(40.0, 20.0)?.to_line_arc(&VALIDATION)?;
-    let stripe = builders::rect_centered(8.0, 30.0)?.to_line_arc(&VALIDATION)?;
+    let plate = builders::rect_centered(40.0, 20.0)?.to_profile(&VALIDATION)?;
+    let stripe = builders::rect_centered(8.0, 30.0)?.to_profile(&VALIDATION)?;
     let split = plate.combine(&stripe, RegionOp::Difference, &REGION)?;
     studies.push(Study {
         name: "split_difference",
@@ -119,8 +119,8 @@ fn studies() -> Result<Vec<Study>, Box<dyn Error>> {
         evidence: format!("{} connected profiles", split.profiles.len()),
         profiles: split.profiles,
     });
-    let square = builders::rect_centered(40.0, 40.0)?.to_line_arc(&VALIDATION)?;
-    let ring = builders::ring(14.0, 6.0)?.to_line_arc(&VALIDATION)?;
+    let square = builders::rect_centered(40.0, 40.0)?.to_profile(&VALIDATION)?;
+    let ring = builders::ring(14.0, 6.0)?.to_profile(&VALIDATION)?;
     let island = square.combine(&ring, RegionOp::Difference, &REGION)?;
     studies.push(Study {
         name: "nested_island",

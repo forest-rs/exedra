@@ -27,7 +27,7 @@ fn profile(holes: u32) -> Result<Profile, Box<dyn Error>> {
         .collect::<Result<_, _>>()?;
     Ok(builders::rounded_rect_centered(width, 40.0, 3.0)?
         .with_cutouts(cutouts)?
-        .to_line_arc(&ProfilePolicy::new(1e-6))?)
+        .to_profile(&ProfilePolicy::new(1e-6))?)
 }
 
 fn median(samples: &[f64]) -> f64 {

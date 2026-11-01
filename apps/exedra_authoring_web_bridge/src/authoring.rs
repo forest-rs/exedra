@@ -1028,7 +1028,7 @@ impl Request {
             let mut feature = None;
             let canonical = |profile: Profile2| {
                 profile
-                    .to_line_arc(&policy)
+                    .to_profile(&policy)
                     .map(|p| p.tagged(UNNAMED))
                     .map_err(|e| failure(e.to_string()))
             };

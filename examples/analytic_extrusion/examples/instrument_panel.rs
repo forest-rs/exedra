@@ -101,7 +101,7 @@ impl Finish {
 }
 
 fn shared(profile: &Profile2) -> exedra::curves::profile::Profile {
-    profile.to_line_arc(&POLICY).expect("line and arc profile")
+    profile.to_profile(&POLICY).expect("line and arc profile")
 }
 
 fn solid(profile: &Profile2, z: f64, length: f64) -> Result<Extrusion, Box<dyn std::error::Error>> {

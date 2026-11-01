@@ -91,7 +91,7 @@ pub enum NativeGeometryRef<'a> {
 /// use exedra_constructive::builders;
 /// use exedra_math::Placement3;
 /// use exedra_curves::profile::ProfilePolicy;
-/// let profile = builders::circle(5.0)?.to_line_arc(&ProfilePolicy::new(1e-9))?;
+/// let profile = builders::circle(5.0)?.to_profile(&ProfilePolicy::new(1e-9))?;
 /// let native = NativeSource::from(Extrusion::new(profile, Placement3::IDENTITY, 3.0)?);
 /// let prepared = PreparedSource::new(PartSource::Native(native.clone()));
 /// let snapshot = PartCompiler::new().compile_snapshot(

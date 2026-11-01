@@ -11,9 +11,9 @@ use exedra::analytic::extrusion::{
 use exedra::compile::{CompilePolicy, PartCompiler, PartId, PartInput, PartSource};
 use exedra::constructive::builders;
 use exedra::constructive::chart::{ChartTransform, SurfaceChart};
-use exedra::constructive::ir::Placement3;
+use exedra::constructive::ir::{Placement3, PolicyId};
 use exedra::constructive::path::PathCursor3;
-use exedra::constructive::profile::{LineArcError, LoopCursor, MirrorLine, Profile2, Seg2};
+use exedra::constructive::profile::{LoopCursor, MirrorLine, Profile2, Seg2, ToProfileError};
 use exedra::curves::profile::{ProfilePolicy, SegTag};
 use exedra::gltf::{
     GltfExportOptions, GltfMesh, GltfNode, GltfScene, MaterialResolver, Texture,
@@ -106,20 +106,34 @@ fn curved_rail() -> Result<Mesh> {
     Ok(output.mesh)
 }
 
-fn verify_typed_refusal() -> Result<()> {
+fn verify_cubic_and_policy_segments() -> Result<()> {
+    let cubic = Seg2::cubic((2.0, 2.0), (3.0, 0.0), (3.0, 2.0));
     let outline = LoopCursor::new((0.0, 0.0))
         .line_to((2.0, 0.0))
-        .segment(Seg2::cubic((2.0, 2.0), (3.0, 0.0), (3.0, 2.0)))
+        .segment(cubic.clone())
+        .line_to((0.0, 2.0))
+        .close()?;
+    let solid = Workplane::XY.extrude_profile(Profile2::simple(outline)?, 2.0, &POLICY)?;
+    assert!(solid.body().is_closed(), "cubic extrusion must close");
+    println!(
+        "Cubic segment extruded as an exact ruled wall: {} native faces",
+        solid.body().faces().len()
+    );
+    // A policy-defined segment's policy is local to its recipe.
+    let outline = LoopCursor::new((0.0, 0.0))
+        .line_to((2.0, 0.0))
+        .segment(Seg2::policy((2.0, 2.0), PolicyId(0), cubic.kind))
         .line_to((0.0, 2.0))
         .close()?;
     match Workplane::XY.extrude_profile(Profile2::simple(outline)?, 2.0, &POLICY) {
-        Err(ProfileExtrusionError::Profile(LineArcError::Unsupported { hole: None, seg: 1 })) => {
-            println!(
-                "Cubic input refused at authored segment 1; no flattening or lost error context"
-            );
+        Err(ProfileExtrusionError::Profile(ToProfileError::PolicyDefined {
+            hole: None,
+            seg: 1,
+        })) => {
+            println!("Policy-defined input refused at authored segment 1");
             Ok(())
         }
-        other => Err(format!("expected typed unsupported-curve error, got {other:?}").into()),
+        other => Err(format!("expected typed policy-defined refusal, got {other:?}").into()),
     }
 }
 
@@ -179,7 +193,7 @@ fn main() -> Result<()> {
     let rail = curved_rail()?;
     check_mesh(names[3], &rail)?;
     sources.push(PartSource::Baked(rail));
-    verify_typed_refusal()?;
+    verify_cubic_and_policy_segments()?;
     write_scene(&path, &names, &sources)?;
     println!("Wrote {path}");
     Ok(())

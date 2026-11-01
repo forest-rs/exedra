@@ -233,7 +233,7 @@ mod tests {
         let validation = ProfilePolicy::new(1e-6);
         let profile = builders::rect_centered(40.0, 30.0)
             .unwrap()
-            .to_line_arc(&validation)
+            .to_profile(&validation)
             .unwrap();
         let plate = exedra_analytic::extrusion::Extrusion::new(profile, Placement3::IDENTITY, 10.0)
             .unwrap();

@@ -38,7 +38,7 @@ struct Prepared {
     sweep: Option<f64>,
 }
 fn shared(profile: &Profile2) -> Result<Profile> {
-    Ok(profile.to_line_arc(&POLICY)?)
+    Ok(profile.to_profile(&POLICY)?)
 }
 fn prepare(spec: &Value) -> Result<Prepared> {
     if spec["kind"] == "revolve" {

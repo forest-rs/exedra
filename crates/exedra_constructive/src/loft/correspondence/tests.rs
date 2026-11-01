@@ -10,8 +10,8 @@ use crate::{
 const POLICY: CorrespondencePolicy = CorrespondencePolicy::new(ProfilePolicy::new(1e-9));
 
 fn check_sources(input: &Profile2, output: &MatchedProfile) {
-    let source = input.to_line_arc(&POLICY.profile).unwrap();
-    let prepared = output.profile.to_line_arc(&POLICY.profile).unwrap();
+    let source = input.to_profile(&POLICY.profile).unwrap();
+    let prepared = output.profile.to_profile(&POLICY.profile).unwrap();
     assert!(
         (source.area() - prepared.area()).abs() < 1e-9,
         "exact split preserves area"
@@ -295,9 +295,12 @@ fn cubics_and_missing_holes_keep_authored_refusal_context() {
             ],
             &POLICY
         ),
-        Err(CorrespondenceError::Profile {
+        Err(CorrespondenceError::Curve {
             section: 1,
-            error: LineArcError::Unsupported { hole: None, seg: 1 }
+            segment: SegmentRef {
+                loop_ref: LoopRef::Outer,
+                segment: 1
+            }
         })
     ));
     let b = CorrespondenceProfile::new(&a)

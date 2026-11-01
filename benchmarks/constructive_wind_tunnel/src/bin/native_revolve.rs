@@ -73,7 +73,7 @@ fn median(mut v: Vec<f64>) -> f64 {
 }
 fn main() -> Result<(), Box<dyn Error>> {
     let profile = profile();
-    let shared = profile.to_line_arc(&ProfilePolicy::new(1e-6))?;
+    let shared = profile.to_profile(&ProfilePolicy::new(1e-6))?;
     let chart = chart();
     if let Ok(mode) = std::env::var("EXEDRA_REVOLVE_PROFILE") {
         return allocation_profile(&mode, &profile, &shared, chart);
