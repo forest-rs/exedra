@@ -223,9 +223,21 @@ impl<F, E> Body<F, E> {
     ///
     /// # Errors
     /// Returns a demonstrated topology/arrangement violation or a work refusal.
+    /// Geometry admission retains [`Self::validate`]'s independent bounded
+    /// original-source proof limits for partial ruled domains.
     pub fn validate_boundary(
         &self,
         policy: &BoundaryValidationPolicy,
+    ) -> Result<BoundaryValidationReport, BoundaryValidationError> {
+        self.validate_boundary_with_source_budget(
+            policy,
+            &mut crate::geometry::SourceBudget::default(),
+        )
+    }
+    pub(crate) fn validate_boundary_with_source_budget(
+        &self,
+        policy: &BoundaryValidationPolicy,
+        source_budget: &mut crate::geometry::SourceBudget,
     ) -> Result<BoundaryValidationReport, BoundaryValidationError> {
         use BoundaryValidationError as Error;
         if !policy.max_gap.is_finite()
@@ -270,9 +282,12 @@ impl<F, E> Body<F, E> {
             });
         }
         let geometry = self
-            .validate(&ValidationPolicy {
-                max_gap: policy.max_gap,
-            })
+            .validate_with_source_budget(
+                &ValidationPolicy {
+                    max_gap: policy.max_gap,
+                },
+                source_budget,
+            )
             .map_err(Error::Geometry)?;
         let shells = topology::check(self)?;
         let pair_test_bound = self.faces().iter().try_fold(0_usize, |sum, face| {

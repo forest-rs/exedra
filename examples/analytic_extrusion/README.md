@@ -254,3 +254,28 @@ writes the charted display mesh as GLB with a grid texture, suitable for shaded
 or wireframe inspection. The current constructor
 accepts full-domain clamped single-span NURBS and unit-range lines; it refuses
 uncertain arrangements and unsupported source layouts.
+
+## Shared native ruling subdivision
+
+```sh
+cargo run -p analytic_extrusion --example native_ruled_split -- /tmp/ruled-split
+```
+
+`native_ruled_split` partitions a reversed, weighted spline wall with native
+source range `[2,5]`, above a crown profile with a rectangular through-hole. It
+projects a synthetic model-space pick globally onto the native support, then
+inserts a ruling at the returned witness U and another at original native U `0.73`.
+The projection reports a distance bracket without claiming UV uniqueness.
+Both edits keep the original ruled support unchanged. Each split adds two vertices, three edges and one
+face; the operation report names both cap-rim replacements and child domains.
+
+`comparison.glb` places the source, first split and repeated split at model-unit
+translations `[0,0,0]`, `[6,0,0]` and `[12,0,0]`. The upper child is orange; the
+`topology.json` supplies the actual emitted edges and the new shared native
+ruling chains for wire rendering. Units are mm. `before.step`,
+`after.step` and `repeat.step` contain each native boundary. `report.json` records
+native/mesh counts, tolerance and whole-mesh triangle quality, correspondence,
+unchanged support equality and material probe points. Geometry and topology are
+checked before exporting; the local report does not claim global solid validity.
+Native body UVs retain the original supporting surface coordinates; no
+construction chart is inferred.

@@ -10,7 +10,7 @@ use super::{
     Chains, Groups, Patch, RealizationError, RealizationPolicy, VertexSource, distance, emit,
 };
 use crate::body::{Body, Face, FaceId, Sense};
-use crate::geometry::{Curve, CurveSpan, ParameterRange, Surface, Torus, vector};
+use crate::geometry::{Curve, ParameterRange, Surface, Torus, vector};
 use alloc::vec::Vec;
 use exedra_math::{Placement3, cross, dot, narrow, sub};
 
@@ -123,67 +123,35 @@ impl GridScratch {
 }
 
 impl GridPatch {
+    /// Native chart midpoint of an already admitted rectangular boundary.
+    pub(super) fn boundary_midpoint(
+        &self,
+        edge: crate::body::EdgeId,
+        domain: crate::geometry::ParameterDomain,
+    ) -> Option<[f64; 2]> {
+        let side = self.sides.iter().position(|side| side.edge == edge)?;
+        let [lo, hi] = domain.u.bounds();
+        let middle = domain.u.at(0.5)?;
+        Some(match side {
+            0 => [middle, 0.0],
+            1 => [hi, 0.5],
+            2 => [middle, 1.0],
+            _ => [lo, 0.5],
+        })
+    }
     pub(super) fn prepare<F, E>(body: &Body<F, E>, id: FaceId) -> Result<Self, RealizationError> {
         let face = &body.faces()[id.index()];
-        if let Surface::Ruled(ruled) = &face.surface {
-            let refuse = || RealizationError::UnsupportedSurfaceTrim { face: id };
-            if face.domain.u != ParameterRange::UNIT
-                || face.domain.v != ParameterRange::UNIT
-                || face.loops.len() != 1
-            {
-                return Err(refuse());
-            }
-            let coedges = &body
-                .boundary_loop(face.loops[0])
-                .expect("validated loop")
-                .coedges;
-            if coedges.len() != 4 {
-                return Err(refuse());
-            }
-            let mut sides = [None; 4];
-            let mut alignment = 0.0_f64;
-            let size = ruled
-                .curves()
-                .iter()
-                .map(CurveSpan::magnitude)
-                .fold(0.0, f64::max);
-            let slack = 128.0 * crate::geometry::FRAME_TOLERANCE * size;
-            for &coedge in coedges {
-                let edge = &body.edges()[coedge.edge.index()];
-                let (curve, edge_range) = edge.regular().ok_or_else(refuse)?;
-                let mut found = None;
-                for (slot, side) in sides.iter().enumerate() {
-                    if side.is_some() {
-                        continue;
-                    }
-                    let reverse = coedge.reversed ^ (slot >= 2) ^ (face.sense == Sense::Reverse);
-                    let actual =
-                        CurveSpan::new(curve.clone(), edge_range, reverse).map_err(|_| refuse())?;
-                    let bound = ruled.boundary(slot).ok_or_else(refuse)?.alignment(&actual);
-                    if bound <= slack {
-                        found = Some((
-                            slot,
-                            Side {
-                                edge: coedge.edge,
-                                reverse,
-                            },
-                            bound,
-                        ));
-                        break;
-                    }
-                }
-                let Some((slot, side, bound)) = found else {
-                    return Err(refuse());
-                };
-                sides[slot] = Some(side);
-                alignment = alignment.max(bound);
-            }
-            let result = Self {
-                sides: sides.map(|s| s.expect("four unique slots")),
-                alignment,
-            };
-            result.check_corners(body, id)?;
-            return Ok(result);
+        if matches!(face.surface, Surface::Ruled(_)) {
+            let rectangle = body
+                .ruled_rectangle(id)
+                .ok_or(RealizationError::UnsupportedSurfaceTrim { face: id })?;
+            return Ok(Self {
+                sides: rectangle.sides.map(|side| Side {
+                    edge: side.edge,
+                    reverse: side.reverse,
+                }),
+                alignment: rectangle.alignment,
+            });
         }
         let Surface::Torus(torus) = &face.surface else {
             unreachable!()
@@ -335,14 +303,14 @@ impl GridPatch {
             // Eligibility already checked the unit square. Bound rounded
             // normalized divisions without traversing potentially huge counts
             // that a later output-budget check will refuse before allocation.
-            let step = |n: u32| {
+            let step = |range: ParameterRange, n: u32| {
                 if n == 1 {
-                    1.0
+                    range.span()
                 } else {
-                    1.0 / f64::from(n) + 2.0 * f64::EPSILON
+                    range.span() / f64::from(n) + 2.0 * f64::EPSILON
                 }
             };
-            return ruled.triangle_bound([step(nu), step(nv)]);
+            return ruled.triangle_bound([step(face.domain.u, nu), step(face.domain.v, nv)]);
         }
         let Surface::Torus(t) = &face.surface else {
             unreachable!()
@@ -657,6 +625,7 @@ mod tests {
     use crate::body::{
         BodyParts, BoundaryLoop, Coedge, Edge, EdgeId, LoopId, ValidationPolicy, VertexId,
     };
+    use crate::geometry::CurveSpan;
     use crate::geometry::ParameterDomain;
     use alloc::vec;
 

@@ -39,6 +39,7 @@ pub mod query;
 pub mod realize;
 pub mod rectilinear;
 pub mod revolve;
+pub mod split;
 pub mod sweep;
 pub mod validation;
 pub use planar::{

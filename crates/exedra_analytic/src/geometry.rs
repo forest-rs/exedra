@@ -20,6 +20,7 @@ pub mod intersection;
 mod ruled;
 mod sphere;
 pub use ruled::{CurveSpan, Ruled};
+pub(crate) use ruled::{RuledBoundaries, SourceBudget};
 pub use sphere::Sphere;
 pub(crate) use sphere::{
     cone_generator_gap, cone_pole_bounds, cone_pole_gap, harmonic_gap as sphere_harmonic_gap,
