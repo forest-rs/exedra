@@ -19,6 +19,7 @@ pub use trims::{LoopTrims, TrimCurve};
 
 use crate::geometry::{Curve, ParameterDomain, ParameterRange, Surface, SurfaceEvaluation};
 use alloc::vec::Vec;
+use exedra_curves::enclosure::{SourceRange, line_enclosure};
 use exedra_math::Placement3;
 
 macro_rules! local_id {
@@ -220,7 +221,10 @@ pub struct ValidationPolicy {
 /// Evidence about incidence and geometric support checks.
 #[derive(Copy, Clone, Debug, PartialEq)]
 pub struct ValidationReport {
-    /// Largest measured endpoint gap or conservative curve/support gap bound.
+    /// Largest endpoint agreement evidence or conservative curve/support bound.
+    /// Line endpoints use an outward original-coefficient distance upper bound;
+    /// other endpoints use evaluated f64 distance. A bound may overestimate the
+    /// actual geometric disagreement.
     pub max_gap: f64,
     /// Number of face-edge occurrences checked for geometric support.
     pub coedges: usize,
@@ -562,19 +566,43 @@ impl<F, E> Body<F, E> {
             if curve.period().is_some_and(|period| range.span() > period) {
                 return Err(BodyError::RepeatedCurve { edge: id });
             }
-            for (vertex, t) in [
-                (edge.start, range.bounds()[0]),
-                (edge.end, range.bounds()[1]),
+            for (vertex, t, fraction) in [
+                (edge.start, range.bounds()[0], 0.0),
+                (edge.end, range.bounds()[1], 1.0),
             ] {
                 let point = self
                     .parts
                     .vertices
                     .get(vertex.index())
                     .ok_or(BodyError::MissingVertex { edge: id, vertex })?;
-                let curve = curve
+                let evaluated = curve
                     .evaluate(t)
                     .ok_or(BodyError::NonFiniteCurve { edge: id })?;
-                let gap = length(sub(*point, curve.point));
+                let gap = match curve {
+                    Curve::Line(line)
+                        if exact_line_endpoint(
+                            line.origin(),
+                            line.direction(),
+                            t,
+                            evaluated.point,
+                            *point,
+                        ) =>
+                    {
+                        0.0
+                    }
+                    Curve::Line(line) => line_enclosure(
+                        line.origin(),
+                        line.direction(),
+                        SourceRange {
+                            parameters: range.bounds(),
+                            reversed: false,
+                        },
+                        [fraction, fraction],
+                    )
+                    .and_then(|endpoint| endpoint.distance_bounds(*point))
+                    .map_or(f64::INFINITY, |distance| distance[1]),
+                    _ => length(sub(*point, evaluated.point)),
+                };
                 if !gap.is_finite() || gap > policy.max_gap {
                     return Err(BodyError::EndpointGap {
                         edge: id,
@@ -849,7 +877,10 @@ pub enum BodyError {
         edge: EdgeId,
         /// Endpoint vertex.
         vertex: VertexId,
-        /// Measured distance.
+        /// Endpoint agreement evidence in model units: a conservative original-
+        /// coefficient distance upper bound for lines, evaluated f64 distance
+        /// for other curves. Exceeding the policy can be a conservative refusal;
+        /// this value does not assert a matching geometric distance lower bound.
         gap: f64,
         /// Allowed distance.
         allowed: f64,
@@ -920,6 +951,42 @@ fn sub(a: [f64; 3], b: [f64; 3]) -> [f64; 3] {
 }
 fn length(v: [f64; 3]) -> f64 {
     libm::hypot(libm::hypot(v[0], v[1]), v[2])
+}
+// Preserve exact endpoint identities without treating a rounded evaluation as
+// proof. These products are exact in IEEE binary arithmetic. Knuth's TwoSum
+// residual then proves that adding the finite original coefficient was exact
+// too. Other products use the original-source outward enclosure above.
+fn exact_line_endpoint(
+    origin: [f64; 3],
+    direction: [f64; 3],
+    parameter: f64,
+    evaluated: [f64; 3],
+    vertex: [f64; 3],
+) -> bool {
+    for k in 0..3 {
+        if evaluated[k] != vertex[k] {
+            return false;
+        }
+        let product = if parameter == 0.0 || direction[k] == 0.0 {
+            0.0
+        } else if parameter == 1.0 {
+            direction[k]
+        } else if parameter == -1.0 {
+            -direction[k]
+        } else if direction[k] == 1.0 {
+            parameter
+        } else if direction[k] == -1.0 {
+            -parameter
+        } else {
+            return false;
+        };
+        let partial = evaluated[k] - origin[k];
+        let tail = (origin[k] - (evaluated[k] - partial)) + (product - partial);
+        if tail != 0.0 {
+            return false;
+        }
+    }
+    true
 }
 fn dot(a: [f64; 3], b: [f64; 3]) -> f64 {
     a[0] * b[0] + a[1] * b[1] + a[2] * b[2]
@@ -1133,6 +1200,146 @@ pub(crate) mod tests {
     use super::*;
     use alloc::vec;
     const POLICY: ValidationPolicy = ValidationPolicy { max_gap: 1e-12 };
+
+    fn line_rectangle_parts(cancelling: bool) -> BodyParts {
+        use crate::geometry::CurveSpan;
+        let lower = Curve::line([0., 0., 0.], [4., 0., 0.]).unwrap();
+        let upper = Curve::line([0., 0., 16.], [4., 0., 0.]).unwrap();
+        let surface = Surface::ruled(
+            CurveSpan::new(lower.clone(), ParameterRange::UNIT, false).unwrap(),
+            CurveSpan::new(upper.clone(), ParameterRange::UNIT, false).unwrap(),
+        )
+        .unwrap();
+        let (right, range) = if cancelling {
+            let direction = 2.0_f64.powi(60) + 256.;
+            let min = 0.1_f64;
+            (
+                Curve::line([4., 0., -(direction * min)], [0., 0., direction]).unwrap(),
+                ParameterRange::new(min, min.next_up()).unwrap(),
+            )
+        } else {
+            (
+                Curve::line([4., 0., 0.], [0., 0., 16.]).unwrap(),
+                ParameterRange::UNIT,
+            )
+        };
+        BodyParts {
+            vertices: vec![[0., 0., 0.], [4., 0., 0.], [4., 0., 16.], [0., 0., 16.]],
+            edges: vec![
+                Edge::new(lower, ParameterRange::UNIT, VertexId(0), VertexId(1), ()),
+                Edge::new(right, range, VertexId(1), VertexId(2), ()),
+                Edge::new(upper, ParameterRange::UNIT, VertexId(3), VertexId(2), ()),
+                Edge::new(
+                    Curve::line([0., 0., 0.], [0., 0., 16.]).unwrap(),
+                    ParameterRange::UNIT,
+                    VertexId(0),
+                    VertexId(3),
+                    (),
+                ),
+            ],
+            loops: vec![BoundaryLoop {
+                coedges: (0..4)
+                    .map(|i| Coedge {
+                        edge: EdgeId(i),
+                        reversed: i >= 2,
+                    })
+                    .collect(),
+            }],
+            faces: vec![Face {
+                surface,
+                domain: ParameterDomain {
+                    u: ParameterRange::UNIT,
+                    v: ParameterRange::UNIT,
+                },
+                sense: Sense::Forward,
+                loops: vec![LoopId(0)],
+                role: (),
+            }],
+            trims: vec![],
+        }
+    }
+
+    #[test]
+    fn public_line_endpoint_admission_refuses_hidden_coefficient_cancellation() {
+        let parts = line_rectangle_parts(true);
+        let (curve, range) = parts.edges[1].regular().unwrap();
+        // The rounded evaluator aliases the authoritative endpoints. Exact
+        // original-f64 coefficients instead give Z about -6.4 and 9.6.
+        assert_eq!(
+            curve.evaluate(range.bounds()[0]).unwrap().point,
+            parts.vertices[1]
+        );
+        assert_eq!(
+            curve.evaluate(range.bounds()[1]).unwrap().point,
+            parts.vertices[2]
+        );
+        assert!(
+            matches!(Body::try_from_parts(parts,&ValidationPolicy{max_gap:1e-9}),Err(BodyError::EndpointGap{edge:EdgeId(1),gap,..}) if gap>6.)
+        );
+        let exact = Body::try_from_parts(
+            line_rectangle_parts(false),
+            &ValidationPolicy { max_gap: 0. },
+        )
+        .unwrap();
+        assert_eq!(
+            exact
+                .validate(&ValidationPolicy { max_gap: 0. })
+                .unwrap()
+                .max_gap,
+            0.
+        );
+    }
+
+    #[test]
+    fn public_realization_never_reports_false_tolerance_for_a_cancelling_line() {
+        use crate::realize::{RealizationError, RealizationPolicy};
+        // A caller can explicitly admit a loose input gap, but realization must
+        // revalidate against its own policy and retain the actual upper bound.
+        let body = Body::try_from_parts(
+            line_rectangle_parts(true),
+            &ValidationPolicy { max_gap: 100. },
+        )
+        .unwrap();
+        let input = body.validate(&ValidationPolicy { max_gap: 100. }).unwrap();
+        assert!(input.max_gap > 6.);
+        assert!(matches!(
+            body.realize(Placement3::IDENTITY, &RealizationPolicy::default()),
+            Err(RealizationError::Boundary(BodyError::EndpointGap {
+                edge: EdgeId(1),
+                ..
+            }))
+        ));
+        let loose = body
+            .realize(
+                Placement3::IDENTITY,
+                &RealizationPolicy {
+                    geometry_gap: 100.,
+                    ..Default::default()
+                },
+            )
+            .unwrap();
+        assert!(!loose.report.within_tolerance());
+        assert!(loose.report.geometry_gap >= input.max_gap);
+        assert!(loose.report.max_deviation >= 2. * input.max_gap);
+    }
+
+    #[test]
+    fn rounded_unit_addition_is_not_an_exact_endpoint_identity() {
+        let parts = BodyParts::<(), ()> {
+            vertices: vec![[1e16, 0., 0.], [1e16, 0., 0.]],
+            edges: vec![Edge::new(
+                Curve::line([1e16, 0., 0.], [1., 0., 0.]).unwrap(),
+                ParameterRange::UNIT,
+                VertexId(0),
+                VertexId(1),
+                (),
+            )],
+            ..Default::default()
+        };
+        assert!(
+            matches!(Body::try_from_parts(parts,&ValidationPolicy{max_gap:0.}),Err(BodyError::EndpointGap{vertex:VertexId(1),gap,..}) if gap>=1.)
+        );
+    }
 
     fn exhaustive_ruled_gap(curve: &Curve, range: ParameterRange, surface: &Surface) -> f64 {
         let Surface::Ruled(ruled) = surface else {
