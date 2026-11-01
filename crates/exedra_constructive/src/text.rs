@@ -413,14 +413,14 @@ fn dump_kind(line: &mut String, kind: &NodeKind) {
                 support.0, child.0
             );
             match &attachment.surface {
-                SurfaceSelector::SourceStartCap(source) | SurfaceSelector::SourceEndCap(source) => {
-                    line.push_str(
-                        if matches!(attachment.surface, SurfaceSelector::SourceStartCap(_)) {
-                            "source_start_cap "
-                        } else {
-                            "source_end_cap "
-                        },
-                    );
+                SurfaceSelector::SourceStartCap(source)
+                | SurfaceSelector::SourceEndCap(source)
+                | SurfaceSelector::SourceFloor(source) => {
+                    line.push_str(match attachment.surface {
+                        SurfaceSelector::SourceStartCap(_) => "source_start_cap ",
+                        SurfaceSelector::SourceEndCap(_) => "source_end_cap ",
+                        _ => "source_floor ",
+                    });
                     // Prefix keeps the empty UTF-8 label a nonempty token.
                     line.push('x');
                     for byte in source.as_bytes() {
@@ -1708,7 +1708,7 @@ fn parse_node(builder: &mut RecipeBuilder, body: &str, line: usize) -> Result<()
             let child = NodeId(next_u32(&mut tokens, line)?);
             expect(&mut tokens, "surface", line)?;
             let surface = match tokens.next() {
-                Some(kind @ ("source_start_cap" | "source_end_cap")) => {
+                Some(kind @ ("source_start_cap" | "source_end_cap" | "source_floor")) => {
                     let token = tokens
                         .next()
                         .and_then(|s| s.strip_prefix('x'))
@@ -1725,10 +1725,10 @@ fn parse_node(builder: &mut RecipeBuilder, body: &str, line: usize) -> Result<()
                         .collect::<Result<Vec<_>, _>>()?;
                     let source =
                         String::from_utf8(bytes).map_err(|_| TextError::Malformed { line })?;
-                    if kind == "source_start_cap" {
-                        SurfaceSelector::SourceStartCap(source)
-                    } else {
-                        SurfaceSelector::SourceEndCap(source)
+                    match kind {
+                        "source_start_cap" => SurfaceSelector::SourceStartCap(source),
+                        "source_end_cap" => SurfaceSelector::SourceEndCap(source),
+                        _ => SurfaceSelector::SourceFloor(source),
                     }
                 }
                 Some("start_cap") => SurfaceSelector::StartCap,

@@ -669,6 +669,13 @@ impl Recipe {
         self.source(source)
     }
 
+    /// Whether more than one generating node carries `source`, so that no
+    /// source-qualified selector can name one of them.
+    #[must_use]
+    pub fn source_is_ambiguous(&self, source: &str) -> bool {
+        self.ambiguous_sources.iter().any(|label| label == source)
+    }
+
     /// Looks up a profile; `None` for out-of-range ids.
     #[must_use]
     pub fn profile(&self, id: ProfileId) -> Option<&Profile2> {
@@ -2265,6 +2272,11 @@ fn node_canon_bytes(
                 }
                 crate::workplane::SurfaceSelector::SourceEndCap(source) => {
                     out.push(5);
+                    put_u32(out, len_u32(source.len()));
+                    out.extend_from_slice(source.as_bytes());
+                }
+                crate::workplane::SurfaceSelector::SourceFloor(source) => {
+                    out.push(6);
                     put_u32(out, len_u32(source.len()));
                     out.extend_from_slice(source.as_bytes());
                 }

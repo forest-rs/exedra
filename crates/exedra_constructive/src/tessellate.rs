@@ -213,6 +213,9 @@ pub enum Feature {
     },
     /// A cap created by an evaluated-body plane cut.
     PlaneCutCap,
+    /// The floor of a [`crate::ir::NodeKind::Pocket`]: its region at the
+    /// pocket's depth.
+    PocketFloor,
     /// A vertex created where an evaluated-body plane cut crosses an edge.
     PlaneCutSeam,
 }

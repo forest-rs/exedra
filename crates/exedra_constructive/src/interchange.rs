@@ -2682,6 +2682,11 @@ pub enum SurfaceSelectorDto {
         /// Opaque authored label.
         source: String,
     },
+    /// Pocket floor qualified by its pocket node's source label.
+    SourceFloor {
+        /// Opaque authored label.
+        source: String,
+    },
     /// Unique geometric region.
     Region {
         /// Authored region number.
@@ -2720,6 +2725,7 @@ impl From<crate::workplane::WorkplaneAttachment> for WorkplaneAttachmentDto {
                 SurfaceSelector::SourceEndCap(source) => {
                     SurfaceSelectorDto::SourceEndCap { source }
                 }
+                SurfaceSelector::SourceFloor(source) => SurfaceSelectorDto::SourceFloor { source },
                 SurfaceSelector::EndCap => SurfaceSelectorDto::EndCap,
                 SurfaceSelector::Region(region) => SurfaceSelectorDto::Region { region },
                 SurfaceSelector::OperandRegion(value) => SurfaceSelectorDto::OperandRegion {
@@ -2745,6 +2751,7 @@ impl From<WorkplaneAttachmentDto> for crate::workplane::WorkplaneAttachment {
                 SurfaceSelectorDto::SourceEndCap { source } => {
                     SurfaceSelector::SourceEndCap(source)
                 }
+                SurfaceSelectorDto::SourceFloor { source } => SurfaceSelector::SourceFloor(source),
                 SurfaceSelectorDto::EndCap => SurfaceSelector::EndCap,
                 SurfaceSelectorDto::Region { region } => SurfaceSelector::Region(region),
                 SurfaceSelectorDto::OperandRegion { operand, region } => {

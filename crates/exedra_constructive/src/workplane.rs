@@ -41,6 +41,8 @@ pub enum WorkplaneSelection {
     SourceStartCap(String),
     /// Surviving terminal cap of the uniquely named generating recipe node.
     SourceEndCap(String),
+    /// Surviving floor of the uniquely named pocket node.
+    SourceFloor(String),
     /// All faces carrying this region. They must be edge-connected and must
     /// not mix Boolean operands with reused region numbers.
     Region(u32),
@@ -64,6 +66,8 @@ pub enum SurfaceSelector {
     SourceStartCap(String),
     /// Surviving terminal cap of the uniquely named generating recipe node.
     SourceEndCap(String),
+    /// Surviving floor of the uniquely named pocket node.
+    SourceFloor(String),
     /// An authored geometric region, which must resolve unambiguously.
     Region(u32),
     /// A region belonging to one operand of the producing Boolean operation.
@@ -74,7 +78,9 @@ impl SurfaceSelector {
     #[must_use]
     pub fn source(&self) -> Option<&str> {
         match self {
-            Self::SourceStartCap(source) | Self::SourceEndCap(source) => Some(source),
+            Self::SourceStartCap(source)
+            | Self::SourceEndCap(source)
+            | Self::SourceFloor(source) => Some(source),
             _ => None,
         }
     }
@@ -89,6 +95,7 @@ impl SurfaceSelector {
             Self::OperandRegion(region) => WorkplaneSelection::OperandRegion(*region),
             Self::SourceStartCap(source) => WorkplaneSelection::SourceStartCap(source.clone()),
             Self::SourceEndCap(source) => WorkplaneSelection::SourceEndCap(source.clone()),
+            Self::SourceFloor(source) => WorkplaneSelection::SourceFloor(source.clone()),
         }
     }
 }
@@ -239,6 +246,12 @@ fn build_inner(
             };
             body.source_map.surface_origin(face).is_some_and(|origin| {
                 origin.feature == feature && origin.source.as_deref() == Some(source.as_str())
+            })
+        }
+        WorkplaneSelection::SourceFloor(source) => {
+            body.source_map.surface_origin(face).is_some_and(|origin| {
+                origin.feature == Feature::PocketFloor
+                    && origin.source.as_deref() == Some(source.as_str())
             })
         }
         WorkplaneSelection::Region(region) => {

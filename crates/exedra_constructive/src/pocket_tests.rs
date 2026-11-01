@@ -176,3 +176,102 @@ fn pockets_name_what_they_cannot_cut() {
         }
     );
 }
+
+/// A peg on the floor of a pocket named `recess`, attached by `surface`.
+fn peg_on_floor(surface: crate::workplane::SurfaceSelector) -> crate::ir::Recipe {
+    let mut builder = RecipeBuilder::new();
+    let profile = builder.add_profile(builders::rect_centered(4.0, 3.0).unwrap());
+    let base = builder
+        .add_node(NodeKind::Extrude {
+            profile,
+            placement: Placement3::IDENTITY,
+            height: 2.0,
+            caps: CapMode::Both,
+        })
+        .unwrap();
+    let recess = builder.add_profile(
+        builders::rect_centered(2.0, 1.0)
+            .unwrap()
+            .translated((-0.5, 0.5))
+            .unwrap(),
+    );
+    let source = builder.source_ref("recess");
+    let support = builder
+        .add_node(
+            crate::ir::Node::new(NodeKind::Pocket {
+                base,
+                profile: recess,
+                end: ExtrusionEnd::End,
+                depth: 0.75,
+            })
+            .with_source(source),
+        )
+        .unwrap();
+    let peg = builder.add_profile(builders::rect_centered(0.2, 0.2).unwrap());
+    let child = builder
+        .add_node(NodeKind::Extrude {
+            profile: peg,
+            placement: Placement3::IDENTITY,
+            height: 0.3,
+            caps: CapMode::Both,
+        })
+        .unwrap();
+    let root = builder
+        .add_node(NodeKind::OnWorkplane {
+            support,
+            child,
+            attachment: crate::workplane::WorkplaneAttachment {
+                surface,
+                anchor: [-0.5, 0.5, 0.0],
+                projection: [0.0, 0.0, 1.0],
+                x_direction: [1.0, 0.0, 0.0],
+            },
+        })
+        .unwrap();
+    builder.finish(root).unwrap()
+}
+
+#[test]
+fn workplanes_attach_to_a_pocket_floor_by_its_label() {
+    use crate::workplane::SurfaceSelector;
+    let recipe = peg_on_floor(SurfaceSelector::SourceFloor("recess".into()));
+    let result = evaluate(&recipe, &EvalPolicy::default()).unwrap();
+    assert_eq!(result.bodies.len(), 1, "{:?}", result.report.diagnostics);
+    let bounds = crate::evaluate::mesh_bounds(&result.bodies[0].body.mesh);
+    // The floor faces up, out of the material, at 2 - 0.75.
+    for (axis, [lo, hi]) in [[-0.6, -0.4], [0.4, 0.6], [1.25, 1.55]]
+        .into_iter()
+        .enumerate()
+    {
+        assert!((bounds.min[axis] - lo).abs() < 1e-6, "{bounds:?}");
+        assert!((bounds.max[axis] - hi).abs() < 1e-6, "{bounds:?}");
+    }
+    // The floor is the pocket's, not a start cap of anything.
+    let error = evaluate(
+        &peg_on_floor(SurfaceSelector::SourceStartCap("recess".into())),
+        &EvalPolicy::default(),
+    )
+    .unwrap_err();
+    assert!(
+        matches!(
+            &error.error,
+            crate::tessellate::TessellateError::Attachment(failure)
+                if failure.kind == crate::workplane::WorkplaneError::EmptySelection
+        ),
+        "{error:?}"
+    );
+}
+
+#[test]
+fn floor_attachments_round_trip_through_text_and_interchange() {
+    let recipe = peg_on_floor(crate::workplane::SurfaceSelector::SourceFloor(
+        "recess".into(),
+    ));
+    let text = crate::text::parse_recipe(&crate::text::dump_recipe(&recipe)).unwrap();
+    assert_eq!(text.recipe_fingerprint(), recipe.recipe_fingerprint());
+    #[cfg(feature = "serde")]
+    {
+        let json = crate::interchange::from_dto(&crate::interchange::to_dto(&recipe)).unwrap();
+        assert_eq!(json.recipe_fingerprint(), recipe.recipe_fingerprint());
+    }
+}

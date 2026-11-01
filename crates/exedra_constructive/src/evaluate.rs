@@ -2026,14 +2026,24 @@ impl EvalCx<'_> {
             self.policy,
         )
         .map_err(|error| EvalError::new(node_id, error))?;
+        // The cutter's cap at the pocket's depth is the floor; its surfaces
+        // belong to the pocket node, so carry its label.
+        let floor = match end {
+            ExtrusionEnd::End => Feature::CapStart,
+            ExtrusionEnd::Start => Feature::CapEnd,
+        };
+        let source: Option<alloc::sync::Arc<str>> =
+            self.recipe.source_of(node_id).map(alloc::sync::Arc::from);
         let surface_origins = cutter
             .mesh
             .faces()
             .filter_map(|face| {
-                cutter
-                    .source_map
-                    .surface_ancestry(face)
-                    .map(|origin| (face, origin.clone()))
+                let mut ancestry = cutter.source_map.surface_ancestry(face)?.clone();
+                if ancestry.origin.feature == floor {
+                    ancestry.origin.feature = Feature::PocketFloor;
+                }
+                ancestry.origin.source.clone_from(&source);
+                Some((face, ancestry))
             })
             .collect();
         let mut cutter = CsgMesh::operand(cutter.mesh, 1);

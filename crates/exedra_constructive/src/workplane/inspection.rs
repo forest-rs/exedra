@@ -191,8 +191,9 @@ pub(super) fn selection_ambiguity(
     selection: &WorkplaneSelection,
     faces: &[FaceId],
 ) -> Option<Rejection> {
-    if let WorkplaneSelection::SourceStartCap(source) | WorkplaneSelection::SourceEndCap(source) =
-        selection
+    if let WorkplaneSelection::SourceStartCap(source)
+    | WorkplaneSelection::SourceEndCap(source)
+    | WorkplaneSelection::SourceFloor(source) = selection
         && body.source_map.source_is_ambiguous(source)
     {
         return Some(duplicate(source));
@@ -418,6 +419,11 @@ pub fn inspect_surfaces(
                     selectors.push(SurfaceSelector::EndCap);
                     if let Some(source) = &origin.source {
                         selectors.push(SurfaceSelector::SourceEndCap(source.to_string()));
+                    }
+                }
+                Feature::PocketFloor => {
+                    if let Some(source) = &origin.source {
+                        selectors.push(SurfaceSelector::SourceFloor(source.to_string()));
                     }
                 }
                 _ => {}

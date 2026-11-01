@@ -365,8 +365,10 @@ or Boolean when needed. `EvalPolicy::workplane` supplies accuracy and work limit
 `SurfaceSelector::EndCap` follows original terminal-cap provenance through profile
 changes, placement, and Boolean face splits. `SourceEndCap("panel/body".into())`
 qualifies that role by the opaque source label on its generating recipe node;
-`SourceStartCap` does the same for the start cap. Name the extrusion or other
-surface-generating node, not a transform, instance, or Boolean wrapper. Qualified
+`SourceStartCap` does the same for the start cap, and `SourceFloor` names a
+pocket node's floor, `Feature::PocketFloor`, which no cap selector matches.
+Name the extrusion, pocket or other surface-generating node, not a transform,
+instance, or Boolean wrapper. Qualified
 labels must be unique among reachable recipe nodes. Whole-recipe fingerprints
 include this naming context; node fingerprints still support subtree reuse. A shared definition counts
 once; disconnected occurrences still fail the connected-patch check. Missing,
