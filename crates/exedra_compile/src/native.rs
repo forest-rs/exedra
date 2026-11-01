@@ -675,6 +675,26 @@ install!(Extrusion, Extrusion);
 install!(Revolution, Revolution);
 install!(Sweep, Sweep);
 install!(Loft, Loft);
+/// Installs a checked spline extrusion through the construction-independent body
+/// path. Exact geometry, occurrence placement and wall feature tags are retained.
+/// This source reports `NativeFamily::Body`; constructor UV mapping remains on
+/// `PlanarExtrusion`, and exact integral measurements are unavailable.
+impl From<exedra_analytic::planar_extrusion::PlanarExtrusion> for NativeSource {
+    fn from(solid: exedra_analytic::planar_extrusion::PlanarExtrusion) -> Self {
+        let frame = solid.frame();
+        let body = solid.into_body().map_roles(
+            |role| match role {
+                exedra_analytic::extrusion::FaceRole::Wall { tag: Some(tag), .. } => {
+                    alloc::vec![tag]
+                }
+                _ => Vec::new(),
+            },
+            |_| (),
+        );
+        Self::from_body(body, frame).expect("constructor checked the occurrence frame")
+    }
+}
+
 impl From<BoredPlate> for NativeSource {
     fn from(value: BoredPlate) -> Self {
         Self::new(Geometry::BoredPlate(Box::new(value)))

@@ -33,6 +33,7 @@ pub mod machining;
 mod nurbs_tests;
 mod operation_trims;
 mod planar;
+pub mod planar_extrusion;
 mod profile_geometry;
 pub mod query;
 pub mod realize;
