@@ -752,6 +752,22 @@ impl<F, E> Body<F, E> {
         }
         groups.synchronize(&mut counts);
         grid::refine(self, &patches, &mut counts, &mut groups, policy)?;
+        let mut quality_work = quality::Work::default();
+        let grid_quality = if QUALITY {
+            grid::refine_quality(
+                self,
+                &patches,
+                &quality_rows,
+                &incidence,
+                placement,
+                &mut counts,
+                &mut groups,
+                policy,
+                &mut quality_work,
+            )?
+        } else {
+            Vec::new()
+        };
         for (patch, face) in patches.iter_mut().zip(self.faces()) {
             if let Patch::Pole(patch) = patch {
                 patch.prepare_radial_sampling(face, &counts, policy)?;
@@ -1077,7 +1093,6 @@ impl<F, E> Body<F, E> {
         let mut triangles = Vec::with_capacity(triangle_count);
         let mut regions = Vec::with_capacity(triangle_count);
         let mut native_faces = Vec::with_capacity(triangle_count);
-        let mut quality_work = quality::Work::default();
         let mut quality_scratch = quality::Scratch::default();
         let mut ruling_displacement = 0.0_f64;
         let mut surface_deviation = 0.0_f64;
@@ -1109,13 +1124,14 @@ impl<F, E> Body<F, E> {
                 )?;
             } else if let Patch::Grid(patch) = patches[i] {
                 surface_deviation = surface_deviation.max(patch.deviation(face, &counts));
-                patch.emit(
+                patch.emit::<QUALITY, _, _>(
                     self,
                     id,
                     placement,
                     &counts,
                     &chains,
                     &mut grid_scratch,
+                    grid_quality.get(i).and_then(Option::as_ref),
                     &mut emitted,
                     &mut sources,
                     &mut displacement,

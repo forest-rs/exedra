@@ -36,6 +36,10 @@ fn policy() -> RealizationPolicy {
             .ok()
             .map(|s| {
                 exedra_analytic::realize::TriangleQuality::new(s.parse().expect("boundary spacing"))
+                    .with_max_grid_triangle_tests(
+                        std::env::var("EXEDRA_SPLINE_GRID_TRIANGLE_TESTS")
+                            .map_or(1 << 20, |s| s.parse().expect("grid triangle-test budget")),
+                    )
             }),
         ..Default::default()
     }
@@ -168,7 +172,7 @@ fn main() -> Result<(), Box<dyn Error>> {
                 "edge_segments":realized.report.edge_segments,"deviation_bound":realized.report.max_deviation,
                 "curve_bound":realized.report.max_curve_deviation,"surface_bound":realized.report.max_surface_deviation,
                 "curve_span_bytes":size_of::<exedra_analytic::geometry::CurveSpan>(),"surface_bytes":size_of::<Surface>(),
-                "quality": realized.report.quality.as_ref().map(|q|serde_json::json!({"within_target":q.within_target(),"remaining_bad_triangles":q.remaining_bad_triangles,"max_radius_edge_ratio":q.max_radius_edge_ratio}))});
+                "quality": realized.report.quality.as_ref().map(|q|serde_json::json!({"within_target":q.within_target(),"remaining_bad_triangles":q.remaining_bad_triangles,"max_radius_edge_ratio":q.max_radius_edge_ratio,"grid_triangle_tests":q.grid_triangle_tests,"planar_steiner_points":q.planar_steiner_points,"candidate_insertions":q.candidate_insertions,"declined_insertions":q.declined_insertions,"budget_exhausted":q.budget_exhausted}))});
             println!("{row}");
             rows.push(row);
             if let Some(output) = output {

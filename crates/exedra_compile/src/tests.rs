@@ -337,6 +337,7 @@ fn each_native_triangle_quality_setting_changes_compilation_identity() {
         TriangleQuality::new(4.0).with_max_radius_edge_ratio(1.5),
         TriangleQuality::new(4.0).with_max_steiner_points(17),
         TriangleQuality::new(4.0).with_max_candidate_insertions(23),
+        TriangleQuality::new(4.0).with_max_grid_triangle_tests(29),
     ] {
         let mut changed = quality.clone();
         changed.native.quality = Some(settings);
