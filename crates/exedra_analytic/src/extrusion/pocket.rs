@@ -81,17 +81,6 @@ pub(super) fn checked_webs(
     policy: &ProfilePolicy,
 ) -> Result<Vec<[usize; 2]>, ExtrusionError> {
     let index = pockets.len();
-    if let Some(segment) = pocket
-        .outline
-        .segments()
-        .iter()
-        .position(|s| matches!(s.curve, exedra_curves::profile::Curve::Bezier(_)))
-    {
-        return Err(ExtrusionError::Pocket {
-            pocket: index,
-            error: PocketError::UnsupportedCurve { segment },
-        });
-    }
     checked_depth(length, pocket, index, policy)?;
     let mut holes = profile.holes().to_vec();
     holes.extend(

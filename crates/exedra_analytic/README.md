@@ -429,8 +429,8 @@ Profiles may hold rational Bezier segments (`Segment::bezier`), which
 `Extrusion::new` builds exactly: each segment's two cap edges are the one-span
 rational NURBS curve with its controls and weights, and its wall is the ruled
 surface between them, parametrized by the curve parameter and the fraction of
-the way up. Caps, seams, tags and roles are as for lines and arcs. Pocket
-outlines with Bezier segments are still refused. The profile's own validation,
+the way up. Caps, seams, tags and roles are as for lines and arcs, and pocket
+outlines take Bezier segments the same way. The profile's own validation,
 an outward-rounded enclosure proof (`Profile::new`), establishes simplicity,
 winding and hole containment; no segment is flattened or healed.
 
