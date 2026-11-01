@@ -319,7 +319,7 @@ fn spacing(value: f64) -> f64 {
 /// One profile segment as a straight piece, an arc or a rational Bezier.
 ///
 /// Pairs with a Bezier piece are proved by enclosures
-/// ([`crate::intersect::BezierEnclosure`]), not by the closed forms here:
+/// ([`crate::enclosure::BezierEnclosure`]), not by the closed forms here:
 /// the pairwise methods answer conservatively for them, a Bezier piece
 /// being as near as anything and meeting nothing on its own.
 #[derive(Clone, Debug, PartialEq)]

@@ -49,6 +49,10 @@
 //!   polynomial or rational, and of a piece with a circle, isolated by
 //!   outward-rounded interval subdivision and each proven unique within a
 //!   stated bound, or refused where the arithmetic cannot settle them.
+//! - **Enclosures** ([`enclosure`]): outward-rounded hulls of planar
+//!   rational Bezier pieces, halved with their shared ends kept, for
+//!   proving pieces apart, and boxes about a NURBS source's points over
+//!   parameter intervals, for distance and support bounds.
 //! - **Paths** ([`path`]): the owned and borrowed sweep paths of lines,
 //!   arcs and cubics that Exedra's heads share, and the double-reflection
 //!   step that frames them.
@@ -176,6 +180,7 @@ mod conic;
 pub mod enclosure;
 mod frames;
 pub mod intersect;
+mod interval;
 mod knots;
 mod measure;
 mod nurbs;

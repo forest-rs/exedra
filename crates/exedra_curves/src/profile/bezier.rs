@@ -5,7 +5,8 @@
 
 use alloc::{sync::Arc, vec::Vec};
 
-use crate::intersect::{BezierEnclosure, IntersectError, MAX_ORDER};
+use crate::enclosure::{BezierEnclosure, EnclosureError};
+use crate::intersect::MAX_ORDER;
 use crate::measure::integrate;
 use crate::nurbs::{local_evaluation, representable, valid_weight};
 use crate::profile::arc::{cross, dot, length, sub};
@@ -180,7 +181,7 @@ impl BezierPiece {
     }
 
     /// The enclosure of the exact curve, for proofs.
-    pub(crate) fn enclosure(&self) -> Result<BezierEnclosure, IntersectError> {
+    pub(crate) fn enclosure(&self) -> Result<BezierEnclosure, EnclosureError> {
         let points: Vec<[f64; 2]> = self.bezier.controls(self.from, self.to).collect();
         BezierEnclosure::new(&points, self.bezier.weights())
     }

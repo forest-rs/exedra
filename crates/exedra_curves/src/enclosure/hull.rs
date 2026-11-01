@@ -3,7 +3,8 @@
 
 //! Control-hull proofs which retain subdivision roundoff and shared endpoints.
 
-use super::{IntersectError, MAX_ORDER, interval::I};
+use super::EnclosureError;
+use crate::{intersect::MAX_ORDER, interval::I};
 use alloc::{sync::Arc, vec::Vec};
 use exedra_math::predicates::{MAX_COORDINATE, Orientation, orient2d};
 
@@ -40,7 +41,7 @@ impl Control {
         if w.lo <= 0.0 {
             return None;
         }
-        let p = [x * w.recip(), y * w.recip()];
+        let p = [x / w, y / w];
         p.iter()
             .all(|v| v.valid() && v.lo.abs().max(v.hi.abs()) <= MAX_COORDINATE)
             .then_some(p)
@@ -76,13 +77,15 @@ impl BezierEnclosure {
     /// defined by these finite f64 controls. Order is in `2..=MAX_ORDER`.
     ///
     /// # Errors
-    /// Returns [`IntersectError::Unresolved`] for invalid inputs, arithmetic
-    /// overflow/underflow that loses positive weight, or out-of-envelope controls.
-    pub fn new(points: &[[f64; 2]], weights: Option<&[f64]>) -> Result<Self, IntersectError> {
+    /// Returns [`EnclosureError::InvalidInput`] for too few or too many
+    /// controls, mismatched or non-positive weights, or controls outside the
+    /// predicates' envelope, and [`EnclosureError::NumericLimit`] where
+    /// rounding loses a positive weight or a finite control.
+    pub fn new(points: &[[f64; 2]], weights: Option<&[f64]>) -> Result<Self, EnclosureError> {
         if !(2..=MAX_ORDER).contains(&points.len())
             || weights.is_some_and(|w| w.len() != points.len())
         {
-            return Err(IntersectError::Unresolved);
+            return Err(EnclosureError::InvalidInput);
         }
         let controls = points
             .iter()
@@ -93,7 +96,7 @@ impl BezierEnclosure {
                     || w <= 0.0
                     || p.iter().any(|v| !v.is_finite() || v.abs() > MAX_COORDINATE)
                 {
-                    return Err(IntersectError::Unresolved);
+                    return Err(EnclosureError::InvalidInput);
                 }
                 let multiply = |x| {
                     if x == 0.0 {
@@ -106,11 +109,11 @@ impl BezierEnclosure {
                 };
                 let homogeneous = [multiply(p[0]), multiply(p[1]), I::p(w)];
                 if homogeneous.iter().any(|v| !v.valid()) {
-                    return Err(IntersectError::Unresolved);
+                    return Err(EnclosureError::NumericLimit);
                 }
                 Control::fresh(homogeneous, Some(p))
                     .map(Arc::new)
-                    .ok_or(IntersectError::Unresolved)
+                    .ok_or(EnclosureError::NumericLimit)
             })
             .collect::<Result<Vec<_>, _>>()?;
         Ok(Self { controls }.balanced())
@@ -160,9 +163,9 @@ impl BezierEnclosure {
     /// The returned curves retain the same parameter direction.
     ///
     /// # Errors
-    /// Returns [`IntersectError::Unresolved`] if finite positive enclosures cannot
+    /// Returns [`EnclosureError::NumericLimit`] if finite positive enclosures cannot
     /// be maintained. The input remains available unchanged.
-    pub fn bisect(&self) -> Result<(Self, Self), IntersectError> {
+    pub fn bisect(&self) -> Result<(Self, Self), EnclosureError> {
         let n = self.controls.len();
         let mut row = self.controls.clone();
         let mut left = Vec::with_capacity(n);
@@ -178,8 +181,9 @@ impl BezierEnclosure {
                     .exact
                     .zip(row[i + 1].exact)
                     .and_then(|(a, b)| (a == b).then_some(a));
-                let control =
-                    Arc::new(Control::fresh(homogeneous, exact).ok_or(IntersectError::Unresolved)?);
+                let control = Arc::new(
+                    Control::fresh(homogeneous, exact).ok_or(EnclosureError::NumericLimit)?,
+                );
                 row[i] = control;
             }
             left.push(row[0].clone());
@@ -200,21 +204,21 @@ impl BezierEnclosure {
         from: [f64; 2],
         to: [f64; 2],
         bulge: [f64; 2],
-    ) -> Result<Vec<Self>, IntersectError> {
+    ) -> Result<Vec<Self>, EnclosureError> {
         let b = I {
             lo: bulge[0],
             hi: bulge[1],
         };
         if !b.valid() || !b.excludes_zero() || from == to {
-            return Err(IntersectError::Unresolved);
+            return Err(EnclosureError::InvalidInput);
         }
         let exact = |p: [f64; 2]| {
             Control::fresh([I::p(p[0]), I::p(p[1]), I::ONE], Some(p))
                 .map(Arc::new)
-                .ok_or(IntersectError::Unresolved)
+                .ok_or(EnclosureError::NumericLimit)
         };
         let (start, end) = (exact(from)?, exact(to)?);
-        let ends = |c: &Arc<Control>| c.bounds().ok_or(IntersectError::Unresolved);
+        let ends = |c: &Arc<Control>| c.bounds().ok_or(EnclosureError::NumericLimit);
         if b.lo.abs().max(b.hi.abs()) < 0.5 {
             let middle = quadratic_middle(ends(&start)?, ends(&end)?, b)?;
             return Ok(alloc::vec![Self {
@@ -232,10 +236,10 @@ impl BezierEnclosure {
         ];
         let mid = Arc::new(
             Control::fresh([midpoint[0], midpoint[1], I::ONE], None)
-                .ok_or(IntersectError::Unresolved)?,
+                .ok_or(EnclosureError::NumericLimit)?,
         );
-        let m = mid.bounds().ok_or(IntersectError::Unresolved)?;
-        let halves = b * (I::ONE + (I::ONE + b.square()).sqrt()).recip();
+        let m = mid.bounds().ok_or(EnclosureError::NumericLimit)?;
+        let halves = b / (I::ONE + (I::ONE + b.square()).sqrt());
         Ok(alloc::vec![
             Self {
                 controls: alloc::vec![start, quadratic_middle(p, m, halves)?, mid.clone()],
@@ -260,17 +264,16 @@ impl BezierEnclosure {
         to: [f64; 2],
         clockwise: bool,
         quarters: usize,
-    ) -> Result<Vec<Self>, IntersectError> {
+    ) -> Result<Vec<Self>, EnclosureError> {
         let c = center.map(I::p);
         let relative = |p: [f64; 2]| [I::p(p[0]) - c[0], I::p(p[1]) - c[1]];
-        let length = |v: [I; 2]| (v[0].square() + v[1].square()).sqrt();
         let (a, b) = (relative(from), relative(to));
-        let (ra, rb) = (length(a), length(b));
+        let (ra, rb) = (I::norm(a), I::norm(b));
         if !(ra.valid() && rb.valid() && ra.lo > 0.0 && rb.lo > 0.0) {
-            return Err(IntersectError::Unresolved);
+            return Err(EnclosureError::NumericLimit);
         }
         let radius = ra.union(rb);
-        let unit = |v: [I; 2], r: I| [v[0] * r.recip(), v[1] * r.recip()];
+        let unit = |v: [I; 2], r: I| [v[0] / r, v[1] / r];
         // A quarter turn, exact in every interval.
         let turn = |d: [I; 2]| {
             if clockwise {
@@ -290,7 +293,7 @@ impl BezierEnclosure {
         let sine = rest[0] * end[1] - rest[1] * end[0];
         let travel = if clockwise { -sine } else { sine };
         if !(travel.valid() && travel.lo > 0.0) {
-            return Err(IntersectError::Unresolved);
+            return Err(EnclosureError::NumericLimit);
         }
         let last = directions.len() - 1;
         let junctions = directions
@@ -308,7 +311,7 @@ impl BezierEnclosure {
                 } else {
                     Control::fresh(homogeneous, None)
                 };
-                control.map(Arc::new).ok_or(IntersectError::Unresolved)
+                control.map(Arc::new).ok_or(EnclosureError::NumericLimit)
             })
             .collect::<Result<Vec<_>, _>>()?;
         directions
@@ -318,20 +321,20 @@ impl BezierEnclosure {
                 // The tangents meet over the middle direction `m`, at `R / cos`
                 // from the center, `cos` the half turn's, also the weight.
                 let s = [d[0][0] + d[1][0], d[0][1] + d[1][1]];
-                let size = length(s);
+                let size = I::norm(s);
                 if !(size.valid() && size.lo > 0.0) {
-                    return Err(IntersectError::Unresolved);
+                    return Err(EnclosureError::NumericLimit);
                 }
                 let m = unit(s, size);
                 let cos = d[0][0] * m[0] + d[0][1] * m[1];
                 if !(cos.valid() && cos.lo > 0.0) {
-                    return Err(IntersectError::Unresolved);
+                    return Err(EnclosureError::NumericLimit);
                 }
                 let homogeneous = [c[0] * cos + radius * m[0], c[1] * cos + radius * m[1], cos];
                 let middle = Control::fresh(homogeneous, None)
                     .filter(|_| homogeneous.iter().all(|v| v.valid()))
                     .map(Arc::new)
-                    .ok_or(IntersectError::Unresolved)?;
+                    .ok_or(EnclosureError::NumericLimit)?;
                 Ok(Self {
                     controls: alloc::vec![ends[0].clone(), middle, ends[1].clone()],
                 })
@@ -495,7 +498,7 @@ impl BezierEnclosure {
                     } else {
                         let ends = from.bounds().zip(to.bounds())?;
                         let edge = [ends.1[0] - ends.0[0], ends.1[1] - ends.0[1]];
-                        let length = (edge[0].square() + edge[1].square()).sqrt();
+                        let length = I::norm(edge);
                         (I::p(margin) * length).hi
                     };
                     if !gap.is_finite() {
@@ -548,7 +551,7 @@ fn across(a: &[Arc<Control>], b: &[Arc<Control>], margin: f64) -> bool {
         if ![a_lo, a_hi, b_lo, b_hi].iter().all(|v| v.is_finite()) {
             return false;
         }
-        let length = (d[0].square() + d[1].square()).sqrt();
+        let length = I::norm(d);
         if !length.valid() || length.lo <= 0.0 {
             return false;
         }
@@ -569,27 +572,27 @@ fn across(a: &[Arc<Control>], b: &[Arc<Control>], margin: f64) -> bool {
 /// from `p` to `q` with bulge `b`, `|b| < 1`: the tangents' meeting point
 /// `tan(sweep / 2) = 2 b / (1 - b^2)` half chords to the chord's right,
 /// with weight `cos(sweep / 2) = (1 - b^2) / (1 + b^2)`.
-fn quadratic_middle(p: [I; 2], q: [I; 2], b: I) -> Result<Arc<Control>, IntersectError> {
+fn quadratic_middle(p: [I; 2], q: [I; 2], b: I) -> Result<Arc<Control>, EnclosureError> {
     let b2 = b.square();
     let (minus, plus) = (I::ONE - b2, I::ONE + b2);
     if minus.lo <= 0.0 {
-        return Err(IntersectError::Unresolved);
+        return Err(EnclosureError::NumericLimit);
     }
     let d = [q[0] - p[0], q[1] - p[1]];
-    let reach = b * minus.recip();
+    let reach = b / minus;
     let half = I::p(0.5);
     let point = [
         (p[0] + q[0]) * half + d[1] * reach,
         (p[1] + q[1]) * half - d[0] * reach,
     ];
-    let weight = minus * plus.recip();
+    let weight = minus / plus;
     let homogeneous = [point[0] * weight, point[1] * weight, weight];
     if homogeneous.iter().any(|v| !v.valid()) {
-        return Err(IntersectError::Unresolved);
+        return Err(EnclosureError::NumericLimit);
     }
     Control::fresh(homogeneous, None)
         .map(Arc::new)
-        .ok_or(IntersectError::Unresolved)
+        .ok_or(EnclosureError::NumericLimit)
 }
 
 /// Whether the line `side` measures separates the hulls: `Disjoint` when
