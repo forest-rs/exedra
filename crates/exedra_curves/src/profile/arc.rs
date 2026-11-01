@@ -4,6 +4,7 @@
 //! Checked circular arcs from authored source intent, and distances between pieces.
 
 use crate::profile::Curve;
+use crate::profile::bezier::BezierPiece;
 use core::f64::consts::{PI, TAU};
 
 /// A resolved circular arc whose authored endpoints remain authoritative.
@@ -29,8 +30,9 @@ pub struct Arc {
 
 impl Arc {
     /// Resolves either authored arc representation through one checked path.
-    /// Lines return `Ok(None)`. Bulge input keeps its existing derivation;
-    /// center input preserves the center, derives radius from the start point,
+    /// Lines and Bezier segments return `Ok(None)`. Bulge input keeps its
+    /// existing derivation; center input preserves the center, derives
+    /// radius from the start point,
     /// and derives directed minor or major sweep from the two radial vectors.
     ///
     /// Center-defined endpoint radii must agree within fixed local subtraction
@@ -40,12 +42,12 @@ impl Arc {
     /// # Errors
     /// Returns invalid input, inconsistent radii or numeric representation
     /// evidence. Neither the center nor either endpoint is moved to make it fit.
-    pub fn resolve(from: [f64; 2], to: [f64; 2], curve: Curve) -> Result<Option<Self>, ArcError> {
+    pub fn resolve(from: [f64; 2], to: [f64; 2], curve: &Curve) -> Result<Option<Self>, ArcError> {
         if !from.iter().chain(&to).all(|v| v.is_finite()) {
             return Err(ArcError::Input);
         }
-        match curve {
-            Curve::Line => Ok(None),
+        match *curve {
+            Curve::Line | Curve::Bezier(_) => Ok(None),
             Curve::Arc { bulge } => {
                 if !bulge.is_finite() || bulge == 0.0 || from == to {
                     return Err(ArcError::Input);
@@ -314,11 +316,17 @@ fn spacing(value: f64) -> f64 {
     }
 }
 
-/// One profile segment as a straight piece or an arc.
-#[derive(Copy, Clone, Debug, PartialEq)]
+/// One profile segment as a straight piece, an arc or a rational Bezier.
+///
+/// Pairs with a Bezier piece are proved by enclosures
+/// ([`crate::intersect::BezierEnclosure`]), not by the closed forms here:
+/// the pairwise methods answer conservatively for them, a Bezier piece
+/// being as near as anything and meeting nothing on its own.
+#[derive(Clone, Debug, PartialEq)]
 pub(crate) enum Piece {
     Line([f64; 2], [f64; 2]),
     Arc(Arc),
+    Bezier(BezierPiece),
 }
 
 impl Piece {
@@ -330,12 +338,14 @@ impl Piece {
                 [from[0].max(to[0]), from[1].max(to[1])],
             ],
             Self::Arc(arc) => arc.bounds(),
+            Self::Bezier(bezier) => bezier.bounds(),
         }
     }
     pub(crate) fn from(&self) -> [f64; 2] {
         match self {
             Self::Line(from, _) => *from,
             Self::Arc(arc) => arc.from,
+            Self::Bezier(bezier) => bezier.from,
         }
     }
 
@@ -343,6 +353,7 @@ impl Piece {
         match self {
             Self::Line(_, to) => *to,
             Self::Arc(arc) => arc.to,
+            Self::Bezier(bezier) => bezier.to,
         }
     }
 
@@ -350,6 +361,7 @@ impl Piece {
         match self {
             Self::Line(from, to) => [0.5 * (from[0] + to[0]), 0.5 * (from[1] + to[1])],
             Self::Arc(arc) => arc.point_at(0.5),
+            Self::Bezier(bezier) => bezier.point_at(0.5),
         }
     }
 
@@ -357,11 +369,16 @@ impl Piece {
         match self {
             Self::Line(from, to) => segment_point_distance(*from, *to, point),
             Self::Arc(arc) => arc.distance_to(point),
+            Self::Bezier(bezier) => bezier.distance_to(point),
         }
     }
 
-    /// Smallest distance between the two pieces; zero where they meet.
+    /// Smallest distance between the two pieces; zero where they meet, and
+    /// for a Bezier piece, which only enclosures measure.
     pub(crate) fn distance(&self, other: &Self) -> f64 {
+        if matches!(self, Self::Bezier(_)) || matches!(other, Self::Bezier(_)) {
+            return 0.0;
+        }
         if !self.crossings(other).is_empty() {
             return 0.0;
         }
@@ -373,7 +390,7 @@ impl Piece {
         // Interior critical points: where a circle's radius is normal to a
         // line, or both circles meet the line of centers.
         match (self, other) {
-            (Self::Line(..), Self::Line(..)) => {}
+            (Self::Line(..), Self::Line(..)) | (Self::Bezier(_), _) | (_, Self::Bezier(_)) => {}
             (Self::Line(from, to), Self::Arc(arc)) | (Self::Arc(arc), Self::Line(from, to)) => {
                 let direction = sub(*to, *from);
                 let span = length(direction);
@@ -460,7 +477,7 @@ impl Piece {
     pub(crate) fn meetings(&self, other: &Self) -> Few<[f64; 2]> {
         let mut points = Few::default();
         match (self, other) {
-            (Self::Line(..), Self::Line(..)) => {}
+            (Self::Line(..), Self::Line(..)) | (Self::Bezier(_), _) | (_, Self::Bezier(_)) => {}
             (Self::Line(from, to), Self::Arc(arc)) | (Self::Arc(arc), Self::Line(from, to)) => {
                 for t in line_circle(*from, *to, arc.center, arc.radius).iter() {
                     points.push([
@@ -487,6 +504,7 @@ impl Piece {
                 (0.0..=1.0).contains(&t)
             }
             Self::Arc(arc) => arc.holds(point),
+            Self::Bezier(_) => false,
         }
     }
 
@@ -500,6 +518,26 @@ impl Piece {
                 // Counter-clockwise travel turns the radius a quarter left.
                 let sense = arc.sweep.signum();
                 [-radial[1] * sense, radial[0] * sense]
+            }
+            // A Bezier leaves along its first distinct control and arrives
+            // along its last.
+            Self::Bezier(bezier) => {
+                let controls: alloc::vec::Vec<[f64; 2]> =
+                    bezier.bezier.controls(bezier.from, bezier.to).collect();
+                if at_end {
+                    let end = controls[controls.len() - 1];
+                    controls
+                        .iter()
+                        .rev()
+                        .find(|&&p| p != end)
+                        .map_or([0.0; 2], |&p| sub(end, p))
+                } else {
+                    let start = controls[0];
+                    controls
+                        .iter()
+                        .find(|&&p| p != start)
+                        .map_or([0.0; 2], |&p| sub(p, start))
+                }
             }
         };
         let span = length(direction);
@@ -578,13 +616,16 @@ fn circle_circle(first: &Arc, second: &Arc) -> Few<[f64; 2]> {
 }
 
 /// Winding contribution of the piece around `point`, in turns times `2 pi`.
-pub(crate) fn winding_angle(piece: &Piece, point: [f64; 2]) -> f64 {
+/// `allowance` is how near a Bezier piece's ray crossing may come to
+/// `point` before its winding is undecided (NaN).
+pub(crate) fn winding_angle(piece: &Piece, point: [f64; 2], allowance: f64) -> f64 {
     let (from, to) = (sub(piece.from(), point), sub(piece.to(), point));
     // One cross product decides both the chord angle and the side of the
     // chord, so the two cannot disagree near zero.
     let (side, along) = (cross(from, to) + 0.0, dot(from, to));
     match piece {
         Piece::Line(..) => libm::atan2(side, along),
+        Piece::Bezier(bezier) => bezier.winding_angle(point, allowance).0,
         // A point on the chord between the endpoints sees the arc turn half
         // way around it, in the sweep's direction.
         Piece::Arc(arc) if side == 0.0 && along < 0.0 => PI.copysign(arc.sweep),
@@ -623,7 +664,7 @@ pub(crate) fn sub(a: [f64; 2], b: [f64; 2]) -> [f64; 2] {
     [a[0] - b[0], a[1] - b[1]]
 }
 
-fn dot(a: [f64; 2], b: [f64; 2]) -> f64 {
+pub(crate) fn dot(a: [f64; 2], b: [f64; 2]) -> f64 {
     a[0] * b[0] + a[1] * b[1]
 }
 
@@ -709,6 +750,7 @@ mod tests {
                         from[1] + t * (to[1] - from[1]),
                     ],
                     Piece::Arc(arc) => arc.point_at(t),
+                    Piece::Bezier(bezier) => bezier.point_at(t),
                 }
             })
             .collect();
@@ -759,7 +801,8 @@ mod tests {
         // A counter-clockwise unit circle of two half arcs.
         let upper = Piece::Arc(Arc::from_bulge([1.0, 0.0], [-1.0, 0.0], 1.0).unwrap());
         let lower = Piece::Arc(Arc::from_bulge([-1.0, 0.0], [1.0, 0.0], 1.0).unwrap());
-        let wound = |point| turns(winding_angle(&upper, point) + winding_angle(&lower, point));
+        let wound =
+            |point| turns(winding_angle(&upper, point, 0.0) + winding_angle(&lower, point, 0.0));
         for point in [[0.0, 0.0], [0.5, 0.0], [0.0, 0.9], [-0.3, -0.6]] {
             assert_eq!(wound(point), 1, "{point:?}");
         }
@@ -778,7 +821,7 @@ mod centered_tests {
             let arc = Arc::resolve(
                 [radius, 0.0],
                 [0.0, radius],
-                Curve::ArcCenter {
+                &Curve::ArcCenter {
                     center: [0.0; 2],
                     clockwise: false,
                 },
@@ -794,7 +837,7 @@ mod centered_tests {
         let ccw = Arc::resolve(
             [1.0, 0.0],
             [0.0, 1.0],
-            Curve::ArcCenter {
+            &Curve::ArcCenter {
                 center: [0.0; 2],
                 clockwise: false,
             },
@@ -804,7 +847,7 @@ mod centered_tests {
         let cw = Arc::resolve(
             [1.0, 0.0],
             [0.0, 1.0],
-            Curve::ArcCenter {
+            &Curve::ArcCenter {
                 center: [0.0; 2],
                 clockwise: true,
             },
@@ -823,7 +866,7 @@ mod centered_tests {
         let near_axis = Arc::resolve(
             [1.1e-12, 0.0],
             [1e-12, 1e-13],
-            Curve::ArcCenter {
+            &Curve::ArcCenter {
                 center,
                 clockwise: false,
             },
@@ -837,7 +880,7 @@ mod centered_tests {
         let error = Arc::resolve(
             [1e16 + 2.0, 0.0],
             [1e16, 4.0],
-            Curve::ArcCenter {
+            &Curve::ArcCenter {
                 center: [1e16, 0.0],
                 clockwise: false,
             },
@@ -857,7 +900,7 @@ mod centered_tests {
             Arc::resolve(
                 [1.0, 0.0],
                 [0.0, 1.0 + 1e-10],
-                Curve::ArcCenter {
+                &Curve::ArcCenter {
                     center: [0.0; 2],
                     clockwise: false
                 }
@@ -868,7 +911,7 @@ mod centered_tests {
             let arc = Arc::resolve(
                 [scale, 0.0],
                 [0.0, scale],
-                Curve::ArcCenter {
+                &Curve::ArcCenter {
                     center: [0.0; 2],
                     clockwise: false,
                 },
@@ -890,7 +933,7 @@ mod centered_tests {
                 Arc::resolve(
                     from,
                     to,
-                    Curve::ArcCenter {
+                    &Curve::ArcCenter {
                         center,
                         clockwise: false
                     }

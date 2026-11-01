@@ -28,7 +28,7 @@ use exedra_math::Placement3;
 /// Supported retained construction family, independent of display tolerance.
 #[derive(Copy, Clone, Debug, PartialEq, Eq)]
 pub enum NativeFamily {
-    /// Line/arc extrusion, including supported blind pockets and axial finishes.
+    /// Profile extrusion, including supported blind pockets and axial finishes.
     Extrusion,
     /// Line/arc profile revolution.
     Revolution,
@@ -118,7 +118,9 @@ pub enum NativeMeasure {
 /// A native measure cannot be returned as a positive finite number.
 #[derive(Copy, Clone, Debug, PartialEq, Eq)]
 pub enum NativeMeasureError {
-    /// This construction family has no implementation for the requested measure.
+    /// This construction family has no implementation for the requested
+    /// measure, or this construction can only estimate it, as an extrusion
+    /// with Bezier segments estimates their lengths.
     Unavailable {
         /// Construction family.
         family: NativeFamily,
@@ -493,10 +495,19 @@ impl NativeSource {
     fn measure(&self, measure: NativeMeasure) -> Result<f64, NativeMeasureError> {
         let family = self.family();
         let value = match (measure, self.geometry()) {
-            (NativeMeasure::SurfaceArea, NativeGeometryRef::Extrusion(v)) => v.surface_area(),
+            (NativeMeasure::SurfaceArea, NativeGeometryRef::Extrusion(v))
+                if v.surface_area_is_exact() =>
+            {
+                v.surface_area()
+            }
             (NativeMeasure::SurfaceArea, NativeGeometryRef::Revolution(v)) => v.surface_area(),
             (NativeMeasure::SurfaceArea, NativeGeometryRef::Sweep(v)) => v.surface_area(),
-            (NativeMeasure::Volume, NativeGeometryRef::Extrusion(v)) => v.volume(),
+            (NativeMeasure::Volume, NativeGeometryRef::Extrusion(v)) if v.volume_is_exact() => {
+                v.volume()
+            }
+            (_, NativeGeometryRef::Extrusion(_)) => {
+                return Err(NativeMeasureError::Unavailable { family, measure });
+            }
             (NativeMeasure::Volume, NativeGeometryRef::Revolution(v)) => v.volume(),
             (NativeMeasure::Volume, NativeGeometryRef::Sweep(v)) => v.volume(),
             (NativeMeasure::SurfaceArea, NativeGeometryRef::BoredPlate(v)) => v.surface_area(),
@@ -675,26 +686,6 @@ install!(Extrusion, Extrusion);
 install!(Revolution, Revolution);
 install!(Sweep, Sweep);
 install!(Loft, Loft);
-/// Installs a checked spline extrusion through the construction-independent body
-/// path. Exact geometry, occurrence placement and wall feature tags are retained.
-/// This source reports `NativeFamily::Body`; constructor UV mapping remains on
-/// `PlanarExtrusion`, and exact integral measurements are unavailable.
-impl From<exedra_analytic::planar_extrusion::PlanarExtrusion> for NativeSource {
-    fn from(solid: exedra_analytic::planar_extrusion::PlanarExtrusion) -> Self {
-        let frame = solid.frame();
-        let body = solid.into_body().map_roles(
-            |role| match role {
-                exedra_analytic::extrusion::FaceRole::Wall { tag: Some(tag), .. } => {
-                    alloc::vec![tag]
-                }
-                _ => Vec::new(),
-            },
-            |_| (),
-        );
-        Self::from_body(body, frame).expect("constructor checked the occurrence frame")
-    }
-}
-
 impl From<BoredPlate> for NativeSource {
     fn from(value: BoredPlate) -> Self {
         Self::new(Geometry::BoredPlate(Box::new(value)))
@@ -917,18 +908,38 @@ impl Identity {
         for ring in core::iter::once(profile.outer()).chain(profile.holes()) {
             self.word(ring.segments().len() as u64);
             for segment in ring.segments() {
-                self.values(segment.to);
-                self.tag(segment.tag);
-                match segment.curve {
-                    exedra_curves::profile::Curve::Line => self.word(0),
-                    exedra_curves::profile::Curve::Arc { bulge } => {
+                self.segment(segment);
+            }
+        }
+    }
+    fn segment(&mut self, segment: &exedra_curves::profile::Segment) {
+        use exedra_curves::profile::Curve;
+        self.values(segment.to);
+        self.tag(segment.tag);
+        match &segment.curve {
+            Curve::Line => self.word(0),
+            Curve::Arc { bulge } => {
+                self.word(1);
+                self.values([*bulge]);
+            }
+            Curve::ArcCenter { center, clockwise } => {
+                self.word(2);
+                self.values(*center);
+                self.word(u64::from(*clockwise));
+            }
+            Curve::Bezier(bezier) => {
+                self.word(3);
+                self.word(bezier.interior().len() as u64);
+                for &control in bezier.interior() {
+                    self.values(control);
+                }
+                match bezier.weights() {
+                    None => self.word(0),
+                    Some(weights) => {
                         self.word(1);
-                        self.values([bulge]);
-                    }
-                    exedra_curves::profile::Curve::ArcCenter { center, clockwise } => {
-                        self.word(2);
-                        self.values(center);
-                        self.word(u64::from(clockwise));
+                        for &weight in weights {
+                            self.values([weight]);
+                        }
                     }
                 }
             }
@@ -956,20 +967,7 @@ fn source_fingerprint(geometry: &Geometry) -> PartFingerprint {
                 id.tag(p.tag);
                 id.word(p.outline.segments().len() as u64);
                 for s in p.outline.segments() {
-                    id.values(s.to);
-                    id.tag(s.tag);
-                    match s.curve {
-                        exedra_curves::profile::Curve::Line => id.word(0),
-                        exedra_curves::profile::Curve::Arc { bulge } => {
-                            id.word(1);
-                            id.values([bulge]);
-                        }
-                        exedra_curves::profile::Curve::ArcCenter { center, clockwise } => {
-                            id.word(2);
-                            id.values(center);
-                            id.word(u64::from(clockwise));
-                        }
-                    }
+                    id.segment(s);
                 }
             }
         }

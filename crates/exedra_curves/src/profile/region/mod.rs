@@ -118,6 +118,12 @@ pub enum RegionError {
         /// Required charge including the next item.
         required: u64,
     },
+    /// An input has a segment regions do not yet combine: a rational
+    /// Bezier.
+    UnsupportedCurve {
+        /// The segment.
+        source: InputSegment,
+    },
     /// Near-coincident curves cannot be classified unambiguously in f64.
     Ambiguous {
         /// Fragment's source.
@@ -161,6 +167,12 @@ impl core::fmt::Display for RegionError {
                 f,
                 "region {resource:?} requires {required}, exceeding {maximum}"
             ),
+            Self::UnsupportedCurve { source } => {
+                write!(
+                    f,
+                    "regions do not yet combine the Bezier segment {source:?}"
+                )
+            }
             Self::Ambiguous { first, second } => write!(
                 f,
                 "region boundary is numerically ambiguous between {first:?} and {second:?}"

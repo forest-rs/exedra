@@ -234,26 +234,23 @@ exact cone. GLB and JSON report the native surfaces and integrals; no 3D edge bl
 or mesh Boolean is involved. `Profile::corner_at` refuses missing/ambiguous matches,
 and the treatment refuses overlapping trims under the explicit profile policy.
 
-### Native weighted spline outline
+### Weighted Bezier profile
 
 ```sh
 cargo run -p analytic_extrusion --example spline_profile -- /tmp/spline-profile.step /tmp/spline-profile.glb
 ```
 
-This example uses `PlanarExtrusion::new` instead of assembling boundary tables.
-A tagged weighted cubic over domain `[2,5]` and a chord form the outer boundary;
-a clockwise rectangle forms a hole. Display realization requests boundary spacing
-0.2 and shape ratio 2.5 independently of its 0.01 geometric tolerance. It prints
-the observed shape ratio and remaining bad triangles across the whole emitted
-mesh, including any patch family that misses the target. Native compilation below
-uses its separate tolerance-only policy. It checks native closure, realizes parameter
-UVs, exports exact rational STEP geometry, then compiles the same installed native
-source at two display tolerances. Construction time and admitted outline work are
-printed separately from display and exchange evidence. The optional second path
-writes the charted display mesh as GLB with a grid texture, suitable for shaded
-or wireframe inspection. The current constructor
-accepts full-domain clamped single-span NURBS and unit-range lines; it refuses
-uncertain arrangements and unsupported source layouts.
+A tagged weighted cubic Bezier segment and a chord form the outer loop of a
+shared profile; a clockwise rectangle forms a hole. The profile proves its own
+arrangement, and `Extrusion::new` builds the crown's wall as an exact ruled
+surface between rational NURBS edges. Display realization requests boundary
+spacing 0.2 and shape ratio 2.5 independently of its 0.01 geometric tolerance.
+It prints the observed shape ratio and remaining bad triangles across the whole
+emitted mesh. Native compilation below uses its separate tolerance-only policy.
+The example checks native closure, realizes parameter UVs, exports exact
+rational STEP geometry, then compiles the same installed native source at two
+display tolerances. The optional second path writes the charted display mesh as
+GLB with a grid texture, suitable for shaded or wireframe inspection.
 
 ## Shared native ruling subdivision
 
@@ -261,13 +258,14 @@ uncertain arrangements and unsupported source layouts.
 cargo run -p analytic_extrusion --example native_ruled_split -- /tmp/ruled-split
 ```
 
-`native_ruled_split` partitions a reversed, weighted spline wall with native
-source range `[2,5]`, above a crown profile with a rectangular through-hole. It
-projects a synthetic model-space pick globally onto the native support, then
-inserts a ruling at the returned witness U and another at original native U `0.73`.
-The projection reports a distance bracket without claiming UV uniqueness.
-Both edits keep the original ruled support unchanged. Each split adds two vertices, three edges and one
-face; the operation report names both cap-rim replacements and child domains.
+`native_ruled_split` partitions the weighted Bezier crown wall of the profile
+above, with its rectangular through-hole. It projects a synthetic model-space
+pick globally onto the native support, then inserts a ruling at the returned
+witness U and another at original native U `0.73`. The projection
+reports a distance bracket without claiming UV uniqueness. Both edits keep the
+original ruled support unchanged. Each split adds two vertices, three edges and
+one face; the operation report names both cap-rim replacements and child
+domains.
 
 `comparison.glb` places the source, first split and repeated split at model-unit
 translations `[0,0,0]`, `[6,0,0]` and `[12,0,0]`. The upper child is orange; the

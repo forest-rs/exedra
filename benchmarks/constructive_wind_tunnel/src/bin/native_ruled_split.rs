@@ -4,51 +4,39 @@
 //! Transactional native ruling subdivision: borrowed source and cloned output.
 use exedra_analytic::{
     body::{Body, FaceId},
-    geometry::{Curve, CurveSpan, NurbsCurve, ParameterRange},
-    planar_extrusion::{PlanarExtrusion, PlanarExtrusionPolicy, PlanarSegment},
+    extrusion::Extrusion,
     realize::RealizationPolicy,
     split::{RuledSplitPolicy, split_ruled_face_at_u},
 };
-use exedra_curves::profile::SegTag;
+use exedra_curves::profile::{Bezier, Loop, Profile, ProfilePolicy, SegTag, Segment};
 use exedra_math::Placement3;
 use std::{error::Error, hint::black_box, time::Instant};
 
 fn source() -> (Body<(), u8>, FaceId) {
-    let curve = Curve::nurbs(
-        NurbsCurve::new(
-            4,
-            vec![2., 2., 2., 2., 5., 5., 5., 5.],
-            vec![[0., 0., 0.], [1., 2., 0.], [3., 2., 0.], [4., 0., 0.]],
-            Some(vec![1., 0.7, 1.4, 1.]),
-        )
-        .unwrap(),
-    )
-    .unwrap();
-    let outer = vec![
-        PlanarSegment::line([0., 0.], [4., 0.]).unwrap(),
-        PlanarSegment::new(
-            CurveSpan::new(curve, ParameterRange::new(2., 5.).unwrap(), true).unwrap(),
+    let outer = Loop::new(vec![
+        Segment::line([4., 0.]),
+        Segment::bezier(
+            [0., 0.],
+            Bezier::new(vec![[3., 2.], [1., 2.]], Some(vec![1., 1.4, 0.7, 1.])),
         )
         .tagged(SegTag(42)),
-    ];
-    let p = [[1.5, 0.3], [1.5, 0.6], [2.5, 0.6], [2.5, 0.3]];
-    let hole = (0..4)
-        .map(|i| PlanarSegment::line(p[i], p[(i + 1) % 4]).unwrap())
-        .collect();
-    let solid = PlanarExtrusion::new(
-        outer,
-        vec![hole],
-        Placement3::IDENTITY,
-        2.,
-        &PlanarExtrusionPolicy::default(),
-    )
+    ])
     .unwrap();
+    let hole = Loop::new(vec![
+        Segment::line([1.5, 0.6]),
+        Segment::line([2.5, 0.6]),
+        Segment::line([2.5, 0.3]),
+        Segment::line([1.5, 0.3]),
+    ])
+    .unwrap();
+    let profile = Profile::new(outer, vec![hole], &ProfilePolicy::new(1e-9)).unwrap();
+    let solid = Extrusion::new(profile, Placement3::IDENTITY, 2.).unwrap();
     let face = solid
         .faces_tagged(SegTag(42))
         .next()
         .expect("named crown")
         .0;
-    (solid.into_body().map_roles(|_| (), |_| 0), face)
+    (solid.body().clone().map_roles(|_| (), |_| 0), face)
 }
 fn measure<T>(repetitions: usize, mut action: impl FnMut() -> T) -> f64 {
     for _ in 0..3 {

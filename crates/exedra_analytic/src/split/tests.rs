@@ -328,11 +328,135 @@ fn caller_roles_and_explicit_planar_trim_occurrences_are_preserved() {
     assert_eq!(result.body.trims().len(), source.trims().len());
 }
 
-fn reversed_nonunit_prism(
-    holes: Vec<Vec<crate::planar_extrusion::PlanarSegment>>,
-) -> (Body<(), usize>, crate::body::FaceId) {
-    use crate::planar_extrusion::{PlanarExtrusion, PlanarExtrusionPolicy, PlanarSegment};
-    use exedra_curves::profile::SegTag;
+/// The straight span from `from` to `to` at height zero.
+fn line_span(from: [f64; 2], to: [f64; 2]) -> CurveSpan {
+    let direction = [to[0] - from[0], to[1] - from[1], 0.0];
+    let line = Curve::line([from[0], from[1], 0.0], direction).unwrap();
+    CurveSpan::new(line, ParameterRange::UNIT, false).unwrap()
+}
+
+/// Every span of `loops`, given as closed chains at height zero, swept up by
+/// `length` into a ruled wall between its own two rows, so walls keep their
+/// generators' native ranges and directions. Caps are faces 0 and 1, with
+/// explicit planar trims; walls follow in loop order.
+fn ruled_prism<E: Clone>(loops: &[Vec<CurveSpan>], length: f64, role: E) -> Body<(), E> {
+    let lift = |span: &CurveSpan, z: f64| {
+        let curve = span
+            .curve()
+            .transformed(Placement3::translate(0.0, 0.0, z))
+            .unwrap();
+        CurveSpan::new(curve, span.range(), span.reversed()).unwrap()
+    };
+    let mut parts = BodyParts::default();
+    let mut bounds = [[f64::INFINITY; 2], [f64::NEG_INFINITY; 2]];
+    for (z, sense) in [(0.0, Sense::Reverse), (length, Sense::Forward)] {
+        parts.faces.push(Face {
+            surface: Surface::plane(Placement3::translate(0.0, 0.0, z)).unwrap(),
+            domain: ParameterDomain {
+                u: ParameterRange::UNIT,
+                v: ParameterRange::UNIT,
+            },
+            sense,
+            loops: Vec::new(),
+            role: (),
+        });
+    }
+    for spans in loops {
+        let n = spans.len();
+        let (vertex_base, edge_base) = (parts.vertices.len(), parts.edges.len());
+        for z in [0.0, length] {
+            for span in spans {
+                let p = span.evaluate(0.0).unwrap().point;
+                parts.vertices.push([p[0], p[1], z]);
+            }
+        }
+        for (slot, z) in [0.0, length].into_iter().enumerate() {
+            let mut ring = Vec::with_capacity(n);
+            for (i, span) in spans.iter().enumerate() {
+                let (mut start, mut end) = (slot * n + i, slot * n + (i + 1) % n);
+                if span.reversed() {
+                    (start, end) = (end, start);
+                }
+                ring.push(Coedge {
+                    edge: EdgeId(crate::usize_to_u32(parts.edges.len())),
+                    reversed: span.reversed() ^ (slot == 0),
+                });
+                let curve = lift(span, z).curve().clone();
+                parts.edges.push(Edge::new(
+                    curve,
+                    span.range(),
+                    VertexId(crate::usize_to_u32(vertex_base + start)),
+                    VertexId(crate::usize_to_u32(vertex_base + end)),
+                    role.clone(),
+                ));
+                let b = span.curve().conservative_bounds(span.range()).unwrap();
+                for k in 0..2 {
+                    bounds[0][k] = bounds[0][k].min(b[0][k]);
+                    bounds[1][k] = bounds[1][k].max(b[1][k]);
+                }
+            }
+            if slot == 0 {
+                ring.reverse();
+            }
+            let id = LoopId(crate::usize_to_u32(parts.loops.len()));
+            parts.loops.push(BoundaryLoop { coedges: ring });
+            parts.faces[slot].loops.push(id);
+        }
+        for i in 0..n {
+            let start = vertex_base + i;
+            let line = Curve::line(parts.vertices[start], [0.0, 0.0, length]).unwrap();
+            parts.edges.push(Edge::new(
+                line,
+                ParameterRange::UNIT,
+                VertexId(crate::usize_to_u32(start)),
+                VertexId(crate::usize_to_u32(start + n)),
+                role.clone(),
+            ));
+        }
+        for (i, span) in spans.iter().enumerate() {
+            let coedge = |edge: usize, reversed| Coedge {
+                edge: EdgeId(crate::usize_to_u32(edge_base + edge)),
+                reversed,
+            };
+            let id = LoopId(crate::usize_to_u32(parts.loops.len()));
+            parts.loops.push(BoundaryLoop {
+                coedges: vec![
+                    coedge(i, span.reversed()),
+                    coedge(2 * n + (i + 1) % n, false),
+                    coedge(n + i, !span.reversed()),
+                    coedge(2 * n + i, true),
+                ],
+            });
+            parts.faces.push(Face {
+                surface: Surface::ruled(span.clone(), lift(span, length)).unwrap(),
+                domain: ParameterDomain {
+                    u: ParameterRange::UNIT,
+                    v: ParameterRange::UNIT,
+                },
+                sense: Sense::Forward,
+                loops: vec![id],
+                role: (),
+            });
+        }
+    }
+    for cap in &mut parts.faces[..2] {
+        cap.domain = ParameterDomain {
+            u: ParameterRange::new(bounds[0][0], bounds[1][0]).unwrap(),
+            v: ParameterRange::new(bounds[0][1], bounds[1][1]).unwrap(),
+        };
+    }
+    for cap in [0, 1] {
+        for id in parts.faces[cap].loops.clone() {
+            let face = crate::body::FaceId(crate::usize_to_u32(cap));
+            crate::operation_trims::append_planar_loop(&mut parts, face, id).unwrap();
+        }
+    }
+    Body::try_from_parts(parts, &ValidationPolicy { max_gap: 1e-9 }).unwrap()
+}
+
+/// A chord under a weighted cubic crown over the reversed non-unit range
+/// `[2, 5]`; the crown is face 3.
+fn reversed_nonunit_prism(holes: Vec<Vec<CurveSpan>>) -> (Body<(), usize>, crate::body::FaceId) {
     let curve = Curve::nurbs(
         crate::geometry::NurbsCurve::new(
             4,
@@ -343,24 +467,10 @@ fn reversed_nonunit_prism(
         .unwrap(),
     )
     .unwrap();
-    let outline = vec![
-        PlanarSegment::line([0., 0.], [4., 0.]).unwrap(),
-        PlanarSegment::new(
-            CurveSpan::new(curve, ParameterRange::new(2., 5.).unwrap(), true).unwrap(),
-        )
-        .tagged(SegTag(7)),
-    ];
-    let solid = PlanarExtrusion::new(
-        outline,
-        holes,
-        Placement3::IDENTITY,
-        2.,
-        &PlanarExtrusionPolicy::default(),
-    )
-    .unwrap();
-    let crown = solid.faces_tagged(SegTag(7)).next().unwrap().0;
-    let source = solid.into_body().map_roles(|_| (), |_| 7_usize);
-    (source, crown)
+    let crown = CurveSpan::new(curve, ParameterRange::new(2., 5.).unwrap(), true).unwrap();
+    let mut loops = vec![vec![line_span([0., 0.], [4., 0.]), crown]];
+    loops.extend(holes);
+    (ruled_prism(&loops, 2., 7_usize), crate::body::FaceId(3))
 }
 
 #[test]
@@ -422,10 +532,10 @@ fn reversed_nonunit_generators_and_line_walls_keep_original_supports() {
 #[test]
 fn swapped_rows_preserve_hole_records_and_outward_geometry_across_splits() {
     use super::{RuledSplitPolicy, split_ruled_face_at_u};
-    use crate::{body::FaceId, planar_extrusion::PlanarSegment};
+    use crate::body::FaceId;
     let points = [[1.5, 0.3], [1.5, 0.6], [2.5, 0.6], [2.5, 0.3]];
     let hole = (0..4)
-        .map(|i| PlanarSegment::line(points[i], points[(i + 1) % 4]).unwrap())
+        .map(|i| line_span(points[i], points[(i + 1) % 4]))
         .collect();
     let (original, crown) = reversed_nonunit_prism(vec![hole]);
     let mut parts = original.clone().into_parts();
@@ -825,23 +935,13 @@ fn split_rejects_cancelling_global_rail_when_admitting_partial_children() {
     use super::{RuledSplitError, RuledSplitPolicy, split_ruled_face_at_u};
     use crate::{
         body::{BodyError, EdgeGeometry, FaceId},
-        planar_extrusion::{PlanarExtrusion, PlanarExtrusionPolicy, PlanarSegment},
         validation::BoundaryValidationError,
     };
     let points = [[0., 0.], [1., 0.], [1., 1.], [0., 1.]];
     let outer = (0..4)
-        .map(|i| PlanarSegment::line(points[i], points[(i + 1) % 4]).unwrap())
+        .map(|i| line_span(points[i], points[(i + 1) % 4]))
         .collect();
-    let original = PlanarExtrusion::new(
-        outer,
-        vec![],
-        Placement3::IDENTITY,
-        16.,
-        &PlanarExtrusionPolicy::default(),
-    )
-    .unwrap()
-    .into_body()
-    .map_roles(|_| (), |_| ());
+    let original = ruled_prism(&[outer], 16., ());
     let mut parts = original.into_parts();
     let rail = parts
         .edges

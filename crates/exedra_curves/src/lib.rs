@@ -52,10 +52,11 @@
 //! - **Paths** ([`path`]): the owned and borrowed sweep paths of lines,
 //!   arcs and cubics that Exedra's heads share, and the double-reflection
 //!   step that frames them.
-//! - **Profiles** ([`profile`]): exact 2D loops of lines and circular
-//!   arcs, validated against an explicit separation, combined as regions,
-//!   finished at their corners, and sampled with deterministic arc counts,
-//!   as Exedra's geometry heads share them.
+//! - **Profiles** ([`profile`]): exact 2D loops of lines, circular arcs
+//!   and rational Bezier segments, validated against an explicit
+//!   separation, combined as regions, finished at their corners, and
+//!   sampled with deterministic arc counts, as Exedra's geometry heads
+//!   share them.
 //! - **Realization** ([`realize`]): a [`realize::RealizationPlan`] built
 //!   once from an owned [`realize::CurveDescription`] (a cubic chain or a
 //!   [`NurbsCurve`], widths, ribbon normals, closure) keeps per-span Bezier

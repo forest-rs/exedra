@@ -136,6 +136,9 @@ pub(super) fn construct(
     path: &impl CurvePathSource,
     frame: Placement3,
 ) -> Result<Sweep, SweepError> {
+    if let Some(segment) = profile.bezier_segment() {
+        return Err(SweepError::UnsupportedCurve { segment });
+    }
     crate::geometry::rigid(frame).map_err(SweepError::Geometry)?;
     let path = path.curve_path().ok_or(SweepError::UnsupportedPath)?;
     if path.segments.is_empty()

@@ -53,6 +53,14 @@ impl I {
             hi: (1.0 / self.lo).next_up(),
         }
     }
+    /// The square root of an interval of nonnegative values, rounded
+    /// outward.
+    pub(crate) fn sqrt(self) -> Self {
+        Self {
+            lo: libm::sqrt(self.lo.max(0.0)).next_down().max(0.0),
+            hi: libm::sqrt(self.hi).next_up(),
+        }
+    }
     pub(crate) fn square(self) -> Self {
         let a = self.lo * self.lo;
         let b = self.hi * self.hi;

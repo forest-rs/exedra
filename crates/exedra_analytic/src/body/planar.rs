@@ -74,7 +74,7 @@ impl<F, E> Body<F, E> {
                 };
                 // Resolving now establishes that both authoritative endpoints can
                 // participate in this exact circular representation.
-                exedra_curves::profile::Arc::resolve(from, to, segment.curve).ok()?;
+                exedra_curves::profile::Arc::resolve(from, to, &segment.curve).ok()?;
                 segments.push(segment);
                 spans.push(source);
             }

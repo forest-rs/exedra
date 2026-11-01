@@ -79,6 +79,12 @@ pub struct Revolution {
 pub enum RevolutionError {
     /// Placement or supporting geometry is invalid.
     Geometry(GeometryError),
+    /// A profile segment is a rational Bezier, which revolution does not
+    /// yet build.
+    UnsupportedCurve {
+        /// The segment.
+        segment: SegmentRef,
+    },
     /// The sweep must be finite, positive and at most `TAU`.
     Sweep {
         /// Requested radians.
@@ -172,6 +178,9 @@ impl Revolution {
     /// Returns a typed refusal for invalid sweep/placement, nonregular toroidal arcs,
     /// unsupported axis contact/topology, numerical limits or generated boundary disagreement.
     pub fn new(profile: Profile, frame: Placement3, sweep: f64) -> Result<Self, RevolutionError> {
+        if let Some(segment) = profile.bezier_segment() {
+            return Err(RevolutionError::UnsupportedCurve { segment });
+        }
         crate::geometry::rigid(frame).map_err(RevolutionError::Geometry)?;
         if !sweep.is_finite() || sweep <= 0.0 || sweep > core::f64::consts::TAU {
             return Err(RevolutionError::Sweep { sweep });
@@ -894,11 +903,12 @@ mod tests {
     #[test]
     fn combined_cap_and_wall_area_overflow_is_a_numeric_refusal() {
         let profile = Profile::new(
+            // As wide as rounding at its height lets it be told apart.
             polygon(&[
-                [0.875, 0.0],
-                [0.875, 6.7e307],
-                [0.125, 6.7e307],
-                [0.125, 0.0],
+                [3.0e307, 0.0],
+                [3.0e307, 6.7e307],
+                [1.0e307, 6.7e307],
+                [1.0e307, 0.0],
             ]),
             vec![],
             &ProfilePolicy::new(1e-9),

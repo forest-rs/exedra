@@ -42,8 +42,13 @@ impl Loop {
             self.segments()
                 .iter()
                 .map(|segment| {
-                    let mut moved = *segment;
+                    let mut moved = segment.clone();
                     moved.to = [segment.to[0] + offset[0], segment.to[1] + offset[1]];
+                    if let crate::profile::Curve::Bezier(bezier) = &segment.curve {
+                        moved.curve = crate::profile::Curve::Bezier(
+                            bezier.mapped(|p| [p[0] + offset[0], p[1] + offset[1]]),
+                        );
+                    }
                     if let crate::profile::Curve::ArcCenter { center, clockwise } = segment.curve {
                         moved.curve = crate::profile::Curve::ArcCenter {
                             center: core::array::from_fn(|i| {

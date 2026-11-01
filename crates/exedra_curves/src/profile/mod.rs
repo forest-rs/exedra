@@ -1,20 +1,24 @@
 // Copyright 2026 the Exedra Authors
 // SPDX-License-Identifier: Apache-2.0 OR MIT
 
-//! Line and circular-arc 2D profiles shared by Exedra's geometry heads.
+//! Line, circular-arc and rational Bezier 2D profiles shared by Exedra's
+//! geometry heads.
 //!
 //! A [`Profile`] is a counter-clockwise outer [`Loop`] with clockwise holes,
-//! in `f64` model units. Segments are straight or circular arcs given by their
-//! endpoints and either a bulge or an authoritative center/direction, so loops
-//! close exactly; [`Arc::resolve`] derives the remaining circle parameters.
+//! in `f64` model units. Segments are straight, circular arcs given by their
+//! endpoints and either a bulge or an authoritative center/direction, or
+//! rational [`Bezier`] curves whose end controls are their endpoints, so
+//! loops close exactly; [`Arc::resolve`] derives an arc's circle parameters.
 //! Nothing here refers to recipes, policies or meshes: heads lower their own
 //! profiles into this one through explicit adapters.
 //!
 //! [`Profile::new`] validates the arrangement against an explicit
 //! [`ProfilePolicy`]: winding, segments that cross, touch, overlap or come
 //! closer than the separation, holes outside the outer loop or inside one
-//! another. It reports the first violation with the segments involved and
-//! never moves, merges or heals geometry.
+//! another. Lines and arcs are checked in closed form; a profile with Bezier
+//! segments is proved by outward-rounded enclosures
+//! ([`crate::intersect::BezierEnclosure`]). It reports the first violation
+//! with the segments involved and never moves, merges or heals geometry.
 //!
 //! The module also owns deterministic circular sampling counts:
 //! [`circular_edge_count`] returns the smallest edge count meeting a chord
@@ -32,6 +36,7 @@
 //! ```
 
 mod arc;
+mod bezier;
 mod corner;
 mod outline;
 mod placement;
@@ -43,6 +48,7 @@ mod input;
 pub use input::IntoProfile;
 
 pub use arc::{Arc, ArcError};
+pub use bezier::Bezier;
 pub use corner::{
     Corner, CornerError, CornerKind, CornerResult, CornerSegment, CornerSelectionError,
     CornerShape, CornerSource, CornerTreatment,

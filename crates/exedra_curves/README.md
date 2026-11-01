@@ -40,7 +40,8 @@ Current scope:
 - `path`: the owned `Path3` and borrowed `CurvePathView` sweep paths of
   lines, arcs and cubics that Exedra's geometry heads share, with their
   closure and join intent;
-- `profile`: exact 2D profiles of lines and circular arcs, below;
+- `profile`: exact 2D profiles of lines, circular arcs and rational Bezier
+  segments, below;
 - `realize`: a `RealizationPlan` built once from an owned
   `CurveDescription` (a cubic chain or a `NurbsCurve`, widths and ribbon
   normals as constant, varying or per-control attributes, closure), keeping
@@ -92,13 +93,20 @@ select `exedra_math`'s backend.
 ## Profiles
 
 A `Profile` is a counter-clockwise outer `Loop` with clockwise holes, in `f64`
-model units. Segments are lines or circular arcs between exact endpoints,
-with optional caller tags. Arcs carry either a bulge or an authoritative
-center and direction. `Profile::new` validates the arrangement against an
-explicit `ProfilePolicy`: winding, segments that cross, touch, overlap or come
-closer than `min_separation`, and holes outside the outer loop or nested in
-one another. The first violation names its loops and segments. Nothing is
-moved, merged or healed. Areas and lengths are exact for lines and arcs.
+model units. Segments are lines, circular arcs or rational Bezier curves
+between exact endpoints, with optional caller tags. Arcs carry either a bulge
+or an authoritative center and direction; a Bezier segment carries the
+controls between its ends and its weights, up to order 16, and a multi-span
+spline enters as one segment per span. `Profile::new` validates the
+arrangement against an explicit `ProfilePolicy`: winding, segments that
+cross, touch, overlap or come closer than `min_separation` (never finer than
+the rounding at their coordinates), and holes outside the outer loop or
+nested in one another. Profiles with Bezier segments are proved by
+outward-rounded enclosures subdivided under the policy's budget, and refused
+as unresolved where that cannot settle them. The first violation names its
+loops and segments. Nothing is moved, merged or healed. Areas and lengths are
+exact for lines and arcs, and Gauss-Legendre quadratures for Bezier segments.
+Regions do not yet combine Bezier segments, and refuse them.
 
 `SegTag` is the shared feature label used by constructive profiles and analytic
 face roles. A tag passed to a constructive cutout stays the same typed value

@@ -43,12 +43,13 @@
 use alloc::vec::Vec;
 
 use crate::body::{Body, BodyParts, BoundaryLoop, Sense, ValidationPolicy};
-use crate::geometry::{ParameterDomain, ParameterRange};
+use crate::geometry::{GeometryError, ParameterDomain, ParameterRange};
 use exedra_curves::profile::{Curve, Loop, LoopRef, Profile, ProfileError, ProfilePolicy, SegTag};
 use exedra_math::{FrameError, Placement3};
 
 mod authoring;
 mod boundary;
+mod chart;
 mod finish;
 mod pocket;
 mod query;
@@ -57,6 +58,7 @@ mod tessellate;
 mod workplane;
 
 pub use authoring::ProfileExtrusionError;
+pub use chart::ExtrusionUvError;
 pub use finish::{AxialFinish, AxialFinishError, AxialTransition};
 pub use query::SurfacePoint;
 pub use workplane::{FaceSelectionError, Workplane, WorkplaneError};
@@ -248,6 +250,12 @@ impl Pocket {
 #[derive(Copy, Clone, Debug, PartialEq)]
 #[non_exhaustive]
 pub enum PocketError {
+    /// An outline segment is a rational Bezier, which pockets do not yet
+    /// cut.
+    UnsupportedCurve {
+        /// The segment's index in the outline.
+        segment: usize,
+    },
     /// A filled pocket region contains holes, which would leave unsupported islands.
     RegionHasHoles {
         /// Number of holes in the region.
@@ -284,6 +292,9 @@ pub enum PocketError {
 impl core::fmt::Display for PocketError {
     fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
         match self {
+            Self::UnsupportedCurve { segment } => {
+                write!(f, "pocket outline segment {segment} is a Bezier curve")
+            }
             Self::RegionHasHoles { count } => write!(
                 f,
                 "pocket region has {count} holes; this pocket model requires one filled outline"
@@ -333,6 +344,14 @@ pub enum ExtrusionError {
     TooLarge,
     /// The constructed boundary failed structural or support validation.
     Body(crate::body::BodyError),
+    /// A rational Bezier segment's edges or ruled wall could not be built,
+    /// as where the curve stalls, so its wall has no normal there.
+    Bezier {
+        /// The segment.
+        segment: BoundarySegment,
+        /// Why the geometry was refused.
+        source: GeometryError,
+    },
     /// A pocket cannot be cut.
     Pocket {
         /// The pocket's index, the count of earlier pockets.
@@ -352,6 +371,11 @@ impl core::fmt::Display for ExtrusionError {
             Self::SingularFrame(error) => write!(f, "extrusion frame: {error}"),
             Self::Body(error) => write!(f, "extrusion {error}"),
             Self::TooLarge => write!(f, "profile is too large to extrude"),
+            Self::Bezier { segment, source } => write!(
+                f,
+                "segment {} of {:?} cannot be extruded: {source}",
+                segment.segment, segment.boundary
+            ),
             Self::Pocket { pocket, error } => write!(f, "pocket {pocket}: {error}"),
         }
     }
@@ -524,10 +548,18 @@ impl Extrusion {
                 band.edges[slot] = edges.len();
                 let z = heights[slot];
                 for (k, (from, segment)) in loop_.iter_with_starts().enumerate() {
-                    let (curve, range) = match segment.curve {
+                    let (curve, range) = match &segment.curve {
                         Curve::Line => {
                             boundary::line([from[0], from[1], z], [segment.to[0], segment.to[1], z])
                         }
+                        Curve::Bezier(bezier) => boundary::bezier(from, segment.to, bezier, z)
+                            .map_err(|source| ExtrusionError::Bezier {
+                                segment: BoundarySegment {
+                                    boundary,
+                                    segment: k,
+                                },
+                                source,
+                            })?,
                         Curve::Arc { .. } | Curve::ArcCenter { .. } => {
                             boundary::circle(loop_.arc(k).expect("validated arc"), z)
                         }
@@ -605,8 +637,24 @@ impl Extrusion {
         for (band, &(boundary, _, _, loop_)) in bands.iter().zip(&boundaries) {
             let n = loop_.segments().len();
             for (k, (from, segment)) in loop_.iter_with_starts().enumerate() {
-                let (surface, domain, sense) =
-                    boundary::wall(from, segment.to, loop_.arc(k), band.heights);
+                let (surface, domain, sense) = if let Curve::Bezier(_) = segment.curve {
+                    // Between the segment's own two edges.
+                    let rim = |slot: usize| match &edges[band.edges[slot] + k].geometry {
+                        crate::body::EdgeGeometry::Curve { curve, .. } => curve.clone(),
+                        _ => unreachable!("Bezier edges are curves"),
+                    };
+                    boundary::ruled_wall(rim(0), rim(1)).map_err(|source| {
+                        ExtrusionError::Bezier {
+                            segment: BoundarySegment {
+                                boundary,
+                                segment: k,
+                            },
+                            source,
+                        }
+                    })?
+                } else {
+                    boundary::wall(from, segment.to, loop_.arc(k), band.heights)
+                };
                 // Lower edge forward, seam up at the segment's end, upper
                 // edge backward, seam down at its start.
                 let boundary_loop = alloc::vec![
@@ -818,6 +866,8 @@ fn plane_face(
     }
 }
 
+#[cfg(test)]
+mod bezier_tests;
 #[cfg(test)]
 mod pocket_tests;
 
