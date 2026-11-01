@@ -99,17 +99,22 @@ STEP export are exact: an extrusion of a profile with any pockets cut into it, a
 revolution, a constant-section sweep or a ruled loft, under rigid transforms,
 with segment tags carried to face tags. A solid on an `OnWorkplane` attachment
 is placed on its native support's cap or pocket floor, named as mesh evaluation
-names it, and resolves to the same frame; the support is not emitted. Lowering
-is the caller's explicit choice. A caller that requires exact geometry
-propagates `NativeLoweringError`, which names the first node that has no native
-construction, asks for something native construction would not keep (a material,
-chart, issue, open caps, a varying sweep section, smooth loft interpolation or a
-region attachment), or whose construction refuses its parameters; a caller that
-prefers exact geometry falls back to `PartSource::Recipe`, whose mesh evaluation
-covers every node. Attachments nest at most `NativeLoweringPolicy::max_depth`
-deep. The lowered source takes the label of the node that produced its body, as
-mesh evaluation attributes it, so a snapshot resolves it by that label either
-way.
+names it, and resolves to the same frame; the support is not emitted. A `Csg`
+node lowers where it is exact: unions, intersections and differences of equally
+oriented axis-aligned bodies, by their exact arrangement, and differences whose
+cutter is a circular extrusion reaching past the base's conservative bounds at
+both ends, by a through cut. Faces keep their operands' tags, and the result
+reports the exact volume and area its operations carry; anything else is a
+`NativeBooleanError` naming the operand. The lowered source takes the label of
+the node that produced its body, as mesh evaluation attributes it, so a snapshot
+resolves it by that label either way. Lowering is the caller's explicit choice.
+A caller that requires exact geometry propagates `NativeLoweringError`, which
+names the first node that has no native construction, asks for something native
+construction would not keep (a material, chart, issue, open caps, a varying
+sweep section, smooth loft interpolation or a region attachment), or whose
+construction refuses its parameters; a caller that prefers exact geometry falls
+back to `PartSource::Recipe`, whose mesh evaluation covers every node. Booleans
+and attachments nest at most `NativeLoweringPolicy::max_depth` deep.
 
 ## Input identity migration
 

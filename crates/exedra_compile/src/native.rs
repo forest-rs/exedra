@@ -25,7 +25,7 @@ use exedra_analytic::{
 use exedra_curves::path::{PathClosure, PathJoin, PathSegment3};
 use exedra_curves::profile::{Profile, SegTag};
 use exedra_math::Placement3;
-pub use lower::{NativeLoweringError, NativeLoweringPolicy};
+pub use lower::{NativeBooleanError, NativeLoweringError, NativeLoweringPolicy};
 
 /// Supported retained construction family, independent of display tolerance.
 #[derive(Copy, Clone, Debug, PartialEq, Eq)]
@@ -54,6 +54,9 @@ enum Geometry {
     Body {
         body: Body<Vec<SegTag>>,
         frame: Placement3,
+        /// Exact volume and area, where the operations that made the body
+        /// carried them.
+        integrals: Option<[f64; 2]>,
     },
 }
 
@@ -339,6 +342,16 @@ impl NativeSource {
         body: Body<Vec<SegTag>>,
         frame: Placement3,
     ) -> Result<Self, exedra_math::FrameError> {
+        Self::from_measured_body(body, frame, None)
+    }
+
+    /// [`Self::from_body`], with the exact volume and area of the operations
+    /// that made the body, which its measures then report.
+    pub(crate) fn from_measured_body(
+        body: Body<Vec<SegTag>>,
+        frame: Placement3,
+        integrals: Option<[f64; 2]>,
+    ) -> Result<Self, exedra_math::FrameError> {
         let column = |i| frame.rows.map(|r| r[i]);
         Placement3::try_from_orthonormal_axes(
             column(0),
@@ -357,7 +370,11 @@ impl NativeSource {
             },
             |()| (),
         );
-        Ok(Self::new(Geometry::Body { body, frame }))
+        Ok(Self::new(Geometry::Body {
+            body,
+            frame,
+            integrals,
+        }))
     }
     fn new(geometry: Geometry) -> Self {
         let fingerprint = source_fingerprint(&geometry);
@@ -407,7 +424,7 @@ impl NativeSource {
             Geometry::Sweep(v) => NativeGeometryRef::Sweep(v),
             Geometry::Loft(v) => NativeGeometryRef::Loft(v),
             Geometry::BoredPlate(v) => NativeGeometryRef::BoredPlate(v),
-            Geometry::Body { body, frame } => NativeGeometryRef::Body {
+            Geometry::Body { body, frame, .. } => NativeGeometryRef::Body {
                 body,
                 frame: *frame,
             },
@@ -500,7 +517,8 @@ impl NativeSource {
     /// Positive finite native boundary area in squared model units, without meshing.
     ///
     /// # Errors
-    /// Returns [`NativeMeasureError::Unavailable`] for ruled lofts, or
+    /// Returns [`NativeMeasureError::Unavailable`] for ruled lofts and bodies
+    /// installed without exact integrals, or
     /// [`NativeMeasureError::NumericLimit`] when the calculation exceeds numeric limits.
     pub fn surface_area(&self) -> Result<f64, NativeMeasureError> {
         self.measure(NativeMeasure::SurfaceArea)
@@ -510,7 +528,8 @@ impl NativeSource {
     /// their contracts.
     ///
     /// # Errors
-    /// Returns [`NativeMeasureError::Unavailable`] for ruled lofts, or
+    /// Returns [`NativeMeasureError::Unavailable`] for ruled lofts and bodies
+    /// installed without exact integrals, or
     /// [`NativeMeasureError::NumericLimit`] when the calculation exceeds numeric limits.
     pub fn volume(&self) -> Result<f64, NativeMeasureError> {
         self.measure(NativeMeasure::Volume)
@@ -535,7 +554,24 @@ impl NativeSource {
             (NativeMeasure::Volume, NativeGeometryRef::Sweep(v)) => v.volume(),
             (NativeMeasure::SurfaceArea, NativeGeometryRef::BoredPlate(v)) => v.surface_area(),
             (NativeMeasure::Volume, NativeGeometryRef::BoredPlate(v)) => v.volume(),
-            (_, NativeGeometryRef::Loft(_) | NativeGeometryRef::Body { .. }) => {
+            (_, NativeGeometryRef::Body { .. }) => match (&*self.geometry, measure) {
+                (
+                    Geometry::Body {
+                        integrals: Some([volume, _]),
+                        ..
+                    },
+                    NativeMeasure::Volume,
+                ) => *volume,
+                (
+                    Geometry::Body {
+                        integrals: Some([_, area]),
+                        ..
+                    },
+                    NativeMeasure::SurfaceArea,
+                ) => *area,
+                _ => return Err(NativeMeasureError::Unavailable { family, measure }),
+            },
+            (_, NativeGeometryRef::Loft(_)) => {
                 return Err(NativeMeasureError::Unavailable { family, measure });
             }
         };
@@ -973,7 +1009,7 @@ fn source_fingerprint(geometry: &Geometry) -> PartFingerprint {
     let mut id = Identity(0x6c62272e07bb014262b821756295c58d);
     id.bytes(b"exedra-native-source-v1");
     match geometry {
-        Geometry::Body { body, frame } => {
+        Geometry::Body { body, frame, .. } => {
             id.word(5);
             id.frame(*frame);
             id.body(body);

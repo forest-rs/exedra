@@ -4,25 +4,32 @@
 //! Native construction of constructive recipes.
 
 use super::NativeSource;
-use alloc::vec::Vec;
+use alloc::{collections::BTreeSet, vec::Vec};
 use exedra_analytic::{
     End,
-    body::FaceId,
+    body::{Body, EdgeGeometry, FaceId, ValidationPolicy},
     extrusion::{Extrusion, ExtrusionError, FaceRole, Pocket},
+    geometry::{Curve, GeometryError, Surface},
     loft::{Loft, LoftError, LoftPolicy},
+    machining::{
+        CylinderTool, MachiningError, MachiningPolicy, subtract_through_cylinder_with_roles,
+    },
+    rectilinear::{
+        BooleanOperation, Operand, RectilinearError, RectilinearPolicy, boolean_rectilinear,
+    },
     revolve::{Revolution, RevolutionError},
     sweep::{Sweep, SweepError},
 };
 use exedra_constructive::{
     ir::{
-        CapMode, ExtrusionEnd, LoftPolicy as Interpolation, NodeId, NodeKind, Placement3,
+        CapMode, CsgOp, ExtrusionEnd, LoftPolicy as Interpolation, NodeId, NodeKind, Placement3,
         ProfileId, Recipe,
     },
     profile::ToProfileError,
     section_law::SectionLaw,
     workplane::{SurfaceSelector, WorkplaneAttachment, WorkplaneError, WorkplanePolicy},
 };
-use exedra_curves::profile::{Profile, ProfilePolicy};
+use exedra_curves::profile::{Profile, ProfilePolicy, SegTag};
 use exedra_math::{add, cross, dot, norm, normalize, scale, sub};
 
 /// What lowering holds a recipe's native constructions to.
@@ -33,19 +40,26 @@ pub struct NativeLoweringPolicy {
     /// How nearly an attachment's projection may lie in its face's plane,
     /// and its X along the face's normal, as mesh evaluation's policy says.
     pub workplane: WorkplanePolicy,
-    /// How deeply attachment supports may nest, so that lowering a hostile
-    /// recipe ends in a refusal, not an exhausted stack.
+    /// Limits of exact Booleans of axis-aligned bodies.
+    pub boolean: RectilinearPolicy,
+    /// Clearances of exact through cuts.
+    pub machining: MachiningPolicy,
+    /// How deeply Boolean operands and attachment supports may nest, so
+    /// that lowering a hostile recipe ends in a refusal, not an exhausted
+    /// stack.
     pub max_depth: u32,
 }
 
 impl NativeLoweringPolicy {
-    /// Profiles validated under `profile`, the default workplane policy,
-    /// and nesting 64 deep.
+    /// Profiles validated under `profile`, the default workplane, Boolean
+    /// and machining policies, and nesting 64 deep.
     #[must_use]
     pub fn new(profile: ProfilePolicy) -> Self {
         Self {
             profile,
             workplane: WorkplanePolicy::default(),
+            boolean: RectilinearPolicy::default(),
+            machining: MachiningPolicy::default(),
             max_depth: 64,
         }
     }
@@ -110,7 +124,17 @@ pub enum NativeLoweringError {
         /// Why.
         error: LoftError<ToProfileError>,
     },
-    /// Attachment supports nest more deeply than the policy allows.
+    /// A Boolean's operand could not be combined natively.
+    Boolean {
+        /// The Boolean node.
+        node: NodeId,
+        /// The operand that could not be combined with those before it.
+        operand: usize,
+        /// Why.
+        error: NativeBooleanError,
+    },
+    /// Boolean operands or attachment supports nest more deeply than the
+    /// policy allows.
     Depth {
         /// The node one level too deep.
         node: NodeId,
@@ -147,6 +171,11 @@ impl core::fmt::Display for NativeLoweringError {
             Self::Depth { node, maximum } => {
                 write!(f, "node {}: nested more than {maximum} deep", node.0)
             }
+            Self::Boolean {
+                node,
+                operand,
+                error,
+            } => write!(f, "node {}: operand {operand}: {error}", node.0),
         }
     }
 }
@@ -161,16 +190,53 @@ impl core::error::Error for NativeLoweringError {
             Self::Sweep { error, .. } => Some(error),
             Self::Loft { error, .. } => Some(error),
             Self::Attachment { error, .. } => Some(error),
+            Self::Boolean { error, .. } => Some(error),
         }
     }
 }
+
+/// Why a Boolean has no exact native result.
+///
+/// Natively, a Boolean is exact on axis-aligned bodies, and a difference
+/// also where the cutter is a circular extrusion passing through the base.
+#[derive(Clone, Debug, PartialEq)]
+#[non_exhaustive]
+pub enum NativeBooleanError {
+    /// The operand is oriented differently from those before it, which an
+    /// exact axis-aligned arrangement cannot combine.
+    Orientation,
+    /// The axis-aligned arrangement refused the operands.
+    Rectilinear(RectilinearError),
+    /// The through cut refused the cutter.
+    Machining(MachiningError),
+    /// Moving the operand into the others' frame refused its geometry.
+    Geometry(GeometryError),
+    /// The exact result has no material.
+    Empty,
+}
+
+impl core::fmt::Display for NativeBooleanError {
+    fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
+        match self {
+            Self::Orientation => write!(f, "operands are oriented differently"),
+            Self::Rectilinear(error) => error.fmt(f),
+            Self::Machining(error) => error.fmt(f),
+            Self::Geometry(error) => error.fmt(f),
+            Self::Empty => write!(f, "the exact result is empty"),
+        }
+    }
+}
+
+impl core::error::Error for NativeBooleanError {}
 
 impl NativeSource {
     /// The recipe's root built natively, so that its measures, selections
     /// and exchange are exact: an extrusion of a profile with any pockets
     /// cut into it, a revolution, a constant-section sweep or a ruled loft,
-    /// under any rigid transforms, and placed on a workplane attached to
-    /// another such solid's cap or pocket floor, which is not emitted. Profiles are validated under `policy`;
+    /// under any rigid transforms, placed on a workplane attached to another
+    /// such solid's cap or pocket floor, which is not emitted, and combined
+    /// by Booleans that are exact on axis-aligned bodies or cut circular
+    /// extrusions through them. Profiles are validated under `policy`;
     /// segment tags become the solid's face tags.
     ///
     /// Lowering is the caller's explicit choice. A caller that requires
@@ -415,6 +481,32 @@ fn lower<'r>(
                     .map(|solid| leaf(NativeSource::from(solid)))
                     .map_err(|error| NativeLoweringError::Loft { node: id, error });
             }
+            NodeKind::Csg { op, operands } => {
+                let refused = |operand, error| NativeLoweringError::Boolean {
+                    node: id,
+                    operand,
+                    error,
+                };
+                let mut combined =
+                    Combined::from(&lower(recipe, operands[0], policy, depth + 1)?.source);
+                for (index, &operand) in operands.iter().enumerate().skip(1) {
+                    let other = lower(recipe, operand, policy, depth + 1)?.source;
+                    combined = combined
+                        .with(*op, &other, policy)
+                        .map_err(|error| refused(index, error))?;
+                }
+                let source = NativeSource::from_measured_body(
+                    combined.body,
+                    outer * combined.frame,
+                    combined.integrals,
+                )
+                .map_err(|_| refused(0, NativeBooleanError::Geometry(GeometryError::NonFinite)))?;
+                return Ok(Lowered {
+                    source,
+                    producer: id,
+                    named: Vec::new(),
+                });
+            }
             kind => {
                 return Err(NativeLoweringError::Unsupported {
                     node: id,
@@ -482,6 +574,236 @@ fn attach(
     }
     let x = normalize(x).ok_or(WorkplaneError::ParallelAxis)?;
     Ok(Placement3::from_axes(x, cross(normal, x), normal, origin))
+}
+
+/// Operands combined so far: a body in its own frame, and its exact
+/// volume and area where every step carried them.
+struct Combined {
+    body: Body<Vec<SegTag>>,
+    frame: Placement3,
+    integrals: Option<[f64; 2]>,
+}
+
+impl Combined {
+    fn from(source: &NativeSource) -> Self {
+        Self {
+            body: source.to_body(),
+            frame: source.frame(),
+            integrals: source
+                .volume()
+                .ok()
+                .zip(source.surface_area().ok())
+                .map(Into::into),
+        }
+    }
+
+    /// These operands combined with `other` by `op`: cut through by it
+    /// where a difference's cutter is a circular extrusion passing
+    /// through, otherwise arranged exactly with it.
+    fn with(
+        self,
+        op: CsgOp,
+        other: &NativeSource,
+        policy: &NativeLoweringPolicy,
+    ) -> Result<Self, NativeBooleanError> {
+        if op == CsgOp::Difference
+            && let Some((tool, tags)) = self.through_cylinder(other)?
+        {
+            let result = subtract_through_cylinder_with_roles(
+                &self.body,
+                &tool,
+                &policy.machining,
+                tags,
+                (),
+            )
+            .map_err(NativeBooleanError::Machining)?;
+            let integrals = self.integrals.map(|[volume, area]| {
+                [
+                    volume - result.report.removed_volume,
+                    area + result.report.surface_area_delta,
+                ]
+            });
+            return Ok(Self {
+                body: result.body,
+                frame: self.frame,
+                integrals,
+            });
+        }
+        let right = into_frame(
+            other.to_body(),
+            other.frame(),
+            self.frame,
+            policy.boolean.geometry_gap,
+        )?;
+        let operation = match op {
+            CsgOp::Union => BooleanOperation::Union,
+            CsgOp::Intersection => BooleanOperation::Intersection,
+            CsgOp::Difference => BooleanOperation::Difference,
+        };
+        let result = boolean_rectilinear(&self.body, &right, operation, &policy.boolean)
+            .map_err(NativeBooleanError::Rectilinear)?;
+        if result.report.material_cells == 0 {
+            return Err(NativeBooleanError::Empty);
+        }
+        let mut sources = result.report.face_sources.iter();
+        let body = result.body.map_roles(
+            |()| {
+                let mut tags = BTreeSet::new();
+                for source in sources.next().expect("one correspondence per output face") {
+                    let body = match source.operand {
+                        Operand::Left => &self.body,
+                        Operand::Right => &right,
+                    };
+                    tags.extend(body.faces()[source.face.index()].role.iter().copied());
+                }
+                tags.into_iter().collect()
+            },
+            |()| (),
+        );
+        Ok(Self {
+            body,
+            frame: self.frame,
+            integrals: Some([result.report.volume, result.report.surface_area]),
+        })
+    }
+
+    /// The cylinder `cutter` sweeps, in these operands' coordinates, and its
+    /// wall's tags, when it is an extrusion of arcs of exactly one circle,
+    /// without holes or pockets, whose ends lie beyond these operands'
+    /// conservative bounds,
+    /// so that it cuts all the way through them as the infinite cylinder
+    /// does.
+    fn through_cylinder(
+        &self,
+        cutter: &NativeSource,
+    ) -> Result<Option<(CylinderTool, Vec<SegTag>)>, NativeBooleanError> {
+        let Some(extrusion) = cutter.as_extrusion() else {
+            return Ok(None);
+        };
+        let profile = extrusion.profile();
+        if !profile.holes().is_empty() || !extrusion.pockets().is_empty() {
+            return Ok(None);
+        }
+        let outline = profile.outer();
+        let Some(first) = outline.arc(0) else {
+            return Ok(None);
+        };
+        // One circle exactly: every arc resolves to the support its native
+        // wall would have. Any arc on another, however near, is not this
+        // cylinder.
+        let circular = (0..outline.segments().len()).all(|k| {
+            outline
+                .arc(k)
+                .is_some_and(|arc| arc.center == first.center && arc.radius == first.radius)
+        });
+        if !circular {
+            return Ok(None);
+        }
+        // The axis, from the cutter's frame into these operands'.
+        let place = |frame: Placement3, p: [f64; 3], w: f64| -> [f64; 3] {
+            core::array::from_fn(|i| {
+                (0..3).map(|j| frame.rows[i][j] * p[j]).sum::<f64>() + w * frame.rows[i][3]
+            })
+        };
+        let unplace = |p: [f64; 3], w: f64| -> [f64; 3] {
+            let d: [f64; 3] = core::array::from_fn(|i| p[i] - w * self.frame.rows[i][3]);
+            core::array::from_fn(|i| (0..3).map(|j| self.frame.rows[j][i] * d[j]).sum())
+        };
+        let frame = extrusion.frame();
+        let point = unplace(
+            place(frame, [first.center[0], first.center[1], 0.0], 1.0),
+            1.0,
+        );
+        let direction = unplace(place(frame, [0.0, 0.0, 1.0], 0.0), 0.0);
+        let [lo, hi] = self
+            .body
+            .conservative_bounds_in(Placement3::IDENTITY)
+            .map_err(|_| NativeBooleanError::Geometry(GeometryError::NonFinite))?;
+        let through = (0..8).all(|corner| {
+            let p = core::array::from_fn(|i| if corner >> i & 1 == 0 { lo[i] } else { hi[i] });
+            let along = dot(sub(p, point), direction);
+            0.0 < along && along < extrusion.length()
+        });
+        if !through {
+            return Ok(None);
+        }
+        let tool = CylinderTool::new(point, direction, first.radius)
+            .map_err(NativeBooleanError::Geometry)?;
+        let tags = outline
+            .segments()
+            .iter()
+            .filter_map(|segment| segment.tag)
+            .collect::<BTreeSet<_>>()
+            .into_iter()
+            .collect();
+        Ok(Some((tool, tags)))
+    }
+}
+
+/// `body`, placed by `from`, in the coordinates of `to`, which must be
+/// equally oriented: its planes and lines translated, which is exact for
+/// the axis-aligned bodies an exact arrangement takes, and revalidated to
+/// `gap`.
+fn into_frame(
+    body: Body<Vec<SegTag>>,
+    from: Placement3,
+    to: Placement3,
+    gap: f64,
+) -> Result<Body<Vec<SegTag>>, NativeBooleanError> {
+    if from == to {
+        return Ok(body);
+    }
+    if (0..3).any(|row| (0..3).any(|column| from.rows[row][column] != to.rows[row][column])) {
+        return Err(NativeBooleanError::Orientation);
+    }
+    // Rigid frames of one orientation differ by R^T (t_from - t_to).
+    let delta: [f64; 3] = core::array::from_fn(|i| from.rows[i][3] - to.rows[i][3]);
+    let offset: [f64; 3] = core::array::from_fn(|i| (0..3).map(|j| to.rows[j][i] * delta[j]).sum());
+    let translate = |p: [f64; 3]| add(p, offset);
+    let mut parts = body.into_parts();
+    for point in &mut parts.vertices {
+        *point = translate(*point);
+    }
+    for edge in &mut parts.edges {
+        if let EdgeGeometry::Curve {
+            curve: Curve::Line(line),
+            range,
+        } = &edge.geometry
+        {
+            let range = *range;
+            edge.geometry = EdgeGeometry::Curve {
+                curve: Curve::line(translate(line.origin()), line.direction())
+                    .map_err(NativeBooleanError::Geometry)?,
+                range,
+            };
+        }
+    }
+    for (id, face) in parts.faces.iter_mut().enumerate() {
+        let lines = face.loops.iter().all(|id| {
+            parts.loops[id.index()].coedges.iter().all(|coedge| {
+                matches!(
+                    parts.edges[coedge.edge.index()].regular(),
+                    Some((Curve::Line(_), _))
+                )
+            })
+        });
+        if !matches!(face.surface, Surface::Plane(_)) || !lines {
+            return Err(NativeBooleanError::Rectilinear(
+                RectilinearError::UnsupportedFace {
+                    operand: Operand::Right,
+                    face: FaceId(u32::try_from(id).expect("native face ids fit u32")),
+                },
+            ));
+        }
+        let mut frame = face.surface.frame();
+        let origin = translate(frame.rows.map(|row| row[3]));
+        for (row, value) in frame.rows.iter_mut().zip(origin) {
+            row[3] = value;
+        }
+        face.surface = Surface::plane(frame).map_err(NativeBooleanError::Geometry)?;
+    }
+    Body::try_from_parts(parts, &ValidationPolicy { max_gap: gap })
+        .map_err(|_| NativeBooleanError::Geometry(GeometryError::NonFinite))
 }
 
 /// The node kind's name, as recipe interchange spells it.
@@ -846,6 +1168,27 @@ mod tests {
         ));
     }
 
+    /// A box of `size` at `at`, tagged.
+    fn cuboid(builder: &mut RecipeBuilder, size: [f64; 3], at: [f64; 3], tag: u32) -> NodeId {
+        let profile = builder.add_profile(
+            builders::rect_centered(size[0], size[1])
+                .unwrap()
+                .tagged(SegTag(tag)),
+        );
+        builder
+            .add_node(NodeKind::Extrude {
+                profile,
+                placement: Placement3::translate(at[0], at[1], at[2]),
+                height: size[2],
+                caps: CapMode::Both,
+            })
+            .unwrap()
+    }
+
+    fn csg(builder: &mut RecipeBuilder, op: CsgOp, operands: Vec<NodeId>) -> NodeId {
+        builder.add_node(NodeKind::Csg { op, operands }).unwrap()
+    }
+
     #[test]
     fn attachments_nested_past_the_policy_are_refused() {
         // Each peg stands on the end cap of the one before.
@@ -866,6 +1209,158 @@ mod tests {
                     },
                 })
                 .unwrap();
+        }
+        let recipe = builder.finish(root).unwrap();
+        assert!(matches!(
+            NativeSource::from_recipe(&recipe, &lowering()),
+            Err(NativeLoweringError::Depth { maximum: 64, .. })
+        ));
+    }
+
+    #[test]
+    fn axis_aligned_booleans_lower_exactly() {
+        // 4 x 4 x 2 and 2 x 2 x 4, overlapping in a 2 x 2 x 1 block.
+        for (op, volume) in [
+            (CsgOp::Union, 32.0 + 16.0 - 4.0),
+            (CsgOp::Difference, 32.0 - 4.0),
+            (CsgOp::Intersection, 4.0),
+        ] {
+            let mut builder = RecipeBuilder::new();
+            let slab = cuboid(&mut builder, [4.0, 4.0, 2.0], [1.0, 1.0, 0.0], 3);
+            let post = cuboid(&mut builder, [2.0, 2.0, 4.0], [2.0, 2.0, 1.0], 4);
+            let root = csg(&mut builder, op, alloc::vec![slab, post]);
+            let recipe = builder.finish(root).unwrap();
+            let lowered = NativeSource::from_recipe(&recipe, &lowering()).unwrap();
+            assert_eq!(lowered.family(), crate::NativeFamily::Body);
+            assert!((lowered.volume().unwrap() - volume).abs() < 1e-12, "{op:?}");
+            agree(both_ways(recipe), 1e-6);
+        }
+    }
+
+    #[test]
+    fn circular_cutters_through_a_body_lower_to_bores() {
+        let mut builder = RecipeBuilder::new();
+        let slab = cuboid(&mut builder, [6.0, 4.0, 2.0], [0.0, 0.0, 0.0], 3);
+        let bore = builder.add_profile(builders::circle(1.0).unwrap().tagged(SegTag(8)));
+        let cutter = builder
+            .add_node(NodeKind::Extrude {
+                profile: bore,
+                placement: Placement3::translate(1.0, 0.5, -1.0),
+                height: 4.0,
+                caps: CapMode::Both,
+            })
+            .unwrap();
+        let root = csg(&mut builder, CsgOp::Difference, alloc::vec![slab, cutter]);
+        let recipe = builder.finish(root).unwrap();
+        let lowered = NativeSource::from_recipe(&recipe, &lowering()).unwrap();
+        let exact = 48.0 - core::f64::consts::PI * 2.0;
+        assert!((lowered.volume().unwrap() - exact).abs() < 1e-9 * exact);
+        let body = lowered.to_body();
+        assert!(
+            body.faces().iter().any(|face| face.role == [SegTag(8)]),
+            "the bore's wall carries the cutter's tag"
+        );
+        agree(both_ways(recipe), 2e-3);
+    }
+
+    #[test]
+    fn booleans_refuse_what_they_cannot_make_exactly() {
+        let refusal = |build: &dyn Fn(&mut RecipeBuilder) -> NodeId| {
+            let mut builder = RecipeBuilder::new();
+            let root = build(&mut builder);
+            NativeSource::from_recipe(&builder.finish(root).unwrap(), &lowering()).err()
+        };
+        // A circular cutter stopping inside the body is no through cut.
+        assert!(matches!(
+            refusal(&|builder| {
+                let slab = cuboid(builder, [6.0, 4.0, 2.0], [0.0; 3], 3);
+                let bore = builder.add_profile(builders::circle(1.0).unwrap());
+                let cutter = builder
+                    .add_node(NodeKind::Extrude {
+                        profile: bore,
+                        placement: Placement3::translate(1.0, 0.5, 1.0),
+                        height: 4.0,
+                        caps: CapMode::Both,
+                    })
+                    .unwrap();
+                csg(builder, CsgOp::Difference, alloc::vec![slab, cutter])
+            }),
+            Some(NativeLoweringError::Boolean {
+                operand: 1,
+                error: NativeBooleanError::Rectilinear(RectilinearError::UnsupportedFace { .. }),
+                ..
+            })
+        ));
+        // Two arcs of nearly one circle are not that circle's cylinder.
+        assert!(matches!(
+            refusal(&|builder| {
+                let slab = cuboid(builder, [10.0, 10.0, 2.0], [0.0; 3], 3);
+                let lens = builder.add_profile(
+                    Profile2::simple(
+                        Loop2::new(alloc::vec![
+                            Seg2::arc((1.0, 0.0), 1.0),
+                            Seg2::arc((-1.0, 0.0), 0.95),
+                        ])
+                        .unwrap(),
+                    )
+                    .unwrap(),
+                );
+                let cutter = builder
+                    .add_node(NodeKind::Extrude {
+                        profile: lens,
+                        placement: Placement3::translate(0.0, 0.0, -1.0),
+                        height: 4.0,
+                        caps: CapMode::Both,
+                    })
+                    .unwrap();
+                csg(builder, CsgOp::Difference, alloc::vec![slab, cutter])
+            }),
+            Some(NativeLoweringError::Boolean {
+                operand: 1,
+                error: NativeBooleanError::Rectilinear(RectilinearError::UnsupportedFace { .. }),
+                ..
+            })
+        ));
+        // Turned operands have no common axis-aligned arrangement.
+        assert!(matches!(
+            refusal(&|builder| {
+                let slab = cuboid(builder, [4.0, 4.0, 2.0], [0.0; 3], 3);
+                let post = cuboid(builder, [1.0, 1.0, 4.0], [0.0; 3], 4);
+                let turned = builder
+                    .add_node(NodeKind::Transform {
+                        child: post,
+                        xf: Placement3::rotate_z_then_translate(0.3, 0.0, 0.0, 0.0),
+                    })
+                    .unwrap();
+                csg(builder, CsgOp::Union, alloc::vec![slab, turned])
+            }),
+            Some(NativeLoweringError::Boolean {
+                error: NativeBooleanError::Orientation,
+                ..
+            })
+        ));
+        // Disjoint operands have no material in common.
+        assert!(matches!(
+            refusal(&|builder| {
+                let a = cuboid(builder, [1.0, 1.0, 1.0], [0.0; 3], 3);
+                let b = cuboid(builder, [1.0, 1.0, 1.0], [5.0, 0.0, 0.0], 4);
+                csg(builder, CsgOp::Intersection, alloc::vec![a, b])
+            }),
+            Some(NativeLoweringError::Boolean {
+                error: NativeBooleanError::Empty,
+                ..
+            })
+        ));
+    }
+
+    #[test]
+    fn nesting_past_the_policy_is_refused() {
+        // Each union's first operand is the union before it.
+        let mut builder = RecipeBuilder::new();
+        let unit = cuboid(&mut builder, [1.0, 1.0, 1.0], [0.0; 3], 3);
+        let mut root = unit;
+        for _ in 0..100 {
+            root = csg(&mut builder, CsgOp::Union, alloc::vec![root, unit]);
         }
         let recipe = builder.finish(root).unwrap();
         assert!(matches!(
@@ -937,20 +1432,21 @@ mod tests {
         // An operation with no native construction.
         let mut builder = RecipeBuilder::new();
         let profile = builder.add_profile(plate());
-        let kind = extrude(profile);
-        let a = builder.add_node(kind.clone()).unwrap();
-        let b = builder.add_node(kind).unwrap();
+        let a = builder.add_node(extrude(profile)).unwrap();
         let root = builder
-            .add_node(NodeKind::Csg {
-                op: CsgOp::Union,
-                operands: alloc::vec![a, b],
+            .add_node(NodeKind::Mirror {
+                child: a,
+                plane: exedra_constructive::ir::Plane3 {
+                    normal: [1.0, 0.0, 0.0],
+                    distance: 0.0,
+                },
             })
             .unwrap();
         assert_eq!(
             lower(builder, root),
             Some(NativeLoweringError::Unsupported {
                 node: root,
-                operation: "csg"
+                operation: "mirror"
             })
         );
         // A material binding, and open caps.

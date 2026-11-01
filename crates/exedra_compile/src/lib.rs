@@ -41,9 +41,9 @@ pub use compile::{
 };
 pub use exedra_mesh::NormalsSource;
 pub use native::{
-    NativeBoundaryStorage, NativeChartError, NativeFaceSelection, NativeFamily, NativeGeometryRef,
-    NativeLoweringError, NativeLoweringPolicy, NativeMeasure, NativeMeasureError,
-    NativeRealization, NativeSelectionError, NativeSource,
+    NativeBooleanError, NativeBoundaryStorage, NativeChartError, NativeFaceSelection, NativeFamily,
+    NativeGeometryRef, NativeLoweringError, NativeLoweringPolicy, NativeMeasure,
+    NativeMeasureError, NativeRealization, NativeSelectionError, NativeSource,
 };
 
 /// Index in one explicit compilation input list.
