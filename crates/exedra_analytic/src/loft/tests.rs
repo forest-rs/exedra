@@ -56,7 +56,7 @@ fn both_source_labels_survive_and_large_occurrence_quantization_is_reported() {
                 p.outer()
                     .segments()
                     .iter()
-                    .copied()
+                    .cloned()
                     .map(|s| s.tagged(tag))
                     .collect(),
             )

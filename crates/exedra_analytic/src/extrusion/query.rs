@@ -155,7 +155,7 @@ impl Extrusion {
                 self.boundary_loop(segment.boundary)
                     .segments()
                     .get(segment.segment)
-                    .map(|s| s.curve),
+                    .map(|s| &s.curve),
                 Some(Curve::Arc { .. } | Curve::ArcCenter { .. })
             )
     }

@@ -49,7 +49,7 @@ fn piece_start(a: f64, b: f64, k: u32, pieces: u32) -> f64 {
 
 /// `integral(speed, a, b)` by five-point Gauss-Legendre on `pieces` equal
 /// parts (0 taken as 1), summed in order.
-fn integrate(speed: &mut impl FnMut(f64) -> f64, a: f64, b: f64, pieces: u32) -> f64 {
+pub(crate) fn integrate(speed: &mut impl FnMut(f64) -> f64, a: f64, b: f64, pieces: u32) -> f64 {
     let pieces = pieces.max(1);
     let mut sum = 0.0;
     for k in 0..pieces {

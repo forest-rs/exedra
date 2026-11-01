@@ -6,7 +6,7 @@ use crate::profile::arc::{Piece, bounds_may_contact, cross, length, sub, turns, 
 use crate::profile::{Arc, Curve, Loop, LoopRef, ProfilePolicy, SegTag, Segment};
 use alloc::{collections::BTreeMap, vec, vec::Vec};
 
-#[derive(Copy, Clone)]
+#[derive(Clone)]
 struct Input {
     piece: Piece,
     center_defined: bool,
@@ -83,6 +83,26 @@ impl Profile {
             profile
                 .validate(&policy.profile)
                 .map_err(|error| RegionError::Input { operand, error })?;
+            for (loop_ref, loop_) in core::iter::once((LoopRef::Outer, profile.outer())).chain(
+                profile
+                    .holes()
+                    .iter()
+                    .enumerate()
+                    .map(|(i, hole)| (LoopRef::Hole(i), hole)),
+            ) {
+                if let Some(segment) = loop_
+                    .segments()
+                    .iter()
+                    .position(|s| matches!(s.curve, Curve::Bezier(_)))
+                {
+                    return Err(RegionError::UnsupportedCurve {
+                        source: InputSegment {
+                            operand,
+                            segment: SegmentRef { loop_ref, segment },
+                        },
+                    });
+                }
+            }
         }
         let left = inputs(self, Operand::Left);
         let split = left.len();
@@ -178,6 +198,7 @@ fn inputs(profile: &Profile, operand: Operand) -> Vec<Input> {
                 .zip(l.segments())
                 .enumerate()
                 .map(move |(segment, (piece, s))| Input {
+                    bounds: piece.bounds(),
                     piece,
                     center_defined: matches!(s.curve, Curve::ArcCenter { .. }),
                     source: InputSegment {
@@ -185,13 +206,12 @@ fn inputs(profile: &Profile, operand: Operand) -> Vec<Input> {
                         segment: SegmentRef { loop_ref, segment },
                     },
                     tag: s.tag,
-                    bounds: piece.bounds(),
                 })
         })
         .collect()
 }
 
-fn tolerance(a: Piece, b: Piece) -> f64 {
+fn tolerance(a: &Piece, b: &Piece) -> f64 {
     let scale = a
         .from()
         .into_iter()
@@ -203,7 +223,7 @@ fn tolerance(a: Piece, b: Piece) -> f64 {
     64.0 * f64::EPSILON * scale
 }
 
-fn parameter(piece: Piece, p: [f64; 2]) -> f64 {
+fn parameter(piece: &Piece, p: [f64; 2]) -> f64 {
     if p == piece.from() {
         return 0.0;
     }
@@ -211,7 +231,7 @@ fn parameter(piece: Piece, p: [f64; 2]) -> f64 {
         return 1.0;
     }
     match piece {
-        Piece::Line(a, b) => {
+        &Piece::Line(a, b) => {
             let d = sub(b, a);
             let axis = usize::from(d[1].abs() > d[0].abs());
             (p[axis] - a[axis]) / d[axis]
@@ -228,13 +248,16 @@ fn parameter(piece: Piece, p: [f64; 2]) -> f64 {
             }
             angle / arc.sweep
         }
+        // Regions refuse Bezier inputs before cutting anything.
+        Piece::Bezier(_) => f64::NAN,
     }
 }
 
-pub(super) fn point_at(piece: Piece, t: f64) -> [f64; 2] {
+pub(super) fn point_at(piece: &Piece, t: f64) -> [f64; 2] {
     match piece {
         Piece::Line(a, b) => [a[0] + t * (b[0] - a[0]), a[1] + t * (b[1] - a[1])],
         Piece::Arc(a) => a.point_at(t),
+        Piece::Bezier(b) => b.point_at(t),
     }
 }
 
@@ -250,13 +273,13 @@ fn intersect(
     if !bounds_may_contact(input[a].bounds, input[b].bounds, 0.0) {
         return Ok(());
     }
-    let (p, q) = (input[a].piece, input[b].piece);
+    let (p, q) = (&input[a].piece, &input[b].piece);
     let tol = tolerance(p, q);
     // Two supporting-curve crossings plus four authored endpoints is the
     // fixed maximum. Contacts need no per-pair heap allocation.
     let mut events = [None; 6];
     let mut count = 0;
-    for point in p.crossings(&q).iter() {
+    for point in p.crossings(q).iter() {
         events[count] = Some(point);
         count += 1;
     }
@@ -314,9 +337,9 @@ fn intersect(
     Ok(())
 }
 
-fn same_support(a: Piece, b: Piece, tol: f64) -> bool {
+fn same_support(a: &Piece, b: &Piece, tol: f64) -> bool {
     match (a, b) {
-        (Piece::Line(p, q), Piece::Line(r, s)) => {
+        (&Piece::Line(p, q), &Piece::Line(r, s)) => {
             let d = sub(q, p);
             let e = sub(s, r);
             cross(d, e).abs() <= 64.0 * f64::EPSILON * length(d) * length(e)
@@ -339,9 +362,9 @@ fn classify(
     policy: &RegionPolicy,
     report: &mut RegionReport,
 ) -> Result<Option<Fragment>, RegionError> {
-    let item = input[index];
+    let item = &input[index];
     let side = usize::from(item.source.operand == Operand::Right);
-    let mid = point_at(item.piece, 0.5 * (pair[0].parameter + pair[1].parameter));
+    let mid = point_at(&item.piece, 0.5 * (pair[0].parameter + pair[1].parameter));
     let mut other_sides = None;
     let mut winding = 0.0;
     let candidates = if bounds_may_contact(bounds[1 - side], [mid, mid], 0.0) {
@@ -359,10 +382,10 @@ fn classify(
             policy.max_classification_tests,
         )?;
         report.classification_tests += 1;
-        winding += winding_angle(&other.piece, mid);
-        let tol = tolerance(item.piece, other.piece);
+        winding += winding_angle(&other.piece, mid, 0.0);
+        let tol = tolerance(&item.piece, &other.piece);
         if other.piece.distance_to(mid) <= tol {
-            if !same_support(item.piece, other.piece, tol) {
+            if !same_support(&item.piece, &other.piece, tol) {
                 return Err(RegionError::Ambiguous {
                     first: item.source,
                     second: other.source,
@@ -370,7 +393,7 @@ fn classify(
             }
             let a = item.piece.tangent(false);
             let b = other.piece.tangent(false);
-            let aligned = match (item.piece, other.piece) {
+            let aligned = match (&item.piece, &other.piece) {
                 (Piece::Arc(a), Piece::Arc(b)) => a.sweep.signum() == b.sweep.signum(),
                 _ => a[0] * b[0] + a[1] * b[1] > 0.0,
             };
@@ -416,8 +439,10 @@ fn classify(
             [pair[0].parameter, pair[1].parameter],
         )
     };
-    let curve = match item.piece {
+    let curve = match &item.piece {
         Piece::Line(..) => Curve::Line,
+        // Regions refuse Bezier inputs before cutting anything.
+        Piece::Bezier(b) => Curve::Bezier(b.bezier.clone()),
         Piece::Arc(arc) if item.center_defined => Curve::ArcCenter {
             center: arc.center,
             clockwise: arc.sweep * (parameters[1] - parameters[0]) < 0.0,
@@ -446,7 +471,7 @@ fn classify(
 }
 
 fn fragment_piece(f: &Fragment, nodes: &Nodes) -> Result<Piece, RegionError> {
-    match f.curve {
+    match &f.curve {
         Curve::Line => Ok(Piece::Line(nodes.points[f.from], nodes.points[f.to])),
         curve => Arc::resolve(nodes.points[f.from], nodes.points[f.to], curve)
             .ok()
@@ -463,8 +488,8 @@ fn deduplicate(fragments: Vec<Fragment>, nodes: &Nodes) -> Result<Vec<Fragment>,
         if let Some(&index) = by_ends.get(&(fragment.from, fragment.to)) {
             let a = fragment_piece(&retained[index], nodes)?;
             let b = fragment_piece(&fragment, nodes)?;
-            if !same_support(a, b, tolerance(a, b))
-                || length(sub(a.midpoint(), b.midpoint())) > tolerance(a, b)
+            if !same_support(&a, &b, tolerance(&a, &b))
+                || length(sub(a.midpoint(), b.midpoint())) > tolerance(&a, &b)
             {
                 return Err(RegionError::NonManifold {
                     point: nodes.points[fragment.from],
@@ -539,7 +564,7 @@ fn assemble(
             let f = &fragments[next];
             segments.push(Segment {
                 to: nodes.points[f.to],
-                curve: f.curve,
+                curve: f.curve.clone(),
                 tag: f.tag,
             });
             next = outgoing[f.to].expect("balanced retained nodes");

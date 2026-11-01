@@ -917,18 +917,38 @@ impl Identity {
         for ring in core::iter::once(profile.outer()).chain(profile.holes()) {
             self.word(ring.segments().len() as u64);
             for segment in ring.segments() {
-                self.values(segment.to);
-                self.tag(segment.tag);
-                match segment.curve {
-                    exedra_curves::profile::Curve::Line => self.word(0),
-                    exedra_curves::profile::Curve::Arc { bulge } => {
+                self.segment(segment);
+            }
+        }
+    }
+    fn segment(&mut self, segment: &exedra_curves::profile::Segment) {
+        use exedra_curves::profile::Curve;
+        self.values(segment.to);
+        self.tag(segment.tag);
+        match &segment.curve {
+            Curve::Line => self.word(0),
+            Curve::Arc { bulge } => {
+                self.word(1);
+                self.values([*bulge]);
+            }
+            Curve::ArcCenter { center, clockwise } => {
+                self.word(2);
+                self.values(*center);
+                self.word(u64::from(*clockwise));
+            }
+            Curve::Bezier(bezier) => {
+                self.word(3);
+                self.word(bezier.interior().len() as u64);
+                for &control in bezier.interior() {
+                    self.values(control);
+                }
+                match bezier.weights() {
+                    None => self.word(0),
+                    Some(weights) => {
                         self.word(1);
-                        self.values([bulge]);
-                    }
-                    exedra_curves::profile::Curve::ArcCenter { center, clockwise } => {
-                        self.word(2);
-                        self.values(center);
-                        self.word(u64::from(clockwise));
+                        for &weight in weights {
+                            self.values([weight]);
+                        }
                     }
                 }
             }
@@ -956,20 +976,7 @@ fn source_fingerprint(geometry: &Geometry) -> PartFingerprint {
                 id.tag(p.tag);
                 id.word(p.outline.segments().len() as u64);
                 for s in p.outline.segments() {
-                    id.values(s.to);
-                    id.tag(s.tag);
-                    match s.curve {
-                        exedra_curves::profile::Curve::Line => id.word(0),
-                        exedra_curves::profile::Curve::Arc { bulge } => {
-                            id.word(1);
-                            id.values([bulge]);
-                        }
-                        exedra_curves::profile::Curve::ArcCenter { center, clockwise } => {
-                            id.word(2);
-                            id.values(center);
-                            id.word(u64::from(clockwise));
-                        }
-                    }
+                    id.segment(s);
                 }
             }
         }

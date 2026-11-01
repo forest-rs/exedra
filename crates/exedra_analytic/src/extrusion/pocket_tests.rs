@@ -104,7 +104,7 @@ fn repeated_pocket_labels_select_all_instances_without_erasing_segment_sources()
         region
             .segments()
             .iter()
-            .copied()
+            .cloned()
             .map(|s| s.tagged(SEGMENT))
             .collect(),
     )

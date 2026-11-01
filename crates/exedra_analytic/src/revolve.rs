@@ -79,6 +79,12 @@ pub struct Revolution {
 pub enum RevolutionError {
     /// Placement or supporting geometry is invalid.
     Geometry(GeometryError),
+    /// A profile segment is a rational Bezier, which revolution does not
+    /// yet build.
+    UnsupportedCurve {
+        /// The segment.
+        segment: SegmentRef,
+    },
     /// The sweep must be finite, positive and at most `TAU`.
     Sweep {
         /// Requested radians.
@@ -172,6 +178,9 @@ impl Revolution {
     /// Returns a typed refusal for invalid sweep/placement, nonregular toroidal arcs,
     /// unsupported axis contact/topology, numerical limits or generated boundary disagreement.
     pub fn new(profile: Profile, frame: Placement3, sweep: f64) -> Result<Self, RevolutionError> {
+        if let Some(segment) = profile.bezier_segment() {
+            return Err(RevolutionError::UnsupportedCurve { segment });
+        }
         crate::geometry::rigid(frame).map_err(RevolutionError::Geometry)?;
         if !sweep.is_finite() || sweep <= 0.0 || sweep > core::f64::consts::TAU {
             return Err(RevolutionError::Sweep { sweep });

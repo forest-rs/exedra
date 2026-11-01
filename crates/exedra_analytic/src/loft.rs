@@ -100,6 +100,14 @@ pub enum LoftError<E> {
     InvalidPolicy,
     /// At least two corresponding sections are required.
     Sections,
+    /// A section's segment is a rational Bezier, which lofting does not yet
+    /// build.
+    UnsupportedCurve {
+        /// The section.
+        section: usize,
+        /// The segment.
+        segment: SegmentRef,
+    },
     /// Original profile conversion or validation failure.
     Profile {
         /// Authored section.
@@ -154,6 +162,12 @@ impl<E: core::fmt::Display> core::fmt::Display for LoftError<E> {
         match self {
             Self::InvalidPolicy => write!(f, "native loft policy is invalid"),
             Self::Sections => write!(f, "native loft needs at least two sections"),
+            Self::UnsupportedCurve { section, segment } => {
+                write!(
+                    f,
+                    "loft section {section} segment {segment:?} is a Bezier curve"
+                )
+            }
             Self::Profile { section, error } => write!(f, "loft profile {section}: {error}"),
             Self::Frame { section, error } => write!(f, "loft frame {section:?}: {error}"),
             Self::Correspondence { section, loop_ref } => write!(

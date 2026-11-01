@@ -3,10 +3,10 @@
 
 use super::*;
 use crate::profile::arc::{Piece, cross, length, sub};
-use crate::profile::{Arc, Loop, LoopRef, ProfilePolicy, Segment};
+use crate::profile::{Loop, LoopRef, ProfilePolicy, Segment};
 use alloc::{vec, vec::Vec};
 
-#[derive(Copy, Clone)]
+#[derive(Clone)]
 struct Cut {
     incoming: [f64; 2],
     outgoing: [f64; 2],
@@ -25,17 +25,7 @@ fn loops(profile: &Profile) -> impl Iterator<Item = (LoopRef, &Loop)> {
     )
 }
 pub(super) fn piece(loop_: &Loop, index: usize) -> Piece {
-    let segments = loop_.segments();
-    let segment = segments[index];
-    let from = segments[(index + segments.len() - 1) % segments.len()].to;
-    match segment.curve {
-        Curve::Line => Piece::Line(from, segment.to),
-        curve => Piece::Arc(
-            Arc::resolve(from, segment.to, curve)
-                .expect("validated arc")
-                .expect("non-line curve"),
-        ),
-    }
+    loop_.pieces().nth(index).expect("segment index in range")
 }
 fn corner(loop_: &Loop, reference: SegmentRef) -> Corner {
     let incoming = piece(loop_, reference.segment).tangent(true);
@@ -176,8 +166,8 @@ impl Profile {
             {
                 return Err(CornerError::UnsupportedCorner {
                     corner: reference,
-                    incoming: segments[reference.segment].curve,
-                    outgoing: segments[next].curve,
+                    incoming: segments[reference.segment].curve.clone(),
+                    outgoing: segments[next].curve.clone(),
                 });
             }
             let incoming = piece(loop_, reference.segment).tangent(true);
@@ -218,10 +208,10 @@ impl Profile {
             let mut result = Vec::with_capacity(
                 segments.len() + cuts[index].iter().filter(|c| c.is_some()).count(),
             );
-            for (i, &segment) in segments.iter().enumerate() {
+            for (i, segment) in segments.iter().enumerate() {
                 let previous = (i + segments.len() - 1) % segments.len();
-                let start = cuts[index][previous];
-                let end = cuts[index][i];
+                let start = cuts[index][previous].as_ref();
+                let end = cuts[index][i].as_ref();
                 let span = length(sub(segment.to, segments[previous].to));
                 let (head, tail) = (
                     start.map_or(0.0, |c| c.distance),
@@ -254,7 +244,10 @@ impl Profile {
                         parameters: [head / span, 1.0 - tail / span],
                     },
                 });
-                result.push(Segment { to, ..segment });
+                result.push(Segment {
+                    to,
+                    ..segment.clone()
+                });
                 if let Some(cut) = end {
                     correspondence.push(CornerSegment {
                         segment: SegmentRef {
@@ -270,7 +263,7 @@ impl Profile {
                     });
                     result.push(Segment {
                         to: cut.outgoing,
-                        curve: cut.curve,
+                        curve: cut.curve.clone(),
                         tag: cut.tag,
                     });
                 }

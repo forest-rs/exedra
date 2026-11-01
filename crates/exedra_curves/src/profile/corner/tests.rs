@@ -248,9 +248,10 @@ fn verify_retained_sources(input: &Profile, result: &CornerResult) {
             };
             let before = piece(source, segment.segment);
             let after = piece(output, item.segment.segment);
-            let source_point = |t| match before {
+            let source_point = |t| match &before {
                 Piece::Line(a, b) => [a[0] + t * (b[0] - a[0]), a[1] + t * (b[1] - a[1])],
                 Piece::Arc(a) => a.point_at(t),
+                Piece::Bezier(b) => b.point_at(t),
             };
             assert!(length(sub(after.from(), source_point(parameters[0]))) < 1e-12);
             assert!(length(sub(after.to(), source_point(parameters[1]))) < 1e-12);

@@ -81,6 +81,12 @@ pub struct Sweep {
 pub enum SweepError {
     /// Placement, supporting geometry, or a derived frame is invalid.
     Geometry(GeometryError),
+    /// A profile segment is a rational Bezier, which sweeping does not yet
+    /// build.
+    UnsupportedCurve {
+        /// The segment.
+        segment: SegmentRef,
+    },
     /// The path is empty, closed, or not represented by explicit curve spans.
     UnsupportedPath,
     /// The authored miter stretch limit is non-finite or smaller than one.

@@ -44,7 +44,9 @@ use alloc::vec::Vec;
 
 use crate::body::{Body, BodyParts, BoundaryLoop, Sense, ValidationPolicy};
 use crate::geometry::{ParameterDomain, ParameterRange};
-use exedra_curves::profile::{Curve, Loop, LoopRef, Profile, ProfileError, ProfilePolicy, SegTag};
+use exedra_curves::profile::{
+    Curve, Loop, LoopRef, Profile, ProfileError, ProfilePolicy, SegTag, SegmentRef,
+};
 use exedra_math::{FrameError, Placement3};
 
 mod authoring;
@@ -248,6 +250,12 @@ impl Pocket {
 #[derive(Copy, Clone, Debug, PartialEq)]
 #[non_exhaustive]
 pub enum PocketError {
+    /// An outline segment is a rational Bezier, which pockets do not yet
+    /// cut.
+    UnsupportedCurve {
+        /// The segment's index in the outline.
+        segment: usize,
+    },
     /// A filled pocket region contains holes, which would leave unsupported islands.
     RegionHasHoles {
         /// Number of holes in the region.
@@ -284,6 +292,9 @@ pub enum PocketError {
 impl core::fmt::Display for PocketError {
     fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
         match self {
+            Self::UnsupportedCurve { segment } => {
+                write!(f, "pocket outline segment {segment} is a Bezier curve")
+            }
             Self::RegionHasHoles { count } => write!(
                 f,
                 "pocket region has {count} holes; this pocket model requires one filled outline"
@@ -333,6 +344,12 @@ pub enum ExtrusionError {
     TooLarge,
     /// The constructed boundary failed structural or support validation.
     Body(crate::body::BodyError),
+    /// A profile segment is a rational Bezier, which extrusion does not yet
+    /// build.
+    UnsupportedCurve {
+        /// The segment.
+        segment: SegmentRef,
+    },
     /// A pocket cannot be cut.
     Pocket {
         /// The pocket's index, the count of earlier pockets.
@@ -352,6 +369,9 @@ impl core::fmt::Display for ExtrusionError {
             Self::SingularFrame(error) => write!(f, "extrusion frame: {error}"),
             Self::Body(error) => write!(f, "extrusion {error}"),
             Self::TooLarge => write!(f, "profile is too large to extrude"),
+            Self::UnsupportedCurve { segment } => {
+                write!(f, "profile segment {segment:?} is a Bezier curve")
+            }
             Self::Pocket { pocket, error } => write!(f, "pocket {pocket}: {error}"),
         }
     }
@@ -411,6 +431,9 @@ impl Extrusion {
     /// non-finite length and [`ExtrusionError::SingularFrame`] for a frame
     /// that is not right-handed and orthonormal.
     pub fn new(profile: Profile, frame: Placement3, length: f64) -> Result<Self, ExtrusionError> {
+        if let Some(segment) = profile.bezier_segment() {
+            return Err(ExtrusionError::UnsupportedCurve { segment });
+        }
         if !(length.is_finite() && length > 0.0) {
             return Err(ExtrusionError::InvalidLength { length });
         }
@@ -528,6 +551,7 @@ impl Extrusion {
                         Curve::Line => {
                             boundary::line([from[0], from[1], z], [segment.to[0], segment.to[1], z])
                         }
+                        Curve::Bezier(_) => unreachable!("Extrusion::new refuses Bezier segments"),
                         Curve::Arc { .. } | Curve::ArcCenter { .. } => {
                             boundary::circle(loop_.arc(k).expect("validated arc"), z)
                         }

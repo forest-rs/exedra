@@ -278,6 +278,7 @@ impl Extrusion {
             for (segment, s) in loop_.segments().iter().enumerate() {
                 let count = match s.curve {
                     Curve::Line => 1,
+                    Curve::Bezier(_) => unreachable!("extrusions refuse Bezier segments"),
                     Curve::Arc { .. } | Curve::ArcCenter { .. } => {
                         let arc = loop_.arc(segment).expect("validated arc");
                         circular_edge_count(
@@ -756,7 +757,7 @@ fn end_tangent(loop_: &exedra_curves::profile::Loop, index: usize, at_end: bool)
     let segments = loop_.segments();
     let from = segments[(index + segments.len() - 1) % segments.len()].to;
     let to = segments[index].to;
-    let direction = match segments[index].curve {
+    let direction = match &segments[index].curve {
         Curve::Arc { .. } | Curve::ArcCenter { .. } => {
             let arc = loop_.arc(index).expect("validated arc");
             let point = if at_end { to } else { from };
@@ -766,6 +767,7 @@ fn end_tangent(loop_: &exedra_curves::profile::Loop, index: usize, at_end: bool)
             [-radial[1] * sense, radial[0] * sense]
         }
         Curve::Line => [to[0] - from[0], to[1] - from[1]],
+        Curve::Bezier(_) => unreachable!("extrusions refuse Bezier segments"),
     };
     let length = libm::hypot(direction[0], direction[1]);
     [direction[0] / length, direction[1] / length]

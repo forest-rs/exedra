@@ -139,7 +139,7 @@ fn coincident_runs_record_both_sources_and_prefer_the_left_label() {
             p.outer()
                 .segments()
                 .iter()
-                .copied()
+                .cloned()
                 .map(|s| s.tagged(SegTag(tag)))
                 .collect(),
         )
@@ -348,7 +348,7 @@ fn line_arc_crossings_major_arcs_and_rescaled_coordinates_keep_the_same_region()
                     .iter()
                     .map(|s| Segment {
                         to: [tx + s.to[0] * scale, ty + s.to[1] * scale],
-                        ..*s
+                        ..s.clone()
                     })
                     .collect(),
             )
@@ -387,10 +387,10 @@ fn verify_sources(result: &RegionResult, inputs: [&Profile; 2]) {
                 for i in 0..=16 {
                     let t = f64::from(i) / 16.0;
                     let expected = point_at(
-                        original,
+                        &original,
                         source.parameters[0] + t * (source.parameters[1] - source.parameters[0]),
                     );
-                    assert!(length(sub(point_at(piece, t), expected)) < 1e-11);
+                    assert!(length(sub(point_at(&piece, t), expected)) < 1e-11);
                 }
             }
         }

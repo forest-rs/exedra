@@ -1060,7 +1060,7 @@ impl Request {
                             let error = exedra_curves::profile::Arc::resolve(
                                 from,
                                 current.to,
-                                current.curve,
+                                &current.curve,
                             )
                             .expect_err("invalid arc");
                             let code = match error {

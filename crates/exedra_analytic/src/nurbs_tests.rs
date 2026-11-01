@@ -443,3 +443,69 @@ fn b_spline_rows_trace_conic_patches_but_not_their_parameters() {
     let same = surface.evaluate([s, v]).unwrap().point;
     assert!(norm(sub(row, same)) > 1e-2, "{}", norm(sub(row, same)));
 }
+
+/// Profile constructors that build only lines and arcs refuse a Bezier
+/// segment by name rather than read it as a chord.
+#[test]
+fn line_and_arc_constructors_refuse_bezier_profile_segments() {
+    use exedra_curves::profile::{
+        Bezier, Loop, LoopRef, Profile, ProfilePolicy, Segment, SegmentRef,
+    };
+    let policy = ProfilePolicy::new(1e-9);
+    // A unit square whose top bows up, away from the revolution axis.
+    let bowed = Profile::new(
+        Loop::new(vec![
+            Segment::line([2.0, 0.0]),
+            Segment::line([2.0, 1.0]),
+            Segment::bezier([1.0, 1.0], Bezier::new(vec![[1.5, 1.5]], None)),
+            Segment::line([1.0, 0.0]),
+        ])
+        .unwrap(),
+        vec![],
+        &policy,
+    )
+    .unwrap();
+    let segment = SegmentRef {
+        loop_ref: LoopRef::Outer,
+        segment: 2,
+    };
+    assert_eq!(bowed.bezier_segment(), Some(segment));
+    assert!(matches!(
+        crate::extrusion::Extrusion::new(bowed.clone(), Placement3::IDENTITY, 1.0),
+        Err(crate::extrusion::ExtrusionError::UnsupportedCurve { segment: s }) if s == segment
+    ));
+    assert!(matches!(
+        crate::revolve::Revolution::new(bowed.clone(), Placement3::IDENTITY, 1.0),
+        Err(crate::revolve::RevolutionError::UnsupportedCurve { segment: s }) if s == segment
+    ));
+    let square = |min: f64, max: f64| {
+        Loop::new(vec![
+            Segment::line([max, min]),
+            Segment::line([max, max]),
+            Segment::line([min, max]),
+            Segment::line([min, min]),
+        ])
+        .unwrap()
+    };
+    let block = crate::extrusion::Extrusion::new(
+        Profile::new(square(0.0, 10.0), vec![], &policy).unwrap(),
+        Placement3::IDENTITY,
+        4.0,
+    )
+    .unwrap();
+    let region = Loop::new(vec![
+        Segment::line([6.0, 2.0]),
+        Segment::bezier([2.0, 2.0], Bezier::new(vec![[4.0, 6.0]], None)),
+    ])
+    .unwrap();
+    assert!(matches!(
+        block.with_pocket(
+            crate::extrusion::Pocket::from_region(&region, crate::extrusion::End::End, 1.0),
+            &policy
+        ),
+        Err(crate::extrusion::ExtrusionError::Pocket {
+            error: crate::extrusion::PocketError::UnsupportedCurve { .. },
+            ..
+        })
+    ));
+}

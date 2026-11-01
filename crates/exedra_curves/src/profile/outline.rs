@@ -4,12 +4,16 @@
 //! Line and circular-arc loops and profiles with validated arrangements.
 
 use alloc::vec::Vec;
+use core::f64::consts::PI;
 
 use exedra_math::predicates::{Orientation, orient2d};
 
+use crate::intersect::{BezierEnclosure, HullSeparation};
+use crate::profile::Bezier;
 use crate::profile::arc::{
-    Arc, Piece, bounds_may_contact, cross, length, sub, turns, winding_angle,
+    Arc, Piece, bounds_may_contact, cross, dot, length, sub, turns, winding_angle,
 };
+use crate::profile::bezier::BezierPiece;
 
 /// Opaque caller tag carried by a segment across geometry representations.
 ///
@@ -22,7 +26,7 @@ pub struct SegTag(pub u32);
 
 /// Geometry of one segment between its start (the previous endpoint) and
 /// [`Segment::to`].
-#[derive(Copy, Clone, Debug, PartialEq)]
+#[derive(Clone, Debug, PartialEq)]
 pub enum Curve {
     /// A straight chord.
     Line,
@@ -41,14 +45,17 @@ pub enum Curve {
         /// Clockwise travel; false means counter-clockwise.
         clockwise: bool,
     },
+    /// A rational Bezier curve whose end controls are the segment's start
+    /// and end.
+    Bezier(Bezier),
 }
 
 /// One segment of a loop.
-#[derive(Copy, Clone, Debug, PartialEq)]
+#[derive(Clone, Debug, PartialEq)]
 pub struct Segment {
     /// End point; the next segment starts here.
     pub to: [f64; 2],
-    /// Straight or circular geometry.
+    /// Straight, circular or rational Bezier geometry.
     pub curve: Curve,
     /// Optional caller tag.
     pub tag: Option<SegTag>,
@@ -82,6 +89,16 @@ impl Segment {
         Self {
             to,
             curve: Curve::ArcCenter { center, clockwise },
+            tag: None,
+        }
+    }
+
+    /// A rational Bezier segment to `to` through `bezier`'s controls.
+    #[must_use]
+    pub const fn bezier(to: [f64; 2], bezier: Bezier) -> Self {
+        Self {
+            to,
+            curve: Curve::Bezier(bezier),
             tag: None,
         }
     }
@@ -130,6 +147,14 @@ pub enum LoopError {
         /// Offending segment.
         segment: usize,
     },
+    /// A Bezier segment has too many controls, a weight count other than
+    /// its order, a control or weight [`crate::Nurbs::validate`] would
+    /// refuse, weights spread too far or controls too close for `f64`
+    /// ([`Bezier`]).
+    InvalidBezier {
+        /// Offending segment.
+        segment: usize,
+    },
 }
 
 impl core::fmt::Display for LoopError {
@@ -142,6 +167,9 @@ impl core::fmt::Display for LoopError {
             Self::NonFinite { segment } => write!(f, "segment {segment} is not finite"),
             Self::ZeroLength { segment } => write!(f, "segment {segment} has zero length"),
             Self::InvalidArc { segment } => write!(f, "segment {segment} has no valid arc"),
+            Self::InvalidBezier { segment } => {
+                write!(f, "segment {segment} has no valid Bezier controls")
+            }
         }
     }
 }
@@ -179,8 +207,13 @@ impl Loop {
             if from == segment.to {
                 return Err(LoopError::ZeroLength { segment: index });
             }
-            if Arc::resolve(from, segment.to, segment.curve).is_err() {
+            if Arc::resolve(from, segment.to, &segment.curve).is_err() {
                 return Err(LoopError::InvalidArc { segment: index });
+            }
+            if let Curve::Bezier(bezier) = &segment.curve
+                && !bezier.valid(from, segment.to)
+            {
+                return Err(LoopError::InvalidBezier { segment: index });
             }
         }
         Ok(loop_)
@@ -203,7 +236,9 @@ impl Loop {
     pub fn arc(&self, index: usize) -> Option<Arc> {
         let segment = self.segments.get(index)?;
         let from = self.segments[(index + self.segments.len() - 1) % self.segments.len()].to;
-        Arc::resolve(from, segment.to, segment.curve).ok().flatten()
+        Arc::resolve(from, segment.to, &segment.curve)
+            .ok()
+            .flatten()
     }
 
     /// This loop traversed the other way: segment order reverses, bulges
@@ -214,13 +249,14 @@ impl Loop {
         let segments = (0..n)
             .map(|i| {
                 let source = &self.segments[n - 1 - i];
-                let curve = match source.curve {
+                let curve = match &source.curve {
                     Curve::Line => Curve::Line,
                     Curve::Arc { bulge } => Curve::Arc { bulge: -bulge },
                     Curve::ArcCenter { center, clockwise } => Curve::ArcCenter {
-                        center,
+                        center: *center,
                         clockwise: !clockwise,
                     },
+                    Curve::Bezier(bezier) => Curve::Bezier(bezier.reversed()),
                 };
                 Segment {
                     to: self.segments[(2 * n - 2 - i) % n].to,
@@ -232,7 +268,11 @@ impl Loop {
         Self { segments }
     }
 
-    /// Signed enclosed area: positive when counter-clockwise.
+    /// Signed enclosed area: positive when counter-clockwise. Lines, arcs
+    /// and polynomial Bezier segments are closed forms, exact to rounding;
+    /// a rational Bezier segment's part is an estimate, adaptive
+    /// Gauss-Legendre quadrature to `2^-44` of its extent squared. Nothing
+    /// a profile decides rests on it.
     #[must_use]
     pub fn signed_area(&self) -> f64 {
         // Shoelace over chords relative to the first vertex, which keeps the
@@ -245,6 +285,7 @@ impl Loop {
                 match piece {
                     Piece::Line(..) => chord,
                     Piece::Arc(arc) => chord + arc.segment_area(),
+                    Piece::Bezier(bezier) => chord + bezier.segment_integrals().0,
                 }
             })
             .sum()
@@ -260,6 +301,11 @@ impl Loop {
     /// its lowest-leftmost vertex, which a simple polygon makes towards its
     /// inside; a sliver with arcs is not decided.
     pub(crate) fn counter_clockwise(&self) -> Option<bool> {
+        if self.has_bezier() {
+            // Their areas are quadratures; their chord polygons, once
+            // proved, decide instead.
+            return None;
+        }
         let origin = self.segments[self.segments.len() - 1].to;
         let (mut area, mut chords, mut arcs) = (0.0_f64, 0.0_f64, 0.0_f64);
         for piece in self.pieces() {
@@ -303,6 +349,13 @@ impl Loop {
         }
     }
 
+    /// Whether any segment is a rational Bezier.
+    pub(crate) fn has_bezier(&self) -> bool {
+        self.segments
+            .iter()
+            .any(|segment| matches!(segment.curve, Curve::Bezier(_)))
+    }
+
     /// The index of the vertex with the least `y`, then the least `x`.
     fn lowest_leftmost(&self) -> usize {
         (0..self.segments.len())
@@ -313,7 +366,9 @@ impl Loop {
             .expect("a loop has at least two segments")
     }
 
-    /// The smallest axis-aligned box containing the loop, as `[min, max]`.
+    /// An axis-aligned box containing the loop, as `[min, max]`: the
+    /// smallest, but around a Bezier segment, whose controls' box it
+    /// includes.
     #[must_use]
     pub fn bounds(&self) -> [[f64; 2]; 2] {
         self.pieces().fold(
@@ -325,6 +380,7 @@ impl Loop {
                         [from[0].max(to[0]), from[1].max(to[1])],
                     ],
                     Piece::Arc(arc) => arc.bounds(),
+                    Piece::Bezier(bezier) => bezier.bounds(),
                 };
                 [
                     [min[0].min(lo[0]), min[1].min(lo[1])],
@@ -334,21 +390,29 @@ impl Loop {
         )
     }
 
-    /// Total length of the loop.
+    /// Total length of the loop; a Bezier segment's is an estimate, by
+    /// adaptive Gauss-Legendre quadrature of its speed to `2^-44` of its
+    /// extent, as no closed form exists.
     #[must_use]
     pub fn length(&self) -> f64 {
         self.pieces()
             .map(|piece| match piece {
                 Piece::Line(from, to) => length(sub(to, from)),
                 Piece::Arc(arc) => arc.length(),
+                Piece::Bezier(bezier) => bezier.length(),
             })
             .sum()
     }
 
     pub(crate) fn pieces(&self) -> impl Iterator<Item = Piece> + '_ {
         self.iter_with_starts()
-            .map(|(from, segment)| match segment.curve {
+            .map(|(from, segment)| match &segment.curve {
                 Curve::Line => Piece::Line(from, segment.to),
+                Curve::Bezier(bezier) => Piece::Bezier(BezierPiece {
+                    from,
+                    to: segment.to,
+                    bezier: bezier.clone(),
+                }),
                 curve => Piece::Arc(
                     Arc::resolve(from, segment.to, curve)
                         .expect("arcs are checked by Loop::new")
@@ -357,11 +421,34 @@ impl Loop {
             })
     }
 
-    /// Whole turns the loop winds around `point`, which must not lie on it.
+    /// Whole turns the loop winds around `point`, which must not lie on it:
+    /// for a loop of lines, its signed crossings of the ray rightward from
+    /// the point, each decided by exact comparisons and orientation, so no
+    /// product of tiny differences can underflow to a wrong answer.
     pub(crate) fn winding(&self, point: [f64; 2]) -> i64 {
+        if self
+            .segments
+            .iter()
+            .all(|segment| segment.curve == Curve::Line)
+        {
+            let mut winding = 0;
+            for (from, segment) in self.iter_with_starts() {
+                let to = segment.to;
+                // Upward crossings with the point on the left count one
+                // way, downward ones with it on the right the other.
+                if from[1] <= point[1] {
+                    if to[1] > point[1] && orient2d(from, to, point) == Orientation::Ccw {
+                        winding += 1;
+                    }
+                } else if to[1] <= point[1] && orient2d(from, to, point) == Orientation::Cw {
+                    winding -= 1;
+                }
+            }
+            return winding;
+        }
         turns(
             self.pieces()
-                .map(|piece| winding_angle(&piece, point))
+                .map(|piece| winding_angle(&piece, point, 0.0))
                 .sum(),
         )
     }
@@ -378,6 +465,8 @@ pub struct ProfilePolicy {
     /// contact there.
     pub min_separation: f64,
     /// Largest total segment count; pairwise checks are quadratic in it.
+    /// For a profile with Bezier segments, also the most pieces its proof
+    /// may subdivide them into ([`Profile::validate`]).
     pub max_segments: u32,
 }
 
@@ -428,6 +517,17 @@ pub enum ProfileError {
         /// The offending loop.
         loop_ref: LoopRef,
     },
+    /// The proof for a profile with Bezier segments could not settle a
+    /// segment, or a pair of them, within
+    /// [`ProfilePolicy::max_segments`] pieces: they may cross, touch, come
+    /// nearer than the separation, or simply need more subdivision than the
+    /// budget allows.
+    Unresolved {
+        /// The segment, in outer-then-hole order.
+        first: SegmentRef,
+        /// The other segment of an unresolved pair.
+        second: Option<SegmentRef>,
+    },
     /// A loop is so thin that its winding cannot be told: its area is
     /// within the rounding of computing it, and it has arcs, so no exact
     /// turn decides it.
@@ -468,6 +568,23 @@ impl core::fmt::Display for ProfileError {
                 LoopRef::Outer => write!(f, "the outer loop must wind counter-clockwise"),
                 LoopRef::Hole(hole) => write!(f, "hole {hole} must wind clockwise"),
             },
+            Self::Unresolved { first, second } => {
+                write!(
+                    f,
+                    "{} segment {} could not be proved",
+                    LoopName(first.loop_ref),
+                    first.segment
+                )?;
+                if let Some(second) = second {
+                    write!(
+                        f,
+                        " apart from {} segment {}",
+                        LoopName(second.loop_ref),
+                        second.segment
+                    )?;
+                }
+                Ok(())
+            }
             Self::UnresolvedWinding { loop_ref } => {
                 write!(
                     f,
@@ -541,6 +658,18 @@ impl Profile {
     /// outer loop and outside every other hole. Nothing is moved, merged or
     /// healed.
     ///
+    /// Where any loop holds a Bezier segment, these checks are a proof by
+    /// outward-rounded enclosures, and what it cannot settle is refused as
+    /// [`ProfileError::Unresolved`]. There, a center-defined arc, whose
+    /// stored ends lie at distances from its center that agree only to
+    /// rounding, is checked as every circle about the center between those
+    /// distances; where it meets the next segment, the two are proved to
+    /// meet nowhere outside a ball about their shared vertex, 64 times as
+    /// wide as that disagreement and the rounding of the arc's ends reach
+    /// (never narrower than `4096 EPSILON` of their coordinates). Within the
+    /// ball, which is part of the vertex, the arc's readings may meet the
+    /// other segment.
+    ///
     /// # Errors
     ///
     /// Returns the first violation found.
@@ -577,6 +706,10 @@ impl Profile {
                 maximum: policy.max_segments,
             });
         }
+        if outer.has_bezier() || holes.iter().any(Loop::has_bezier) {
+            let chords = proved_chords(outer, holes, policy)?;
+            return arrangement(&chords[0], &chords[1..]);
+        }
         let loops: Vec<_> = core::iter::once((LoopRef::Outer, outer))
             .chain(
                 holes
@@ -587,7 +720,11 @@ impl Profile {
             .map(|(loop_ref, loop_)| {
                 (
                     loop_ref,
-                    loop_.pieces().map(|p| (p, p.bounds())).collect::<Vec<_>>(),
+                    loop_
+                        .pieces()
+                        .map(|p| (p.bounds(), p))
+                        .map(|(b, p)| (p, b))
+                        .collect::<Vec<_>>(),
                 )
             })
             .collect();
@@ -630,36 +767,7 @@ impl Profile {
                 }
             }
         }
-        // Each loop is simple, so its winding is that of its turn at an
-        // extreme, which its area's sign gives wherever it outweighs its
-        // rounding.
-        for (loop_ref, loop_, counter_clockwise) in core::iter::once((LoopRef::Outer, outer, true))
-            .chain(
-                holes
-                    .iter()
-                    .enumerate()
-                    .map(|(hole, loop_)| (LoopRef::Hole(hole), loop_, false)),
-            )
-        {
-            match loop_.counter_clockwise() {
-                Some(winds) if winds == counter_clockwise => {}
-                Some(_) => return Err(ProfileError::WrongWinding { loop_ref }),
-                None => return Err(ProfileError::UnresolvedWinding { loop_ref }),
-            }
-        }
-        // Loops no longer meet, so one vertex classifies each hole.
-        for (hole, loop_) in holes.iter().enumerate() {
-            let point = loop_.segments[0].to;
-            if outer.winding(point) != 1 {
-                return Err(ProfileError::HoleOutside { hole });
-            }
-            for (within, other) in holes.iter().enumerate() {
-                if within != hole && other.winding(point) != 0 {
-                    return Err(ProfileError::NestedHole { hole, within });
-                }
-            }
-        }
-        Ok(())
+        arrangement(outer, holes)
     }
 
     /// Replaces every boundary segment's tag without changing geometry or storage.
@@ -686,11 +794,32 @@ impl Profile {
         &self.holes
     }
 
-    /// The smallest axis-aligned box containing the profile: its outer
-    /// loop's bounds.
+    /// An axis-aligned box containing the profile: its outer loop's bounds
+    /// ([`Loop::bounds`]).
     #[must_use]
     pub fn bounds(&self) -> [[f64; 2]; 2] {
         self.outer.bounds()
+    }
+
+    /// The first rational Bezier segment, in outer-then-hole order, if
+    /// any: a consumer that builds only lines and arcs refuses the profile
+    /// there rather than read the segment as a chord.
+    #[must_use]
+    pub fn bezier_segment(&self) -> Option<SegmentRef> {
+        core::iter::once((LoopRef::Outer, &self.outer))
+            .chain(
+                self.holes
+                    .iter()
+                    .enumerate()
+                    .map(|(i, hole)| (LoopRef::Hole(i), hole)),
+            )
+            .find_map(|(loop_ref, loop_)| {
+                loop_
+                    .segments
+                    .iter()
+                    .position(|s| matches!(s.curve, Curve::Bezier(_)))
+                    .map(|segment| SegmentRef { loop_ref, segment })
+            })
     }
 
     /// The outer loop's area less the holes' areas.
@@ -701,7 +830,9 @@ impl Profile {
 
     /// Area integrals of `(x-origin.x, y-origin.y)`, in cubed model units.
     ///
-    /// Includes circular segments analytically and subtracts holes. Choosing an
+    /// Includes circular and polynomial Bezier segments in closed form,
+    /// rational Bezier segments as quadrature estimates (as
+    /// [`Loop::signed_area`]), and subtracts holes. Choosing an
     /// origin near the profile avoids cancellation for far-translated shapes.
     /// Returns `None` for a non-finite origin or an overflowing integral.
     #[must_use]
@@ -753,10 +884,480 @@ impl Profile {
                         moment[k] += area * (0.5 * a[k] + 0.5 * b[k]) + radial * direction[k];
                     }
                 }
+                if let Curve::Bezier(bezier) = &segment.curve {
+                    // The region between chord and curve, its moments about
+                    // its start moved to the origin.
+                    let (area, about_start) = BezierPiece {
+                        from,
+                        to: segment.to,
+                        bezier: bezier.clone(),
+                    }
+                    .segment_integrals();
+                    for k in 0..2 {
+                        moment[k] += about_start[k] + area * a[k];
+                    }
+                }
             }
         }
         moment.iter().all(|v| v.is_finite()).then_some(moment)
     }
+}
+
+/// The winding of simple, mutually apart loops, then where each hole lies.
+fn arrangement(outer: &Loop, holes: &[Loop]) -> Result<(), ProfileError> {
+    // Each loop is simple, so its winding is that of its turn at an
+    // extreme, which its area's sign gives wherever it outweighs its
+    // rounding.
+    for (loop_ref, loop_, counter_clockwise) in core::iter::once((LoopRef::Outer, outer, true))
+        .chain(
+            holes
+                .iter()
+                .enumerate()
+                .map(|(hole, loop_)| (LoopRef::Hole(hole), loop_, false)),
+        )
+    {
+        match loop_.counter_clockwise() {
+            Some(winds) if winds == counter_clockwise => {}
+            Some(_) => return Err(ProfileError::WrongWinding { loop_ref }),
+            None => return Err(ProfileError::UnresolvedWinding { loop_ref }),
+        }
+    }
+    // Loops no longer meet, so one vertex classifies each hole.
+    for (hole, loop_) in holes.iter().enumerate() {
+        let point = loop_.segments[0].to;
+        if outer.winding(point) != 1 {
+            return Err(ProfileError::HoleOutside { hole });
+        }
+        for (within, other) in holes.iter().enumerate() {
+            if within != hole && other.winding(point) != 0 {
+                return Err(ProfileError::NestedHole { hole, within });
+            }
+        }
+    }
+    Ok(())
+}
+
+/// A piece of a segment in an enclosure proof.
+struct Proved {
+    enclosure: BezierEnclosure,
+    loop_index: usize,
+    segment: usize,
+    /// How far the enclosures' ends reach from the segment's stored ends:
+    /// a center-defined arc's are boxes about its radii's disagreement.
+    slack: f64,
+}
+
+/// Proves loops holding Bezier segments simple and apart, and returns
+/// polygons through the proof's pieces' ends that wind as the loops do
+/// and leave every vertex of the other loops on the same side.
+///
+/// Every segment is enclosed as rational Bezier pieces: a line as itself,
+/// an arc as rational quadratics, a Bezier segment as itself. Pieces are
+/// halved until each is monotone in a coordinate, so cannot cross itself;
+/// pieces sharing an end are proved to meet only there; other pieces of
+/// one segment are proved apart; pieces of two segments meeting at a
+/// vertex are proved apart within that corner's radius ([`Corner`]) and
+/// must lie within it where they share the vertex; and every other pair is
+/// proved apart by at least the separation, no finer than the rounding at
+/// their coordinates.
+///
+/// A center-defined arc's stored ends need not lie on one circle about its
+/// center: they lie at distances from it that agree only to rounding. It
+/// is enclosed as every reading those radii allow, every circle about the
+/// center between the two distances, so its ends are boxes about its
+/// stored ends rather than the points themselves. Where it meets another
+/// segment, the curves are proved to meet nowhere outside a ball about
+/// the vertex, 64 times as wide as those boxes reach (never narrower than
+/// `4096 EPSILON` of their coordinates), within which the readings may
+/// meet. That ball is part of the vertex.
+///
+/// The hulls hold the curves and meet only at shared ends and within
+/// those balls, so the chords between pieces' ends, each within its
+/// piece's hull, wind about every point outside the hulls as the loops do.
+fn proved_chords(
+    outer: &Loop,
+    holes: &[Loop],
+    policy: &ProfilePolicy,
+) -> Result<Vec<Loop>, ProfileError> {
+    let loops: Vec<&Loop> = core::iter::once(outer).chain(holes).collect();
+    let reference = |loop_index: usize, segment: usize| SegmentRef {
+        loop_ref: if loop_index == 0 {
+            LoopRef::Outer
+        } else {
+            LoopRef::Hole(loop_index - 1)
+        },
+        segment,
+    };
+    let mut pieces = Vec::new();
+    for (loop_index, loop_) in loops.iter().enumerate() {
+        for (segment, (from, s)) in loop_.iter_with_starts().enumerate() {
+            let unresolved = || ProfileError::Unresolved {
+                first: reference(loop_index, segment),
+                second: None,
+            };
+            let (enclosures, slack) = segment_enclosures(from, s).ok_or_else(unresolved)?;
+            pieces.extend(enclosures.into_iter().map(|enclosure| Proved {
+                enclosure,
+                loop_index,
+                segment,
+                slack,
+            }));
+        }
+    }
+    let corners: Vec<Vec<Corner>> = loops.iter().map(|l| Corner::of(l, policy)).collect();
+    let budget = policy.max_segments as usize;
+    // Pairs not yet proved, and pieces not yet proved monotone. A proof
+    // concerns the curves, so it holds for every part of them: only pairs
+    // that failed, and pieces that become neighbours by halving, are
+    // tested again.
+    let mut pending: Vec<(usize, usize)> = (0..pieces.len())
+        .flat_map(|i| (i + 1..pieces.len()).map(move |j| (i, j)))
+        .collect();
+    let mut unproved: Vec<usize> = (0..pieces.len()).collect();
+    for _ in 0..64 {
+        let mut halve = alloc::vec![false; pieces.len()];
+        let mut failed = None;
+        for &i in &unproved {
+            if !pieces[i].enclosure.is_monotone() {
+                // Pieces halving cannot sharpen.
+                if pieces[i].enclosure.is_unresolvable() {
+                    return Err(ProfileError::Unresolved {
+                        first: reference(pieces[i].loop_index, pieces[i].segment),
+                        second: None,
+                    });
+                }
+                halve[i] = true;
+                failed.get_or_insert((i, None));
+            }
+        }
+        let (first, last) = loop_ends(&pieces, loops.len());
+        let mut failing = Vec::new();
+        for &(i, j) in &pending {
+            let (a, b) = (&pieces[i], &pieces[j]);
+            let (p, q) = (a.enclosure.bounds(), b.enclosure.bounds());
+            let scale = [p, q]
+                .into_iter()
+                .flatten()
+                .flatten()
+                .fold(0.0_f64, |m, c| m.max(c.abs()));
+            let margin = policy.min_separation.max(16.0 * f64::EPSILON * scale);
+            if !bounds_may_contact(p, q, margin) {
+                continue;
+            }
+            // Consecutive, or the loop's last and first pieces.
+            let adjacent = a.loop_index == b.loop_index
+                && (j == i + 1 || (first[a.loop_index] == i && last[a.loop_index] == j));
+            // Parts of one segment come as near each other as the curve
+            // runs, and parts of two segments as near as their corner
+            // makes them within its radius: those need only not touch.
+            // The separation holds everywhere else.
+            let same = a.loop_index == b.loop_index && a.segment == b.segment;
+            let cornered = a.loop_index == b.loop_index
+                && !same
+                && corners[a.loop_index]
+                    .iter()
+                    .filter(|c| c.joins(a.segment, b.segment))
+                    .any(|c| c.holds(p) && c.holds(q));
+            let crosses_corner = adjacent && !same;
+            // Where a center-defined arc meets another segment, the
+            // pieces meeting there share no exact vertex, only a box about
+            // it: they are proved once both lie within the vertex's ball.
+            let balled = crosses_corner
+                && (a.slack > 0.0 || b.slack > 0.0)
+                && corners[a.loop_index]
+                    .iter()
+                    // The corner they meet at: its vertex in both boxes.
+                    .filter(|c| {
+                        c.joins(a.segment, b.segment) && within(c.vertex, p) && within(c.vertex, q)
+                    })
+                    .any(|c| {
+                        // Never finer than the coordinates resolve.
+                        let ball = Corner {
+                            vertex: c.vertex,
+                            segments: c.segments,
+                            radius: 64.0 * (a.slack + b.slack) + 4096.0 * f64::EPSILON * scale,
+                        };
+                        ball.holds(p) && ball.holds(q)
+                    });
+            let proved = if adjacent {
+                // Pieces meeting at a corner meet only there, and lie
+                // within its radius, past which the separation holds.
+                balled
+                    || (a.enclosure.separation(&b.enclosure).is_some()
+                        && (!crosses_corner || cornered))
+            } else {
+                let margin = if same || cornered { 0.0 } else { margin };
+                a.enclosure.separation_by(&b.enclosure, margin) == Some(HullSeparation::Disjoint)
+            };
+            if !proved {
+                let pair = || ProfileError::Unresolved {
+                    first: reference(a.loop_index, a.segment),
+                    second: Some(reference(b.loop_index, b.segment)),
+                };
+                // Points of the two curves already nearer than the
+                // separation, outside any corner the two segments share:
+                // no subdivision can prove them apart.
+                let ends = [a.enclosure.endpoints(), b.enclosure.endpoints()];
+                let shared: Vec<&Corner> = if a.loop_index == b.loop_index {
+                    corners[a.loop_index]
+                        .iter()
+                        .filter(|c| c.joins(a.segment, b.segment))
+                        .collect()
+                } else {
+                    Vec::new()
+                };
+                let clear =
+                    |p: [f64; 2]| shared.iter().all(|c| length(sub(p, c.vertex)) > c.radius);
+                let violated = ends[0].iter().any(|&p| {
+                    ends[1]
+                        .iter()
+                        .any(|&q| length(sub(p, q)) < margin && clear(p) && clear(q))
+                });
+                if !same && violated {
+                    return Err(pair());
+                }
+                if a.enclosure.is_unresolvable() || b.enclosure.is_unresolvable() {
+                    return Err(pair());
+                }
+                halve[i] = true;
+                halve[j] = true;
+                failing.push((i, j));
+                // Name a pair of distinct segments where there is one.
+                if failed.is_none_or(|(f, g): (usize, Option<usize>)| {
+                    g.is_none_or(|g| pieces[f].segment == pieces[g].segment)
+                        && a.segment != b.segment
+                }) {
+                    failed = Some((i, Some(j)));
+                }
+            }
+        }
+        let Some((first_failed, second_failed)) = failed else {
+            return chords(&pieces, loops.len());
+        };
+        let unresolved = ProfileError::Unresolved {
+            first: reference(
+                pieces[first_failed].loop_index,
+                pieces[first_failed].segment,
+            ),
+            second: second_failed.map(|j| reference(pieces[j].loop_index, pieces[j].segment)),
+        };
+        let more = halve.iter().filter(|h| **h).count();
+        if pieces.len() + more > budget {
+            return Err(unresolved);
+        }
+        // Halve, remembering where each old piece's parts went.
+        let mut parts = Vec::with_capacity(pieces.len());
+        let mut refined = Vec::with_capacity(pieces.len() + more);
+        for (piece, halve) in pieces.into_iter().zip(&halve) {
+            let at = refined.len();
+            if !halve {
+                refined.push(piece);
+                parts.push(at..at + 1);
+                continue;
+            }
+            let (left, right) = piece.enclosure.bisect().map_err(|_| unresolved)?;
+            for enclosure in [left, right] {
+                refined.push(Proved { enclosure, ..piece });
+            }
+            parts.push(at..at + 2);
+        }
+        pieces = refined;
+        // Again: the parts of failed pairs, each halved piece's two parts
+        // and its parts beside its old neighbours, which may no longer be
+        // their neighbours.
+        let (first, last) = loop_ends(&pieces, loops.len());
+        let mut next = Vec::new();
+        for (i, j) in failing {
+            for a in parts[i].clone() {
+                for b in parts[j].clone() {
+                    next.push((a.min(b), a.max(b)));
+                }
+            }
+        }
+        unproved.clear();
+        for part in &parts {
+            if part.len() < 2 {
+                continue;
+            }
+            unproved.extend(part.clone());
+            next.push((part.start, part.start + 1));
+            let loop_index = pieces[part.start].loop_index;
+            let before = if part.start == first[loop_index] {
+                last[loop_index]
+            } else {
+                part.start - 1
+            };
+            let after = if part.end - 1 == last[loop_index] {
+                first[loop_index]
+            } else {
+                part.end
+            };
+            for a in part.clone() {
+                for b in [before, after] {
+                    if a != b {
+                        next.push((a.min(b), a.max(b)));
+                    }
+                }
+            }
+        }
+        next.sort_unstable();
+        next.dedup();
+        pending = next;
+    }
+    Err(ProfileError::Unresolved {
+        first: reference(0, 0),
+        second: None,
+    })
+}
+
+/// Where two consecutive segments meet, and how far from there their
+/// parts may come nearer than the separation: twice the separation over
+/// the sine of the angle between them (any angle past a right angle
+/// counting as one), so that past it rays at that angle are a separation
+/// apart, nor less than `4096 EPSILON` of their coordinates, which the
+/// rounding of the pieces meeting there allows them to reach, but never
+/// more than half the shorter segment's chord, so a sliver's far halves
+/// are held to the separation however small its angle.
+struct Corner {
+    vertex: [f64; 2],
+    segments: [usize; 2],
+    radius: f64,
+}
+
+impl Corner {
+    fn of(loop_: &Loop, policy: &ProfilePolicy) -> Vec<Self> {
+        let pieces: Vec<Piece> = loop_.pieces().collect();
+        let n = pieces.len();
+        (0..n)
+            .map(|k| {
+                let (before, after) = (&pieces[k], &pieces[(k + 1) % n]);
+                let back = before.tangent(true);
+                let ray = after.tangent(false);
+                // The rays from the vertex along both segments.
+                let (cos, sin) = (-dot(back, ray), cross(back, ray).abs());
+                let sine = if cos <= 0.0 { 1.0 } else { sin };
+                let scale = before
+                    .bounds()
+                    .into_iter()
+                    .chain(after.bounds())
+                    .flatten()
+                    .fold(0.0_f64, |m, c| m.max(c.abs()));
+                let separation = policy.min_separation.max(16.0 * f64::EPSILON * scale);
+                let chord = |p: &Piece| length(sub(p.to(), p.from()));
+                let cap = 0.5 * chord(before).min(chord(after));
+                // Never finer than subdivision's rounding at these
+                // coordinates lets the pieces meeting here fit within it.
+                let resolved = 4096.0 * f64::EPSILON * scale;
+                let radius = if sine > 0.0 {
+                    (2.0 * separation / sine).max(resolved).min(cap)
+                } else {
+                    cap
+                };
+                Self {
+                    vertex: before.to(),
+                    segments: [k, (k + 1) % n],
+                    radius,
+                }
+            })
+            .collect()
+    }
+
+    /// Whether segments `a` and `b` meet here.
+    fn joins(&self, a: usize, b: usize) -> bool {
+        self.segments == [a, b] || self.segments == [b, a]
+    }
+
+    /// Whether a box lies within the corner's radius of its vertex.
+    fn holds(&self, [lo, hi]: [[f64; 2]; 2]) -> bool {
+        let far = [0, 1].map(|k| {
+            (self.vertex[k] - lo[k])
+                .abs()
+                .max((hi[k] - self.vertex[k]).abs())
+        });
+        libm::hypot(far[0], far[1]) <= self.radius
+    }
+}
+
+/// Whether `point` lies in a box.
+fn within(point: [f64; 2], [lo, hi]: [[f64; 2]; 2]) -> bool {
+    (0..2).all(|k| lo[k] <= point[k] && point[k] <= hi[k])
+}
+
+/// Each loop's first and last piece.
+fn loop_ends(pieces: &[Proved], loops: usize) -> (Vec<usize>, Vec<usize>) {
+    let mut first = alloc::vec![usize::MAX; loops];
+    let mut last = alloc::vec![0; loops];
+    for (i, piece) in pieces.iter().enumerate() {
+        first[piece.loop_index] = first[piece.loop_index].min(i);
+        last[piece.loop_index] = i;
+    }
+    (first, last)
+}
+
+/// A segment's enclosures from `from`, and how far their ends reach from
+/// its stored ends, or `None` where they cannot be formed.
+fn segment_enclosures(from: [f64; 2], segment: &Segment) -> Option<(Vec<BezierEnclosure>, f64)> {
+    let to = segment.to;
+    match &segment.curve {
+        Curve::Line => Some((
+            alloc::vec![BezierEnclosure::new(&[from, to], None).ok()?],
+            0.0,
+        )),
+        Curve::Bezier(bezier) => Some((
+            alloc::vec![
+                BezierPiece {
+                    from,
+                    to,
+                    bezier: bezier.clone()
+                }
+                .enclosure()
+                .ok()?
+            ],
+            0.0,
+        )),
+        Curve::Arc { bulge } => Some((BezierEnclosure::arc(from, to, [*bulge; 2]).ok()?, 0.0)),
+        Curve::ArcCenter { center, clockwise } => {
+            // Every reading its radii allow, in exact quarter turns and a
+            // rest of between an eighth and three eighths of a turn, which
+            // its sweep's rounding cannot mistake.
+            let arc = Arc::resolve(from, to, &segment.curve).ok()??;
+            let turn = arc.sweep.abs() / PI;
+            let quarters = [0.75, 1.25, 1.75]
+                .into_iter()
+                .filter(|&eighths| turn > eighths)
+                .count();
+            let enclosures = BezierEnclosure::band(*center, from, to, *clockwise, quarters).ok()?;
+            let slack = enclosures
+                .iter()
+                .map(BezierEnclosure::end_spread)
+                .fold(0.0, f64::max);
+            Some((enclosures, slack))
+        }
+    }
+}
+
+/// Polygons through the ends of each loop's proved pieces, in order.
+fn chords(pieces: &[Proved], loops: usize) -> Result<Vec<Loop>, ProfileError> {
+    (0..loops)
+        .map(|loop_index| {
+            let segments = pieces
+                .iter()
+                .filter(|p| p.loop_index == loop_index)
+                .map(|p| Segment::line(p.enclosure.endpoints()[1]))
+                .collect();
+            Loop::new(segments).map_err(|_| ProfileError::Unresolved {
+                first: SegmentRef {
+                    loop_ref: if loop_index == 0 {
+                        LoopRef::Outer
+                    } else {
+                        LoopRef::Hole(loop_index - 1)
+                    },
+                    segment: 0,
+                },
+                second: None,
+            })
+        })
+        .collect()
 }
 
 /// Sine below which adjacent pieces count as tangent at their shared vertex.
@@ -952,6 +1553,30 @@ mod tests {
                     segment: 0
                 },
             })
+        );
+    }
+
+    #[test]
+    fn tiny_nested_holes_are_found_without_underflow() {
+        // Clockwise diamonds of radii 4s and s about the origin: products
+        // of their coordinates underflow, yet the inner lies in the outer.
+        let s = 1e-200;
+        let diamond = |r: f64| {
+            Loop::new(vec![
+                Segment::line([0.0, r]),
+                Segment::line([r, 0.0]),
+                Segment::line([0.0, -r]),
+                Segment::line([-r, 0.0]),
+            ])
+            .unwrap()
+        };
+        assert_eq!(
+            Profile::new(
+                rect([-1.0, -1.0], [1.0, 1.0]),
+                vec![diamond(4.0 * s), diamond(s)],
+                &ProfilePolicy::new(1e-202)
+            ),
+            Err(ProfileError::NestedHole { hole: 1, within: 0 })
         );
     }
 

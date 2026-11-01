@@ -139,7 +139,7 @@ fn path(loop_: &Loop) -> String {
     let start = loop_.segments().last().expect("validated loop").to;
     write!(path, "M{},{}", start[0], start[1]).unwrap();
     for (from, segment) in loop_.iter_with_starts() {
-        match segment.curve {
+        match &segment.curve {
             Curve::Line => write!(path, "L{},{}", segment.to[0], segment.to[1]).unwrap(),
             curve => {
                 let arc = Arc::resolve(from, segment.to, curve)
@@ -185,7 +185,7 @@ fn svg(studies: &[Study]) -> String {
                     .filter(|(_, s)| s.tag == Some(TRANSITION))
                 {
                     let mut d = format!("M{},{}", from[0], from[1]);
-                    match segment.curve {
+                    match &segment.curve {
                         Curve::Line => write!(d, "L{},{}", segment.to[0], segment.to[1]).unwrap(),
                         curve => {
                             let arc = Arc::resolve(from, segment.to, curve)
@@ -225,7 +225,7 @@ fn svg(studies: &[Study]) -> String {
             .outer()
             .iter_with_starts()
             .find(|(p, s)| s.tag == Some(TRANSITION) && p[0] > 0.0 && p[1] > 0.0)
-        && let Some(arc) = Arc::resolve(from, segment.to, segment.curve).unwrap()
+        && let Some(arc) = Arc::resolve(from, segment.to, &segment.curve).unwrap()
     {
         let index = studies.len();
         let x = (index % 3) * 320 + 8;

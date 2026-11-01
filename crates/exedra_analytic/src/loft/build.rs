@@ -50,6 +50,12 @@ pub(super) fn construct<P: IntoProfile>(
         let profile = input
             .into_profile(&policy.profile)
             .map_err(|error| LoftError::Profile { section: i, error })?;
+        if let Some(segment) = profile.bezier_segment() {
+            return Err(LoftError::UnsupportedCurve {
+                section: i,
+                segment,
+            });
+        }
         input_segments = input_segments.saturating_add(
             loops(&profile)
                 .map(|(_, r)| r.segments().len())
