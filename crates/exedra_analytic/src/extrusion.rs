@@ -250,12 +250,6 @@ impl Pocket {
 #[derive(Copy, Clone, Debug, PartialEq)]
 #[non_exhaustive]
 pub enum PocketError {
-    /// An outline segment is a rational Bezier, which pockets do not yet
-    /// cut.
-    UnsupportedCurve {
-        /// The segment's index in the outline.
-        segment: usize,
-    },
     /// A filled pocket region contains holes, which would leave unsupported islands.
     RegionHasHoles {
         /// Number of holes in the region.
@@ -292,9 +286,6 @@ pub enum PocketError {
 impl core::fmt::Display for PocketError {
     fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
         match self {
-            Self::UnsupportedCurve { segment } => {
-                write!(f, "pocket outline segment {segment} is a Bezier curve")
-            }
             Self::RegionHasHoles { count } => write!(
                 f,
                 "pocket region has {count} holes; this pocket model requires one filled outline"

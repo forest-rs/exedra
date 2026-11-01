@@ -404,6 +404,83 @@ fn arc_walls_and_pocket_floors_map_uvs_too() {
 }
 
 #[test]
+fn pockets_with_bezier_outlines_are_cut_exactly() {
+    let block = Profile::new(
+        Loop::new(vec![
+            Segment::line([10.0, 0.0]),
+            Segment::line([10.0, 10.0]),
+            Segment::line([0.0, 10.0]),
+            Segment::line([0.0, 0.0]),
+        ])
+        .unwrap(),
+        vec![],
+        &POLICY,
+    )
+    .unwrap();
+    // An arch over a chord: a quadratic whose control stands 4 above it,
+    // so its region is 4 * 4 / 3. The pocket from the start end is
+    // rational, the same arch weighted towards its control.
+    let arch = |weights: Option<Vec<f64>>| {
+        Loop::new(vec![
+            Segment::line([6.0, 2.0]),
+            Segment::bezier([2.0, 2.0], Bezier::new(vec![[4.0, 6.0]], weights)).tagged(CROWN),
+        ])
+        .unwrap()
+    };
+    let solid = Extrusion::new(block, Placement3::translate(7.0, 8.0, 9.0), 4.0)
+        .unwrap()
+        .with_pocket(Pocket::from_region(&arch(None), End::End, 1.0), &POLICY)
+        .unwrap()
+        .with_pocket(
+            Pocket::from_region(&arch(Some(vec![1.0, 2.0, 1.0])), End::Start, 1.5),
+            &POLICY,
+        )
+        .unwrap();
+    assert!(solid.is_closed());
+    let walls: Vec<_> = solid.faces_tagged(CROWN).map(|(id, _)| id).collect();
+    assert_eq!(walls.len(), 2, "one arch wall in each pocket");
+    for &wall in &walls {
+        assert!(matches!(
+            solid.body().face(wall).unwrap().surface,
+            Surface::Ruled(_)
+        ));
+    }
+    let rational = Profile::new(arch(Some(vec![1.0, 2.0, 1.0])), vec![], &POLICY)
+        .unwrap()
+        .area();
+    let expected = 400.0 - 16.0 / 3.0 - 1.5 * rational;
+    assert!(
+        (solid.volume() - expected).abs() < 1e-9,
+        "{} {expected}",
+        solid.volume()
+    );
+    for tolerance in [0.05, 0.005] {
+        let result = solid
+            .body()
+            .realize(
+                solid.frame(),
+                &RealizationPolicy {
+                    tolerance,
+                    ..RealizationPolicy::default()
+                },
+            )
+            .unwrap();
+        assert!(result.report.within_tolerance(), "{:?}", result.report);
+        assert!(result.mesh.boundary_loops().unwrap().is_empty());
+        assert!(result.mesh.validate_deep().is_empty());
+        let shared = solid
+            .tessellate(&TessellationPolicy {
+                chord_tolerance: tolerance,
+                ..TessellationPolicy::default()
+            })
+            .unwrap();
+        assert!(shared.report.within_tolerance(), "{:?}", shared.report);
+        assert!(shared.mesh.boundary_loops().unwrap().is_empty());
+        assert!(shared.mesh.validate_deep().is_empty());
+    }
+}
+
+#[test]
 fn measures_say_whether_they_are_exact() {
     let place = Placement3::IDENTITY;
     // Rational: neither the area under the crown nor its length is exact.
