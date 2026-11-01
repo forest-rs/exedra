@@ -12,6 +12,7 @@
 
 mod cylindrical;
 mod planar;
+pub(crate) mod ruled;
 pub(crate) mod trims;
 pub use cylindrical::{CylindricalBand, CylindricalBandError};
 pub(crate) use trims::planar_nurbs;
@@ -515,10 +516,21 @@ impl<F, E> Body<F, E> {
     /// Circular support bounds may cover the full supporting circle, giving
     /// a conservative refusal for a short arc on a nearly coincident support.
     /// Detached entries are permitted so edits can preserve existing IDs.
+    /// Partial-U/full-V ruled rectangles use original-source enclosure proofs,
+    /// admitting at most 65,536 cumulative source control records and 1,000,000
+    /// preparation/metadata/enclosure work units in this validation call.
+    /// These limits do not bound retained geometry size or caller metadata.
     ///
     /// # Errors
     /// Returns the first [`BodyError`]. No geometry is moved or healed.
     pub fn validate(&self, policy: &ValidationPolicy) -> Result<ValidationReport, BodyError> {
+        self.validate_with_source_budget(policy, &mut crate::geometry::SourceBudget::default())
+    }
+    pub(crate) fn validate_with_source_budget(
+        &self,
+        policy: &ValidationPolicy,
+        source_budget: &mut crate::geometry::SourceBudget,
+    ) -> Result<ValidationReport, BodyError> {
         if !policy.max_gap.is_finite() || policy.max_gap < 0.0 {
             return Err(BodyError::InvalidTolerance {
                 max_gap: policy.max_gap,
@@ -707,6 +719,17 @@ impl<F, E> Body<F, E> {
             {
                 return Err(BodyError::NonRegularSurface { face: id });
             }
+            // A partial original ruled domain needs source proof preparation
+            // once per face, reused for both ruling orientations and loops.
+            let ruled_boundaries = match &face.surface {
+                Surface::Ruled(ruled)
+                    if face.domain.u != ParameterRange::UNIT
+                        && face.domain.v == ParameterRange::UNIT =>
+                {
+                    ruled.domain_boundaries_with_budget(face.domain, source_budget)
+                }
+                _ => None,
+            };
             for &loop_id in &face.loops {
                 let loop_ = self
                     .boundary_loop(loop_id)
@@ -720,10 +743,24 @@ impl<F, E> Body<F, E> {
                             if poles.into_iter().any(|p| p) {
                                 crate::geometry::cone_generator_gap(cone, line, range, poles)
                             } else {
-                                support_gap(curve, range, &face.surface)
+                                support_gap_in(
+                                    curve,
+                                    range,
+                                    &face.surface,
+                                    face.domain,
+                                    ruled_boundaries.as_ref(),
+                                    source_budget,
+                                )
                             }
                         } else {
-                            support_gap(curve, range, &face.surface)
+                            support_gap_in(
+                                curve,
+                                range,
+                                &face.surface,
+                                face.domain,
+                                ruled_boundaries.as_ref(),
+                                source_budget,
+                            )
                         }
                     } else {
                         let uses = &mut collapsed_uses.as_mut().expect("collapsed edge surveyed")
@@ -1010,6 +1047,50 @@ fn plane_distance(frame: Placement3) -> impl Fn([f64; 3]) -> f64 {
     let normal = spanned_normal(frame);
     let origin = frame.rows.map(|r| r[3]);
     move |p| normal.map_or(f64::INFINITY, |n| dot(sub(p, origin), n).abs())
+}
+fn support_gap_in(
+    curve: &Curve,
+    range: ParameterRange,
+    surface: &Surface,
+    domain: ParameterDomain,
+    boundaries: Option<&crate::geometry::RuledBoundaries>,
+    source_budget: &mut crate::geometry::SourceBudget,
+) -> f64 {
+    let Surface::Ruled(ruled) = surface else {
+        return support_gap(curve, range, surface);
+    };
+    if domain.u == ParameterRange::UNIT || domain.v != ParameterRange::UNIT {
+        return support_gap(curve, range, surface);
+    }
+    // An unchanged defining curve over a subinterval stays on that generating
+    // rim, regardless of traversal. This is a locus proof, not sampled agreement.
+    if ruled.curves().iter().any(|source| {
+        source.curve() == curve
+            && source.range().contains(range.bounds()[0])
+            && source.range().contains(range.bounds()[1])
+    }) {
+        return 0.0;
+    }
+    let Some(boundaries) = boundaries else {
+        return f64::INFINITY;
+    };
+    // A legacy full-support comparison can hide cancellation in a malformed
+    // actual ruling. Partial-domain admission uses only the outward checked
+    // boundary correspondence above, never a minimum with that older path.
+    let mut gap = f64::INFINITY;
+    for reverse in [false, true] {
+        let Ok(actual) = crate::geometry::CurveSpan::new(curve.clone(), range, reverse) else {
+            continue;
+        };
+        for side in [1, 3] {
+            gap = gap.min(boundaries.alignment(side, &actual, source_budget));
+        }
+    }
+    if source_budget.refusal.is_some() {
+        f64::INFINITY
+    } else {
+        gap
+    }
 }
 fn support_gap(curve: &Curve, range: ParameterRange, surface: &Surface) -> f64 {
     if let Surface::Ruled(ruled) = surface {

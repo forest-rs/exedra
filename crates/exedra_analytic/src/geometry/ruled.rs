@@ -3,7 +3,12 @@
 
 //! Regular ruled patches between two bounded analytic curves.
 
-use super::{Curve, CurveEvaluation, GeometryError, NurbsCurve, ParameterRange};
+mod budget;
+mod domain;
+pub(crate) use budget::SourceBudget;
+pub(crate) use domain::RuledBoundaries;
+
+use super::{Curve, CurveEvaluation, GeometryError, NurbsCurve, ParameterDomain, ParameterRange};
 use exedra_math::{add, cross, dot, lerp, norm, normalize, scale, sub};
 
 /// Immutable preparation for one bounded operation. Keeping this on the
@@ -634,6 +639,43 @@ impl Ruled {
             _ => None,
         }
     }
+    /// A rectangular boundary in the original support's parameter coordinates.
+    /// Only U is restricted here; V remains the full ruling interval.
+    pub(crate) fn boundary_in(&self, domain: ParameterDomain, side: usize) -> Option<CurveSpan> {
+        if domain.v != ParameterRange::UNIT
+            || domain
+                .u
+                .bounds()
+                .into_iter()
+                .any(|u| !ParameterRange::UNIT.contains(u))
+        {
+            return None;
+        }
+        if domain.u == ParameterRange::UNIT {
+            return self.boundary(side);
+        }
+        match side {
+            0 | 2 => {
+                let source = &self.curves[usize::from(side == 2)];
+                let parameter = |u| source.range.at(if source.reversed { 1.0 - u } else { u });
+                let [a, b] = domain.u.bounds();
+                let (a, b) = (parameter(a)?, parameter(b)?);
+                CurveSpan::new(
+                    source.curve.clone(),
+                    ParameterRange::new(a.min(b), a.max(b)).ok()?,
+                    source.reversed,
+                )
+                .ok()
+            }
+            1 | 3 => {
+                let u = domain.u.bounds()[usize::from(side == 1)];
+                let a = self.curves[0].evaluate(u)?.point;
+                let b = self.curves[1].evaluate(u)?.point;
+                CurveSpan::new(Curve::line(a, sub(b, a)).ok()?, ParameterRange::UNIT, false).ok()
+            }
+            _ => None,
+        }
+    }
     // Once source-curve chords spend at most half the target, prefer splitting
     // a physically long ruling rather than forcing all mixed-error reduction
     // into ever smaller profile edges. Correctness still uses triangle_bound.
@@ -695,7 +737,122 @@ impl Ruled {
 mod tests {
     use super::*;
     use crate::geometry::Surface;
+    use alloc::{vec, vec::Vec};
     use exedra_math::Placement3;
+
+    #[test]
+    fn restricted_parameter_allowance_covers_high_order_weighted_sources() {
+        use crate::geometry::{NurbsCurve, ParameterDomain};
+        for order in [4, 16] {
+            for [a, b] in [[2., 5.], [-0.000002, -0.000001], [1e8, 1e8 + 0.125]] {
+                for reversed in [false, true] {
+                    let make = |z| {
+                        let points = (0..order)
+                            .map(|i| {
+                                let u = f64::from(i) / f64::from(order - 1);
+                                [4. * u, 0.1 * libm::sin(3. * u), z]
+                            })
+                            .collect();
+                        let curve = Curve::nurbs(
+                            NurbsCurve::new(
+                                order,
+                                [vec![a; order as usize], vec![b; order as usize]].concat(),
+                                points,
+                                Some((0..order).map(|i| 0.7 + 0.1 * f64::from(i % 7)).collect()),
+                            )
+                            .unwrap(),
+                        )
+                        .unwrap();
+                        CurveSpan::new(curve, ParameterRange::new(a, b).unwrap(), reversed).unwrap()
+                    };
+                    // The arithmetic comparison does not need to recertify
+                    // regularity; this fixture's source is monotone in X.
+                    let ruled = Ruled {
+                        curves: [make(0.), make(2.)],
+                        mixed_bound: 0.,
+                    };
+                    for [lo, hi] in [[0.0, 0.37], [0.37, 0.73], [0.73, 1.0], [0.37, 0.37000001]] {
+                        let domain = ParameterDomain {
+                            u: ParameterRange::new(lo, hi).unwrap(),
+                            v: ParameterRange::UNIT,
+                        };
+                        let Some(boundaries) = ruled.domain_boundaries(domain) else {
+                            // A tight native range can collapse after restriction;
+                            // proof refusal is required instead of a guessed gap.
+                            assert!(a.abs() / (b - a) > 1e8);
+                            continue;
+                        };
+                        for side in [0, 2] {
+                            let restricted = ruled
+                                .boundary_in(domain, side)
+                                .expect("prepared bounded curve");
+                            let source = &ruled.curves[usize::from(side == 2)];
+                            let bound = boundaries.alignment(
+                                side,
+                                &restricted,
+                                &mut SourceBudget::default(),
+                            );
+                            assert!(bound.is_finite() && bound > 0.);
+                            for i in 0..=128 {
+                                let t = f64::from(i) / 128.;
+                                let ideal = source.evaluate(domain.u.at(t).unwrap()).unwrap().point;
+                                let actual = restricted.evaluate(t).unwrap().point;
+                                assert!(
+                                    norm(sub(actual, ideal)) <= bound,
+                                    "order={order} source=[{a},{b}] reversed={reversed} domain={domain:?} bound={bound}"
+                                );
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn unresolved_knot_and_weight_conditioning_refuses_restricted_matching() {
+        use crate::geometry::{NurbsCurve, ParameterDomain};
+        for weights in [None, Some(vec![1e-30, 1e30, 1e-30, 1e30])] {
+            let a = 1e16_f64;
+            let b = a + 4.;
+            let make = |z| {
+                let curve = Curve::nurbs(
+                    NurbsCurve::new(
+                        4,
+                        vec![a, a, a, a, b, b, b, b],
+                        vec![[0., 0., z], [1., 0., z], [2., 0., z], [3., 0., z]],
+                        weights.clone(),
+                    )
+                    .unwrap(),
+                )
+                .unwrap();
+                CurveSpan::new(curve, ParameterRange::new(a, b).unwrap(), false).unwrap()
+            };
+            let ruled = Ruled {
+                curves: [make(0.), make(1.)],
+                mixed_bound: 0.,
+            };
+            let domain = ParameterDomain {
+                u: ParameterRange::new(0., 0.5).unwrap(),
+                v: ParameterRange::UNIT,
+            };
+            assert!(ruled.domain_boundaries(domain).is_none_or(|boundaries| {
+                boundaries.alignment(
+                    0,
+                    &ruled.boundary_in(domain, 0).unwrap(),
+                    &mut SourceBudget::default(),
+                ) > 1e-9
+            }));
+            assert!(
+                ruled
+                    .domain_boundaries(ParameterDomain {
+                        u: ParameterRange::UNIT,
+                        v: ParameterRange::UNIT,
+                    })
+                    .is_some()
+            );
+        }
+    }
 
     fn transition() -> Surface {
         Surface::ruled(
@@ -764,8 +921,8 @@ mod tests {
         assert!(span.evaluate(f64::NAN).is_none());
     }
     fn spline(
-        points: alloc::vec::Vec<[f64; 3]>,
-        weights: alloc::vec::Vec<f64>,
+        points: Vec<[f64; 3]>,
+        weights: Vec<f64>,
         range: ParameterRange,
         reversed: bool,
     ) -> CurveSpan {
@@ -801,7 +958,7 @@ mod tests {
                 (0.75, [0.5, 0.0, 1.0], 0.0),
                 (1.0, [0.0, 0.0, 1.0], 1e-5),
             ] {
-                let mut controls: alloc::vec::Vec<_> = points
+                let mut controls: Vec<_> = points
                     .iter()
                     .map(|p| add(scale(*p, factor), offset))
                     .collect();

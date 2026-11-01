@@ -681,3 +681,20 @@ mesh statistics.
 General ruled grids still use accuracy-driven scheduling. A requested shape
 ratio can remain unmet there; the optional `quality` report records the actual
 remaining violations instead of implying that denser sampling met the target.
+
+## Native ruling subdivision
+
+```sh
+cargo run --release -p constructive_wind_tunnel --bin native_ruled_split -- 101
+python3 benchmarks/constructive_wind_tunnel/profile_authoring.py --workload native_ruled_split --output /tmp/ruled-split-heap
+```
+
+The source is a retained weighted spline crown with a rectangular through-hole,
+including reversed native `[2,5]` rim spans. The measured operation borrows that
+body, inserts one ruling and returns cloned native tables plus correspondence.
+Input/output local boundary validation and cloning are included. Source creation,
+warmup, mesh realization, STEP, IO and result destruction are excluded from the
+release median. Source validation is a separate baseline workload, not an earlier
+implementation of the split. Before/after meshes are checked outside timing.
+The isolated allocation window retains one complete result, then releases it;
+source and warmup allocations are excluded.

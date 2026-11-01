@@ -490,6 +490,7 @@ mod tests {
     use crate::body::{
         BodyParts, BoundaryLoop, Coedge, Edge, EdgeId, LoopId, ValidationPolicy, VertexId,
     };
+    use crate::geometry::CurveSpan;
     use crate::geometry::ParameterDomain;
     use crate::realize::{TriangleQuality, VertexSource};
 

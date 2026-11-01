@@ -72,12 +72,37 @@ budgets are independent; the report includes volume/area enclosures, arithmetic
 allowance and link/scratch bytes. Other support families remain outside this
 certificate, and unresolved local trim evidence cannot become a global claim.
 
+`split::split_ruled_face_at_u(&body, face, u, new_ruling_role, &policy)`
+inserts one shared native ruling and splits both generating rims in their planar
+neighbors. It returns a new body plus explicit source-to-child face/edge ranges,
+new vertex IDs and local boundary evidence. Each child retains the original
+`Surface::Ruled` value and partitions its original U domain; repeated splits use
+that same source coordinate system. Replaced face/rim slots are reused explicitly,
+so source selections must be resolved in the result's installation scope.
+Untouched IDs and metadata remain stable. Source-proof control/work limits are
+separate from topology limits; controls count cumulative preparation admissions,
+not unique geometry or peak scratch. The report separates metadata eligibility,
+preparation bounds and actual enclosure callback work. The complete immutable
+result still clones input-sized geometry and caller metadata. These source
+counters concern partial ruled-support proofs; general endpoint, elementary
+support and trim validation retain their own existing scope and input-size cost.
+Zero source work does not mean zero general geometry evaluation.
+
+The first subset requires four distinct boundary edges, full V `[0,1]`, retained
+nonclosed line/NURBS generating rims and planar rim neighbors. Unsupported trims,
+closed rims, insufficient endpoint separation and work budgets refuse before any
+partial result escapes. The caller supplies an already embedded, outward-oriented
+solid: local boundary validation does not establish global non-intersection or
+material containment. This is native subdivision, not surface intersection or a
+Boolean. Ruled realization accepts the resulting bounded U rectangles while
+retaining original support parameters, shared edge samples and smooth seam normals.
+
 The extrusion, revolution, sweep and loft constructors and planar shell builder
 own this shared model and expose it through `body()`. A cloned body can outlive
 its construction record. Legacy constructors may omit explicit trim records;
 that means support-only validation, never an inferred UV correspondence.
 `Body::realize` keeps bounded specialized paths for planar trims, cylindrical/conical
-strips, toroidal rectangles, complete ruled patches and supported pole patches.
+strips, toroidal rectangles, bounded ruled rectangles and supported pole patches.
 Monotone collinear line-edge chains on strip boundaries retain every native
 split vertex without refining the whole strip; only adjacent panels change.
 Other elementary curved faces with complete explicit trims use chart polygon

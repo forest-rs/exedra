@@ -1063,7 +1063,7 @@ impl<F, E> Body<F, E> {
                 continue;
             }
             let id = EdgeId(crate::usize_to_u32(i));
-            let value = self.edge_sharpness(id, incidence[i]);
+            let value = self.edge_sharpness(id, incidence[i], &patches);
             for pair in chains.get(id).windows(2) {
                 let (a, b) = ordered(pair[0], pair[1]);
                 sharp.push((a, b, value, id));
@@ -1844,7 +1844,7 @@ impl<F, E> Body<F, E> {
         })
     }
 
-    fn edge_sharpness(&self, id: EdgeId, incidence: Incidence) -> f32 {
+    fn edge_sharpness(&self, id: EdgeId, incidence: Incidence, patches: &[Patch]) -> f32 {
         let [Some(a), Some(b)] = incidence.faces else {
             return 1.0;
         };
@@ -1858,32 +1858,17 @@ impl<F, E> Body<F, E> {
         let normal = |id| {
             self.face(id)
                 .and_then(|f| {
-                    if let Surface::Ruled(ruled) = &f.surface {
-                        let edge = self.edge(id_edge)?;
-                        let (curve, range) = edge.regular()?;
-                        let slack = ruled
-                            .curves()
-                            .iter()
-                            .map(crate::geometry::CurveSpan::magnitude)
-                            .fold(0.0, f64::max)
-                            * 128.0
-                            * crate::geometry::FRAME_TOLERANCE;
-                        for reversed in [false, true] {
-                            let actual =
-                                crate::geometry::CurveSpan::new(curve.clone(), range, reversed)
-                                    .ok()?;
-                            for side in 0..4 {
-                                if ruled.boundary(side)?.alignment(&actual) <= slack {
-                                    return Some(match side {
-                                        0 => [0.5, 0.0],
-                                        1 => [1.0, 0.5],
-                                        2 => [0.5, 1.0],
-                                        _ => [0.0, 0.5],
-                                    });
-                                }
-                            }
+                    if matches!(f.surface, Surface::Ruled(_)) {
+                        // Classification already checked the full source-domain
+                        // correspondence. Reuse that evidence instead of
+                        // preparing/cloning every source for every shared edge.
+                        match patches[id.index()] {
+                            Patch::Grid(patch) => patch.boundary_midpoint(id_edge, f.domain),
+                            // Explicit ruled trims have no admitted native
+                            // correspondence yet. New support must provide its
+                            // own checked normal chart instead of guessing.
+                            _ => None,
                         }
-                        None
                     } else {
                         f.surface.parameters(point)
                     }
