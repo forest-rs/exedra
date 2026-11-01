@@ -70,6 +70,24 @@ fn prepared_native_source_enclosures_reuse_all_query_storage() {
             .collect();
         let knots = [vec![2.; order as usize], vec![5.; order as usize]].concat();
         let curve = NurbsCurve::new(order, knots, points, None).unwrap();
+        let required = PreparedNurbsEnclosure::preparation_work_required(curve.view()).unwrap();
+        let refused = allocations(|| {
+            assert!(matches!(
+                PreparedNurbsEnclosure::prepare(
+                    curve.view(),
+                    SourceRange {
+                        parameters: [2., 5.],
+                        reversed: true
+                    },
+                    PreparationLimits {
+                        max_controls: 100,
+                        max_work: required - 1
+                    }
+                ),
+                Err(exedra_curves::enclosure::EnclosureError::WorkLimit)
+            ));
+        });
+        assert_eq!(refused, 0, "preparation refusal at order {order}");
         let prepared = PreparedNurbsEnclosure::prepare(
             curve.view(),
             SourceRange {
@@ -82,6 +100,7 @@ fn prepared_native_source_enclosures_reuse_all_query_storage() {
             },
         )
         .unwrap();
+        assert_eq!(prepared.preparation_work_bound(), required);
         let mut scratch = EnclosureScratch::new(order as usize).unwrap();
         let count = allocations(|| {
             for range in [[0., 1.], [0.2, 0.8], [0.5, 0.5], [1., 1.]] {
@@ -89,6 +108,19 @@ fn prepared_native_source_enclosures_reuse_all_query_storage() {
                 std::hint::black_box(
                     prepared
                         .project(range, [1., 2., 3.], [0., 1., 0.], &mut scratch, || true)
+                        .unwrap(),
+                );
+                std::hint::black_box(prepared.speed_upper(|| true).unwrap());
+                std::hint::black_box(
+                    prepared
+                        .restriction_error(
+                            [0.2, 0.8],
+                            SourceRange {
+                                parameters: [2.6, 4.4],
+                                reversed: true,
+                            },
+                            || true,
+                        )
                         .unwrap(),
                 );
             }
