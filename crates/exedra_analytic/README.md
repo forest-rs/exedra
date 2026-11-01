@@ -397,3 +397,36 @@ oriented cavity shells. Local support/incidence/trim checks do not establish tha
 premise, and a successful point query is not a global validity certificate.
 No mesh, construction history, role metadata, scene or tessellation is involved.
 See `examples/geometry_queries` for retained valve-block probes and section exports.
+
+## Checked spline-profile extrusion
+
+`planar_extrusion::PlanarExtrusion::new(outer, holes, frame, length, &policy)`
+builds a retained solid directly from tagged native `CurveSpan`s. Both caps,
+shared edges, exact ruled walls and planar trim correspondence are constructed
+together. Source NURBS domains and traversal directions remain unchanged.
+`cap(end)` and `faces_tagged(tag)` resolve native caps and named walls directly;
+these identities stay unchanged across display realizations.
+
+The checked subset is explicit: unit-range lines with exact endpoint arithmetic,
+and full-domain clamped single-span rational NURBS of order at most 16, with
+controls exactly in local XY. `PlanarSegment::line(from, to)` retains arbitrary
+finite decimal endpoints, using a native line when its endpoint coefficients are
+exact and an order-two NURBS otherwise. The outer loop winds counterclockwise; holes wind
+clockwise. Consecutive endpoints must agree exactly. Multi-span sources, partial
+ranges and conics return `UnsupportedSource`; no curve is flattened or healed.
+
+Outline checking propagates outward-rounded homogeneous Bezier controls through
+bisection. Each piece must be monotone, and hull separation must establish
+disjointness or contact only at a permitted identical endpoint. The chord profile
+then establishes winding and hole containment. Exhausted work and unresolved
+geometry are distinct refusals. Reports count source segments, checked pieces,
+pair tests and subdivision depth; these are construction work, not mesh work.
+
+`realize_with_uvs` supplies cap XY and wall `(normalized source traversal, height)`
+to the caller. The first wall coordinate is a parameter, not spline arc length.
+Exact integrals and general pockets are unavailable. The body follows the existing
+realization, archive and STEP paths; `NativeSource::from(solid)` installs it as a
+generic body with its feature tags. See the executable
+[`spline_profile`](../../examples/analytic_extrusion/examples/spline_profile.rs)
+for a weighted crown, rectangular hole, construction UVs, STEP export and
+remeshing through the compiler.

@@ -233,3 +233,24 @@ chamfer. The three native revolutions compare a sharp shoulder, exact torus and
 exact cone. GLB and JSON report the native surfaces and integrals; no 3D edge blend
 or mesh Boolean is involved. `Profile::corner_at` refuses missing/ambiguous matches,
 and the treatment refuses overlapping trims under the explicit profile policy.
+
+### Native weighted spline outline
+
+```sh
+cargo run -p analytic_extrusion --example spline_profile -- /tmp/spline-profile.step /tmp/spline-profile.glb
+```
+
+This example uses `PlanarExtrusion::new` instead of assembling boundary tables.
+A tagged weighted cubic over domain `[2,5]` and a chord form the outer boundary;
+a clockwise rectangle forms a hole. Display realization requests boundary spacing
+0.2 and shape ratio 2.5 independently of its 0.01 geometric tolerance. It prints
+the observed shape ratio and remaining bad triangles across the whole emitted
+mesh, including any patch family that misses the target. Native compilation below
+uses its separate tolerance-only policy. It checks native closure, realizes parameter
+UVs, exports exact rational STEP geometry, then compiles the same installed native
+source at two display tolerances. Construction time and admitted outline work are
+printed separately from display and exchange evidence. The optional second path
+writes the charted display mesh as GLB with a grid texture, suitable for shaded
+or wireframe inspection. The current constructor
+accepts full-domain clamped single-span NURBS and unit-range lines; it refuses
+uncertain arrangements and unsupported source layouts.
