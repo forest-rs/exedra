@@ -199,6 +199,14 @@ impl<const N: usize> PointEnclosure<N> {
         let d = norm(residual)?;
         Ok([d.lo.max(0.0), d.hi])
     }
+    /// Distance bounds for every pair of points in the two enclosures.
+    /// In particular, the upper bound covers disagreement between two exact
+    /// native positions whose representatives have independent roundoff.
+    pub fn distance_bounds_to(self, other: Self) -> Result<[f64; 2], EnclosureError> {
+        let residual: [I; N] = core::array::from_fn(|k| self.coordinates[k] - other.coordinates[k]);
+        let distance = norm(residual)?;
+        Ok([distance.lo.max(0.0), distance.hi])
+    }
 }
 
 /// An enclosure of `(curve-target)·direction`, retaining its direction norm.
@@ -289,6 +297,66 @@ pub fn line_projection<const N: usize>(
         direction,
         length: norm(exact(direction)?)?,
     })
+}
+
+fn restriction_parameter_error(
+    range: [f64; 2],
+    reversed: bool,
+    domain: [f64; 2],
+    child: [f64; 2],
+    child_reversed: bool,
+) -> Result<I, EnclosureError> {
+    fractions(domain)?;
+    if !child.iter().all(|v| v.is_finite())
+        || child[0] >= child[1]
+        || child[0] < range[0]
+        || child[1] > range[1]
+    {
+        return Err(EnclosureError::InvalidInput);
+    }
+    let mut upper = 0.0_f64;
+    for endpoint in 0..2 {
+        let parent = parameter(range, reversed, I::p(domain[endpoint]))?;
+        let actual = I::p(child[endpoint ^ usize::from(child_reversed)]);
+        let delta = checked(parent - actual)?;
+        upper = upper.max(delta.lo.abs()).max(delta.hi.abs());
+    }
+    Ok(I { lo: 0.0, hi: upper })
+}
+
+/// Bounds pointwise disagreement between two affine parameter maps of the same
+/// original line. `direction` is its derivative in original parameter units;
+/// translation cancels. The parent follows `source` over `domain` of normalized
+/// U, while `child` describes its original-parameter traversal over the full
+/// unit interval.
+///
+/// The exact parameter difference is affine, so its largest absolute value is
+/// at an endpoint. Admission precedes the mapping and direction-norm test; no
+/// allocation or unguarded floating error multiplier is used.
+pub fn line_restriction_error<const N: usize>(
+    direction: [f64; N],
+    source: SourceRange,
+    domain: [f64; 2],
+    child: SourceRange,
+    mut admit: impl FnMut() -> bool,
+) -> Result<f64, EnclosureError> {
+    let SourceRange {
+        parameters: range,
+        reversed,
+    } = source;
+    let SourceRange {
+        parameters: child_range,
+        reversed: child_reversed,
+    } = child;
+    if !admit() {
+        return Err(EnclosureError::WorkLimit);
+    }
+    let direction = exact(direction)?;
+    let error = restriction_parameter_error(range, reversed, domain, child_range, child_reversed)?;
+    if domain == [0.0, 1.0] && range == child_range && reversed == child_reversed {
+        return Ok(0.0);
+    }
+    Ok(checked(error * norm(direction)?)?.hi)
 }
 
 #[derive(Clone, Copy, Debug)]
@@ -390,6 +458,33 @@ fn alpha(t: I, left: f64, right: f64) -> Result<I, EnclosureError> {
         .intersect(I::UNIT)
         .ok_or(EnclosureError::NumericLimit)
 }
+fn preparation_requirements<const N: usize>(
+    source: ValidNurbs<'_, N>,
+) -> Result<(u64, usize), EnclosureError> {
+    let curve = source.curve();
+    let order = usize::try_from(curve.order).expect("validated order fits controls");
+    let spans = (order - 1..curve.points.len())
+        .filter(|&k| curve.knots[k] < curve.knots[k + 1])
+        .count();
+    let n = u64::from(curve.order);
+    let metadata = u64::try_from(curve.points.len())
+        .map_err(|_| EnclosureError::Capacity)?
+        .checked_mul(2)
+        .ok_or(EnclosureError::Capacity)?;
+    let per = n
+        .checked_add(n.checked_mul(n - 1).ok_or(EnclosureError::Capacity)? / 2)
+        .ok_or(EnclosureError::Capacity)?;
+    let work = metadata
+        .checked_add(
+            u64::try_from(spans)
+                .map_err(|_| EnclosureError::Capacity)?
+                .checked_mul(n)
+                .and_then(|v| v.checked_mul(per))
+                .ok_or(EnclosureError::Capacity)?,
+        )
+        .ok_or(EnclosureError::Capacity)?;
+    Ok((work, spans))
+}
 /// Immutable outward control hulls of the ORIGINAL bounded NURBS source.
 ///
 /// Original knots and controls define every proof. Preparation evaluates the
@@ -409,6 +504,15 @@ pub struct PreparedNurbsEnclosure<'a, const N: usize = 3> {
     preparation_work_bound: u64,
 }
 impl<'a, const N: usize> PreparedNurbsEnclosure<'a, N> {
+    /// Required conservative preparation-work bound from original source
+    /// metadata, without allocating or evaluating any control hulls. This is one
+    /// linear knot-inspection pass; callers should admit source record counts
+    /// before requesting it and account for an additional eligibility pass if
+    /// they also call [`Self::prepare`]. The returned formula is the SAME bound
+    /// enforced and reported by preparation, not measured elapsed work.
+    pub fn preparation_work_required(source: ValidNurbs<'a, N>) -> Result<u64, EnclosureError> {
+        Ok(preparation_requirements(source)?.0)
+    }
     /// Prepare exact-source proof hulls. Both original control count and a
     /// conservative preparation-work bound are checked before control loads,
     /// blossom evaluation or allocating the output hulls. Work counts source
@@ -443,38 +547,25 @@ impl<'a, const N: usize> PreparedNurbsEnclosure<'a, N> {
             return Err(EnclosureError::WorkLimit);
         }
         let order = usize::try_from(curve.order).expect("validated order fits controls");
-        let mut spans = Vec::new();
-        spans
-            .try_reserve_exact(count)
-            .map_err(|_| EnclosureError::Capacity)?;
-        for k in order - 1..count {
-            if curve.knots[k] < curve.knots[k + 1] {
-                spans.push(k);
-            }
-        }
-        let n = u64::from(curve.order);
-        let per = n
-            .checked_add(n.checked_mul(n - 1).ok_or(EnclosureError::Capacity)? / 2)
-            .ok_or(EnclosureError::Capacity)?;
-        let work = metadata
-            .checked_add(
-                u64::try_from(spans.len())
-                    .map_err(|_| EnclosureError::Capacity)?
-                    .checked_mul(n)
-                    .and_then(|v| v.checked_mul(per))
-                    .ok_or(EnclosureError::Capacity)?,
-            )
-            .ok_or(EnclosureError::Capacity)?;
+        let (work, span_count) = preparation_requirements(source)?;
         if work > max_work {
             return Err(EnclosureError::WorkLimit);
         }
-        let (minimum, scale) = curve.weights.map_or((1., 1.), |w| {
-            w.iter()
-                .copied()
-                .fold((f64::INFINITY, 0.0_f64), |(lo, hi), w| {
-                    (lo.min(w), hi.max(w))
-                })
-        });
+        let mut spans = Vec::new();
+        spans
+            .try_reserve_exact(span_count)
+            .map_err(|_| EnclosureError::Capacity)?;
+        let (mut minimum, mut scale) = (f64::INFINITY, 0.0_f64);
+        // Combined source-record scan: weights and span indices together.
+        // Alongside the first metadata count pass this remains bounded by 2*N.
+        for k in 0..count {
+            let weight = curve.weights.map_or(1.0, |w| w[k]);
+            minimum = minimum.min(weight);
+            scale = scale.max(weight);
+            if k >= order - 1 && curve.knots[k] < curve.knots[k + 1] {
+                spans.push(k);
+            }
+        }
         let weights = I {
             lo: divide(I::p(minimum), I::p(scale))?.lo,
             hi: 1.,
@@ -555,6 +646,133 @@ impl<'a, const N: usize> PreparedNurbsEnclosure<'a, N> {
     pub fn capacity_bytes(&self) -> usize {
         self.controls.capacity() * size_of::<RationalControl<N>>()
             + self.spans.capacity() * size_of::<usize>()
+    }
+    /// A rigorous bound on `|dC/du|` over this bounded source's NORMALIZED unit
+    /// traversal. Reversal changes no speed. This is a Lipschitz bound on
+    /// positions, including continuous knot corners. Full-multiplicity knots
+    /// touching the bounded range permit jumps and are refused, even if their
+    /// particular endpoints coincide.
+    ///
+    /// On each original knot span, with outward rational Bezier proof controls
+    /// `(P_i,w_i)`, choose a fixed center `c`, let `R=max|P_i-c|`, and bound
+    /// `N'=degree*max|w_(i+1)(P_(i+1)-c)-w_i(P_i-c)|` and
+    /// `W'=degree*max|w_(i+1)-w_i|`. Then
+    /// `|C'| <= (N' + R*W')/min(w_i)` in that span's unit parameter. Scale by
+    /// the original source range width divided by the original knot span width.
+    /// All differences, norms, products and divisions are outward-rounded.
+    ///
+    /// Admission precedes the span lookup, each span visit, each control norm
+    /// and each adjacent-control test. The operation allocates nothing.
+    pub fn speed_upper(&self, mut admit: impl FnMut() -> bool) -> Result<f64, EnclosureError> {
+        if !admit() {
+            return Err(EnclosureError::WorkLimit);
+        }
+        let curve = self.source.curve();
+        let order = self.order();
+        let degree = I::p(f64::from(curve.order - 1));
+        let source_width = checked(I::p(self.range[1]) - I::p(self.range[0]))?;
+        let first = self
+            .spans
+            .partition_point(|&k| curve.knots[k + 1] <= self.range[0]);
+        let mut maximum = 0.0_f64;
+        for (span, &k) in self.spans.iter().enumerate().skip(first) {
+            if curve.knots[k] >= self.range[1] {
+                break;
+            }
+            if !admit() {
+                return Err(EnclosureError::WorkLimit);
+            }
+            // ValidNurbs permits jumps. A finite span derivative does not
+            // provide a Lipschitz bound across or at such a discontinuity.
+            for (left, right) in [
+                span.checked_sub(1).map(|p| (p, span)),
+                (span + 1 < self.spans.len()).then_some((span, span + 1)),
+            ]
+            .into_iter()
+            .flatten()
+            {
+                let knot = curve.knots[self.spans[right]];
+                if self.range[0] <= knot
+                    && knot <= self.range[1]
+                    && self.spans[right] - self.spans[left] >= order
+                {
+                    return Err(EnclosureError::InvalidInput);
+                }
+            }
+            let controls = &self.controls[span * order..(span + 1) * order];
+            let center = controls[0].point.map(|i| I::p(i.mid().clamp(i.lo, i.hi)));
+            let mut radius = 0.0_f64;
+            let mut minimum = f64::INFINITY;
+            for p in controls {
+                if !admit() {
+                    return Err(EnclosureError::WorkLimit);
+                }
+                let residual = core::array::from_fn::<_, N, _>(|c| p.point[c] - center[c]);
+                radius = radius.max(norm(residual)?.hi);
+                minimum = minimum.min(p.weight.lo);
+            }
+            let mut numerator = 0.0_f64;
+            let mut denominator = 0.0_f64;
+            for pair in controls.windows(2) {
+                if !admit() {
+                    return Err(EnclosureError::WorkLimit);
+                }
+                let [a, b] = [pair[0], pair[1]];
+                let residual = core::array::from_fn::<_, N, _>(|c| {
+                    (b.point[c] - center[c]) * b.weight - (a.point[c] - center[c]) * a.weight
+                });
+                numerator = numerator.max(norm(residual)?.hi);
+                let delta = checked(b.weight - a.weight)?;
+                denominator = denominator.max(delta.lo.abs()).max(delta.hi.abs());
+            }
+            let native = divide(
+                checked(degree * (I::p(numerator) + I::p(radius) * I::p(denominator)))?,
+                I::p(minimum),
+            )?;
+            let span_width = checked(I::p(curve.knots[k + 1]) - I::p(curve.knots[k]))?;
+            let scale = divide(source_width, span_width)?;
+            maximum = maximum.max(checked(native * scale)?.hi);
+        }
+        Ok(maximum)
+    }
+    /// Bounds full pointwise position disagreement between the original source
+    /// restricted to a normalized `domain` and a child traversal over the
+    /// original-parameter `child` traversal.
+    ///
+    /// Their exact parameter maps are affine, so endpoint disagreement bounds
+    /// the whole parameter interval. Convert that displacement to normalized
+    /// source units and multiply by [`Self::speed_upper`]. Both paths refer to
+    /// this SAME defining source curve; this is not a comparison of arbitrary
+    /// curves or of their representative floating evaluators. The identity full
+    /// unit map returns exactly zero without speed work. Admission precedes the
+    /// mapping test and every subsequent speed-bound work unit.
+    pub fn restriction_error(
+        &self,
+        domain: [f64; 2],
+        child: SourceRange,
+        mut admit: impl FnMut() -> bool,
+    ) -> Result<f64, EnclosureError> {
+        let SourceRange {
+            parameters: child_range,
+            reversed: child_reversed,
+        } = child;
+        if !admit() {
+            return Err(EnclosureError::WorkLimit);
+        }
+        let error = restriction_parameter_error(
+            self.range,
+            self.reversed,
+            domain,
+            child_range,
+            child_reversed,
+        )?;
+        if domain == [0.0, 1.0] && self.range == child_range && self.reversed == child_reversed {
+            return Ok(0.0);
+        }
+        let width = checked(I::p(self.range[1]) - I::p(self.range[0]))?;
+        let normalized = divide(error, width)?;
+        let speed = self.speed_upper(&mut admit)?;
+        Ok(checked(normalized * I::p(speed))?.hi)
     }
     /// Enclose a normalized interval. Admission precedes each control load,
     /// rational blend and hull visit; false retains no partial answer.
@@ -672,6 +890,314 @@ mod tests {
     use super::*;
     use crate::NurbsCurve;
     use alloc::vec;
+
+    #[test]
+    fn normalized_rational_speed_bound_uses_positive_original_weights_and_centering() {
+        for offset in [0.0, 1e12] {
+            let curve = NurbsCurve::new(
+                2,
+                vec![2., 2., 5., 5.],
+                vec![[offset + 1., 0., 0.], [offset + 5., 0., 0.]],
+                Some(vec![1., 4.]),
+            )
+            .unwrap();
+            for reversed in [false, true] {
+                let prepared = PreparedNurbsEnclosure::prepare(
+                    curve.view(),
+                    SourceRange {
+                        parameters: [2., 5.],
+                        reversed,
+                    },
+                    PreparationLimits {
+                        max_controls: 2,
+                        max_work: 100,
+                    },
+                )
+                .unwrap();
+                let bound = prepared.speed_upper(|| true).unwrap();
+                // In normalized U: C=(1+19u)/(1+3u), C'=16/(1+3u)^2.
+                // The proved control bound is 28, and independent translation
+                // changes no exact derivative or source weights.
+                assert!((16.0..=28.0 + 1e-10).contains(&bound), "{bound:?}");
+                for i in 0..=128 {
+                    let t = 2. + 3. * f64::from(i) / 128.;
+                    let e = curve.view().evaluation(t);
+                    assert!(e.first[0].abs() * 3. <= bound);
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn speed_covers_continuous_knot_corners_but_refuses_source_jumps() {
+        let curve = NurbsCurve::new(
+            2,
+            vec![0., 0., 0.5, 1., 1.],
+            vec![[0., 0., 0.], [1., 1., 0.], [2., 0., 0.]],
+            None,
+        )
+        .unwrap();
+        let prepared = PreparedNurbsEnclosure::prepare(
+            curve.view(),
+            SourceRange {
+                parameters: [0., 1.],
+                reversed: true,
+            },
+            PreparationLimits {
+                max_controls: 3,
+                max_work: 1000,
+            },
+        )
+        .unwrap();
+        let bound = prepared.speed_upper(|| true).unwrap();
+        let exact = 2. * <f64 as Real>::sqrt(2.);
+        assert!(bound >= exact && bound <= exact + 1e-12);
+        let jump = NurbsCurve::new(
+            2,
+            vec![0., 0., 0.5, 0.5, 1., 1.],
+            vec![[0., 0., 0.], [1., 0., 0.], [3., 0., 0.], [4., 0., 0.]],
+            None,
+        )
+        .unwrap();
+        for range in [[0., 1.], [0., 0.5], [0.5, 1.]] {
+            let prepared = PreparedNurbsEnclosure::prepare(
+                jump.view(),
+                SourceRange {
+                    parameters: range,
+                    reversed: false,
+                },
+                PreparationLimits {
+                    max_controls: 4,
+                    max_work: 1000,
+                },
+            )
+            .unwrap();
+            assert!(matches!(
+                prepared.speed_upper(|| true),
+                Err(EnclosureError::InvalidInput)
+            ));
+        }
+        let prepared = PreparedNurbsEnclosure::prepare(
+            jump.view(),
+            SourceRange {
+                parameters: [0., 0.4],
+                reversed: false,
+            },
+            PreparationLimits {
+                max_controls: 4,
+                max_work: 1000,
+            },
+        )
+        .unwrap();
+        assert!(prepared.speed_upper(|| true).unwrap() >= 0.8);
+    }
+
+    #[test]
+    fn affine_restriction_disagreement_is_bounded_at_endpoints_in_original_units() {
+        let line = line_restriction_error(
+            [3., 4., 0.],
+            SourceRange {
+                parameters: [2., 6.],
+                reversed: false,
+            },
+            [0.25, 0.75],
+            SourceRange {
+                parameters: [3.125, 5.125],
+                reversed: false,
+            },
+            || true,
+        )
+        .unwrap();
+        assert!((0.625..=0.625 + 1e-12).contains(&line));
+        let curve = NurbsCurve::new(
+            2,
+            vec![2., 2., 5., 5.],
+            vec![[1., 0., 0.], [5., 0., 0.]],
+            Some(vec![1., 4.]),
+        )
+        .unwrap();
+        let prepared = PreparedNurbsEnclosure::prepare(
+            curve.view(),
+            SourceRange {
+                parameters: [2., 5.],
+                reversed: true,
+            },
+            PreparationLimits {
+                max_controls: 2,
+                max_work: 100,
+            },
+        )
+        .unwrap();
+        let same = prepared
+            .restriction_error(
+                [0.25, 0.75],
+                SourceRange {
+                    parameters: [2.75, 4.25],
+                    reversed: true,
+                },
+                || true,
+            )
+            .unwrap();
+        assert!(same < 1e-12, "{same:?}");
+        let backwards = prepared
+            .restriction_error(
+                [0.25, 0.75],
+                SourceRange {
+                    parameters: [2.75, 4.25],
+                    reversed: false,
+                },
+                || true,
+            )
+            .unwrap();
+        assert!(backwards > 1.);
+        let shifted = prepared
+            .restriction_error(
+                [0.25, 0.75],
+                SourceRange {
+                    parameters: [2.875, 4.375],
+                    reversed: true,
+                },
+                || true,
+            )
+            .unwrap();
+        for i in 0..=128 {
+            let t = f64::from(i) / 128.;
+            let a = curve.view().evaluate(5. - 3. * (0.25 + 0.5 * t));
+            let b = curve.view().evaluate(4.375 - 1.5 * t);
+            assert!((a[0] - b[0]).abs() <= shifted);
+        }
+        let mut count = 0;
+        let identity = prepared
+            .restriction_error(
+                [0., 1.],
+                SourceRange {
+                    parameters: [2., 5.],
+                    reversed: true,
+                },
+                || {
+                    count += 1;
+                    true
+                },
+            )
+            .unwrap();
+        assert_eq!(identity, 0.);
+        assert_eq!(count, 1);
+        assert!(matches!(
+            prepared.restriction_error(
+                [0., 1.],
+                SourceRange {
+                    parameters: [1., 5.],
+                    reversed: true
+                },
+                || true
+            ),
+            Err(EnclosureError::InvalidInput)
+        ));
+    }
+
+    #[test]
+    fn speed_and_mapping_refuse_unresolved_denominators_and_preserve_underflow_allowance() {
+        let curve = NurbsCurve::new(
+            2,
+            vec![0., 0., 1e-320, 1e-320],
+            vec![[0., 0., 0.], [1e-200, 0., 0.]],
+            None,
+        )
+        .unwrap();
+        let prepared = PreparedNurbsEnclosure::prepare(
+            curve.view(),
+            SourceRange {
+                parameters: [0., 1e-320],
+                reversed: false,
+            },
+            PreparationLimits {
+                max_controls: 2,
+                max_work: 100,
+            },
+        )
+        .unwrap();
+        let bound = prepared
+            .restriction_error(
+                [0.1, 0.9],
+                SourceRange {
+                    parameters: [1e-321, 9e-321],
+                    reversed: false,
+                },
+                || true,
+            )
+            .unwrap();
+        assert!(bound > 0. && bound.is_finite());
+        assert!(
+            line_restriction_error(
+                [1., 0., 0.],
+                SourceRange {
+                    parameters: [0., 1e-320],
+                    reversed: false
+                },
+                [0.1, 0.9],
+                SourceRange {
+                    parameters: [1e-321, 9e-321],
+                    reversed: false
+                },
+                || true
+            )
+            .unwrap()
+                > 0.
+        );
+        assert!(matches!(
+            prepared.speed_upper(|| false),
+            Err(EnclosureError::WorkLimit)
+        ));
+        assert!(matches!(
+            prepared.restriction_error(
+                [0.1, 0.9],
+                SourceRange {
+                    parameters: [1e-321, 9e-321],
+                    reversed: false
+                },
+                || false
+            ),
+            Err(EnclosureError::WorkLimit)
+        ));
+        let tiny = f64::from_bits(1);
+        let curve = NurbsCurve::new(
+            2,
+            vec![0., 0., tiny, tiny],
+            vec![[0., 0., 0.], [1e-200, 0., 0.]],
+            None,
+        )
+        .unwrap();
+        let prepared = PreparedNurbsEnclosure::prepare(
+            curve.view(),
+            SourceRange {
+                parameters: [0., tiny],
+                reversed: false,
+            },
+            PreparationLimits {
+                max_controls: 2,
+                max_work: 100,
+            },
+        )
+        .unwrap();
+        assert!(matches!(
+            prepared.speed_upper(|| true),
+            Err(EnclosureError::NumericLimit)
+        ));
+    }
+
+    #[test]
+    fn point_to_point_enclosures_bound_independent_endpoint_rounding() {
+        let a = line_enclosure([1e10, 0., 0.], [3., 4., 0.], SourceRange::UNIT, [1., 1.]).unwrap();
+        let b = PointEnclosure::point([1e10 + 3., 4., 0.]).unwrap();
+        let bounds = a.distance_bounds_to(b).unwrap();
+        assert_eq!(bounds[0], 0.);
+        assert!(bounds[1] > 0. && bounds[1] < 1e-4);
+        let distance = PointEnclosure::point([0., 0., 0.])
+            .unwrap()
+            .distance_bounds_to(PointEnclosure::point([3., 4., 0.]).unwrap())
+            .unwrap();
+        assert!(distance[0] <= 5. && distance[1] >= 5.);
+    }
 
     #[test]
     fn identical_interval_blends_keep_the_exact_convex_hull() {
