@@ -652,6 +652,7 @@ a unique nearest UV. Line/NURBS sources are supported; conics are refused.
 
 ```sh
 cargo run --release -p constructive_wind_tunnel --bin native_ruled_projection -- 31 1024 /tmp/ruled-projection
+EXEDRA_PROJECTION_METHOD=bounded-hint cargo run --release -p constructive_wind_tunnel --bin native_ruled_projection -- 31 1024 /tmp/ruled-projection-hint
 EXEDRA_PROJECTION_WORK=1000 cargo run --release -p constructive_wind_tunnel --bin native_ruled_projection -- 31 1024 /tmp/ruled-projection-limited
 EXEDRA_PROJECTION_METHOD=scan cargo run --release -p constructive_wind_tunnel --bin native_ruled_projection -- 31 1024 /tmp/ruled-projection-scan
 python3 benchmarks/constructive_wind_tunnel/profile_authoring.py --workload native_ruled_projection --output /tmp/ruled-projection-heap
@@ -663,6 +664,12 @@ The `scan` method samples 1025 U rulings by default and clamps V analytically.
 It supplies an explicitly uncertified candidate reference, without a global
 minimum or distance-gap guarantee; its accuracy is not matched to the bounded
 query merely because a timing row is available.
+
+`bounded-hint` supplies each authored native UV as a fully metered candidate.
+The two free target points use `[0.5,0.5]`. Hints never restrict global search;
+an on-patch hint can establish the distance gap directly against lower bound
+zero. JSON includes the hint and separate hint-evaluation work. Hinted and
+unhinted queries retain the same global distance guarantee.
 
 Allocation phases are `construct`, `proof` or `realize`. Source preparation,
 warmup and profiler setup are excluded. The `retained` and `released` checkpoints
