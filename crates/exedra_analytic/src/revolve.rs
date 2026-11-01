@@ -894,11 +894,12 @@ mod tests {
     #[test]
     fn combined_cap_and_wall_area_overflow_is_a_numeric_refusal() {
         let profile = Profile::new(
+            // As wide as rounding at its height lets it be told apart.
             polygon(&[
-                [0.875, 0.0],
-                [0.875, 6.7e307],
-                [0.125, 6.7e307],
-                [0.125, 0.0],
+                [3.0e307, 0.0],
+                [3.0e307, 6.7e307],
+                [1.0e307, 6.7e307],
+                [1.0e307, 0.0],
             ]),
             vec![],
             &ProfilePolicy::new(1e-9),

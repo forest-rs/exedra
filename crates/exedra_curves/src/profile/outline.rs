@@ -5,6 +5,8 @@
 
 use alloc::vec::Vec;
 
+use exedra_math::predicates::{Orientation, orient2d};
+
 use crate::profile::arc::{
     Arc, Piece, bounds_may_contact, cross, length, sub, turns, winding_angle,
 };
@@ -248,6 +250,69 @@ impl Loop {
             .sum()
     }
 
+    /// Whether the loop winds counter-clockwise, for a loop whose segments
+    /// meet only at their shared vertices, as [`Profile::validate`] proves
+    /// before asking; `None` where that cannot be told.
+    ///
+    /// The sign of [`Self::signed_area`] decides wherever the area exceeds
+    /// a bound on the rounding that computed it. A sliver thinner than
+    /// that rounding is decided, for a loop of lines, by the exact turn at
+    /// its lowest-leftmost vertex, which a simple polygon makes towards its
+    /// inside; a sliver with arcs is not decided.
+    pub(crate) fn counter_clockwise(&self) -> Option<bool> {
+        let origin = self.segments[self.segments.len() - 1].to;
+        let (mut area, mut chords, mut arcs) = (0.0_f64, 0.0_f64, 0.0_f64);
+        for piece in self.pieces() {
+            let (u, v) = (sub(piece.from(), origin), sub(piece.to(), origin));
+            area += 0.5 * cross(u, v);
+            chords += 0.5 * ((u[0] * v[1]).abs() + (u[1] * v[0]).abs());
+            if let Piece::Arc(arc) = piece {
+                let segment = arc.segment_area();
+                area += segment;
+                arcs += segment.abs();
+            }
+        }
+        // Each chord term rounds in its two differences, two products and
+        // one subtraction, and the sum in at most one addition per term:
+        // within `(n + 6) EPSILON` of the chords' magnitude, with a
+        // subnormal floor per term. An arc's segment area carries the
+        // rounding of its resolved radius and sweep and of `angle -
+        // sin(angle)`, generously within `2^16 EPSILON` of itself.
+        let n = self.segments.len() as f64;
+        let bound = 2.0 * (n + 6.0) * f64::EPSILON * chords
+            + 65536.0 * f64::EPSILON * arcs
+            + 16.0 * n * f64::from_bits(1);
+        if area.abs() > bound {
+            return Some(area > 0.0);
+        }
+        if !self
+            .segments
+            .iter()
+            .all(|segment| segment.curve == Curve::Line)
+        {
+            return None;
+        }
+        let k = self.lowest_leftmost();
+        let m = self.segments.len();
+        let previous = self.segments[(k + m - 1) % m].to;
+        let next = self.segments[(k + 1) % m].to;
+        match orient2d(previous, self.segments[k].to, next) {
+            Orientation::Ccw => Some(true),
+            Orientation::Cw => Some(false),
+            Orientation::Collinear => None,
+        }
+    }
+
+    /// The index of the vertex with the least `y`, then the least `x`.
+    fn lowest_leftmost(&self) -> usize {
+        (0..self.segments.len())
+            .min_by(|&a, &b| {
+                let ([ax, ay], [bx, by]) = (self.segments[a].to, self.segments[b].to);
+                ay.total_cmp(&by).then(ax.total_cmp(&bx))
+            })
+            .expect("a loop has at least two segments")
+    }
+
     /// The smallest axis-aligned box containing the loop, as `[min, max]`.
     #[must_use]
     pub fn bounds(&self) -> [[f64; 2]; 2] {
@@ -307,6 +372,10 @@ impl Loop {
 pub struct ProfilePolicy {
     /// Smallest permitted distance between nonadjacent segments, and between
     /// adjacent segments away from their shared vertex, in model units.
+    /// Contact is judged at the larger of this and the rounding of
+    /// distances at the two segments' own coordinates, `16 EPSILON` times
+    /// the largest of them, since a finer separation cannot be told from
+    /// contact there.
     pub min_separation: f64,
     /// Largest total segment count; pairwise checks are quadratic in it.
     pub max_segments: u32,
@@ -359,6 +428,13 @@ pub enum ProfileError {
         /// The offending loop.
         loop_ref: LoopRef,
     },
+    /// A loop is so thin that its winding cannot be told: its area is
+    /// within the rounding of computing it, and it has arcs, so no exact
+    /// turn decides it.
+    UnresolvedWinding {
+        /// The offending loop.
+        loop_ref: LoopRef,
+    },
     /// Two segments cross, touch, overlap, or come closer than the
     /// separation. Adjacent segments may meet only at their shared vertex.
     Contact {
@@ -392,6 +468,13 @@ impl core::fmt::Display for ProfileError {
                 LoopRef::Outer => write!(f, "the outer loop must wind counter-clockwise"),
                 LoopRef::Hole(hole) => write!(f, "hole {hole} must wind clockwise"),
             },
+            Self::UnresolvedWinding { loop_ref } => {
+                write!(
+                    f,
+                    "{} loop is too thin to tell its winding",
+                    LoopName(*loop_ref)
+                )
+            }
             Self::Contact { first, second } => write!(
                 f,
                 "{} segment {} and {} segment {} touch or come too close",
@@ -450,12 +533,13 @@ pub struct Profile {
 impl Profile {
     /// Validates the arrangement of `outer` and `holes`.
     ///
-    /// Checks, in order: the policy and segment budget; winding; that no two
+    /// Checks, in order: the policy and segment budget; that no two
     /// segments of any loops cross, touch, overlap or come within
     /// [`ProfilePolicy::min_separation`] (adjacent segments meet only at their
-    /// shared vertex, and are checked away from it); then that every hole lies
-    /// inside the outer loop and outside every other hole. Nothing is moved,
-    /// merged or healed.
+    /// shared vertex, and are checked away from it); winding, now that each
+    /// loop is known to be simple; then that every hole lies inside the
+    /// outer loop and outside every other hole. Nothing is moved, merged or
+    /// healed.
     ///
     /// # Errors
     ///
@@ -493,18 +577,6 @@ impl Profile {
                 maximum: policy.max_segments,
             });
         }
-        if outer.signed_area() <= 0.0 {
-            return Err(ProfileError::WrongWinding {
-                loop_ref: LoopRef::Outer,
-            });
-        }
-        for (hole, loop_) in holes.iter().enumerate() {
-            if loop_.signed_area() >= 0.0 {
-                return Err(ProfileError::WrongWinding {
-                    loop_ref: LoopRef::Hole(hole),
-                });
-            }
-        }
         let loops: Vec<_> = core::iter::once((LoopRef::Outer, outer))
             .chain(
                 holes
@@ -527,6 +599,14 @@ impl Profile {
                         if !bounds_may_contact(*p_bounds, *q_bounds, separation) {
                             continue;
                         }
+                        // No finer than the rounding of distances at these
+                        // two segments' coordinates.
+                        let scale = [*p_bounds, *q_bounds]
+                            .into_iter()
+                            .flatten()
+                            .flatten()
+                            .fold(0.0_f64, |m, c| m.max(c.abs()));
+                        let separation = separation.max(16.0 * f64::EPSILON * scale);
                         let adjacent = first_loop == second_loop
                             && (j == i + 1 || (i == 0 && j == first.len() - 1));
                         let contact = if adjacent {
@@ -548,6 +628,23 @@ impl Profile {
                         }
                     }
                 }
+            }
+        }
+        // Each loop is simple, so its winding is that of its turn at an
+        // extreme, which its area's sign gives wherever it outweighs its
+        // rounding.
+        for (loop_ref, loop_, counter_clockwise) in core::iter::once((LoopRef::Outer, outer, true))
+            .chain(
+                holes
+                    .iter()
+                    .enumerate()
+                    .map(|(hole, loop_)| (LoopRef::Hole(hole), loop_, false)),
+            )
+        {
+            match loop_.counter_clockwise() {
+                Some(winds) if winds == counter_clockwise => {}
+                Some(_) => return Err(ProfileError::WrongWinding { loop_ref }),
+                None => return Err(ProfileError::UnresolvedWinding { loop_ref }),
             }
         }
         // Loops no longer meet, so one vertex classifies each hole.
@@ -856,6 +953,60 @@ mod tests {
                 },
             })
         );
+    }
+
+    /// A triangle whose exact area is `-2^-105`, clockwise, though its
+    /// floating-point shoelace sums to `+2^-53`.
+    fn sliver() -> [[f64; 2]; 3] {
+        let s = f64::EPSILON;
+        [
+            [-1.0 - 2.0 * s, -1.0 - 5.0 * s],
+            [-0.5 - 2.0 * s, -0.5 - 4.0 * s],
+            [2.0 - s, 2.0 + 2.0 * s],
+        ]
+    }
+
+    #[test]
+    fn a_sliver_thinner_than_its_rounding_winds_as_it_turns() {
+        let [a, b, c] = sliver();
+        let mut misled = false;
+        for vertices in [[a, b, c], [b, c, a], [c, a, b]] {
+            let triangle = Loop::new(vertices.map(Segment::line).to_vec()).unwrap();
+            misled |= triangle.signed_area() > 0.0;
+            assert_eq!(triangle.counter_clockwise(), Some(false));
+            assert_eq!(triangle.reversed().counter_clockwise(), Some(true));
+        }
+        assert!(misled, "some starting vertex's shoelace has the wrong sign");
+    }
+
+    #[test]
+    fn a_sliver_with_an_arc_is_not_guessed() {
+        let [a, b, c] = sliver();
+        // The long side bows by far less than the sliver's rounding.
+        let triangle = Loop::new(vec![
+            Segment::line(b),
+            Segment::line(c),
+            Segment::arc(a, 1e-40),
+        ])
+        .unwrap();
+        assert_eq!(triangle.counter_clockwise(), None);
+    }
+
+    #[test]
+    fn contact_finer_than_rounding_is_contact_either_way_round() {
+        let [a, b, c] = sliver();
+        // The middle vertex is 1e-32 from the long side: below any
+        // separation the coordinates resolve, so in contact in both
+        // directions, however fine the separation asked for.
+        for vertices in [[a, b, c], [c, b, a]] {
+            let triangle = Loop::new(vertices.map(Segment::line).to_vec()).unwrap();
+            for separation in [1e-20, 1e-12] {
+                assert!(matches!(
+                    Profile::new(triangle.clone(), vec![], &ProfilePolicy::new(separation)),
+                    Err(ProfileError::Contact { .. })
+                ));
+            }
+        }
     }
 
     #[test]

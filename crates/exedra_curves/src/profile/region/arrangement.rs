@@ -550,17 +550,19 @@ fn assemble(
         });
     }
     report.loops = rings.len();
-    let outer: Vec<usize> = rings
-        .iter()
-        .enumerate()
-        .filter_map(|(i, r)| (r.loop_.signed_area() > 0.0).then_some(i))
-        .collect();
+    // Rings are simple, so each winds one way, told exactly where its area
+    // does not.
+    let mut winds = Vec::with_capacity(rings.len());
+    for ring in &rings {
+        winds.push(ring.loop_.counter_clockwise().ok_or(RegionError::Output(
+            ProfileError::UnresolvedWinding {
+                loop_ref: LoopRef::Outer,
+            },
+        ))?);
+    }
+    let outer: Vec<usize> = (0..rings.len()).filter(|&i| winds[i]).collect();
     let mut holes = vec![Vec::new(); outer.len()];
-    for (index, ring) in rings
-        .iter()
-        .enumerate()
-        .filter(|(_, r)| r.loop_.signed_area() <= 0.0)
-    {
+    for (index, ring) in rings.iter().enumerate().filter(|&(i, _)| !winds[i]) {
         let point = ring.loop_.segments()[0].to;
         let owner = outer
             .iter()
